@@ -1,0 +1,1679 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"><head>
+
+<meta charset="utf-8">
+<meta name="generator" content="quarto-1.5.57">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+
+<title>12&nbsp; Chapter 10: Batched Matmul and Linear Layers – Learning Triton by Rebuilding Modern LLM Kernels</title>
+<style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+  width: 0.8em;
+  margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
+  vertical-align: middle;
+}
+/* CSS for syntax highlighting */
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { display: inline-block; text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+  { counter-reset: source-line 0; }
+pre.numberSource code > span
+  { position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+  { content: counter(source-line);
+    position: relative; left: -1em; text-align: right; vertical-align: baseline;
+    border: none; display: inline-block;
+    -webkit-touch-callout: none; -webkit-user-select: none;
+    -khtml-user-select: none; -moz-user-select: none;
+    -ms-user-select: none; user-select: none;
+    padding: 0 4px; width: 4em;
+  }
+pre.numberSource { margin-left: 3em;  padding-left: 4px; }
+div.sourceCode
+  {   }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+</style>
+
+
+<script src="../../site_libs/quarto-nav/quarto-nav.js"></script>
+<script src="../../site_libs/quarto-nav/headroom.min.js"></script>
+<script src="../../site_libs/clipboard/clipboard.min.js"></script>
+<script src="../../site_libs/quarto-search/autocomplete.umd.js"></script>
+<script src="../../site_libs/quarto-search/fuse.min.js"></script>
+<script src="../../site_libs/quarto-search/quarto-search.js"></script>
+<meta name="quarto:offset" content="../../">
+<link href="../../book/03-matmul/11-persistent-matmul.html" rel="next">
+<link href="../../book/03-matmul/09-matmul.html" rel="prev">
+<script src="../../site_libs/quarto-html/quarto.js"></script>
+<script src="../../site_libs/quarto-html/popper.min.js"></script>
+<script src="../../site_libs/quarto-html/tippy.umd.min.js"></script>
+<script src="../../site_libs/quarto-html/anchor.min.js"></script>
+<link href="../../site_libs/quarto-html/tippy.css" rel="stylesheet">
+<link href="../../site_libs/quarto-html/quarto-syntax-highlighting.css" rel="stylesheet" id="quarto-text-highlighting-styles">
+<script src="../../site_libs/bootstrap/bootstrap.min.js"></script>
+<link href="../../site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
+<link href="../../site_libs/bootstrap/bootstrap.min.css" rel="stylesheet" id="quarto-bootstrap" data-mode="light">
+<script id="quarto-search-options" type="application/json">{
+  "location": "sidebar",
+  "copy-button": false,
+  "collapse-after": 3,
+  "panel-placement": "start",
+  "type": "textbox",
+  "limit": 50,
+  "keyboard-shortcut": [
+    "f",
+    "/",
+    "s"
+  ],
+  "show-item-context": false,
+  "language": {
+    "search-no-results-text": "No results",
+    "search-matching-documents-text": "matching documents",
+    "search-copy-link-title": "Copy link to search",
+    "search-hide-matches-text": "Hide additional matches",
+    "search-more-match-text": "more match in this document",
+    "search-more-matches-text": "more matches in this document",
+    "search-clear-button-title": "Clear",
+    "search-text-placeholder": "",
+    "search-detached-cancel-button-title": "Cancel",
+    "search-submit-button-title": "Submit",
+    "search-label": "Search"
+  }
+}</script>
+<script type="module" src="../../site_libs/quarto-ojs/quarto-ojs-runtime.js"></script>
+<link href="../../site_libs/quarto-ojs/quarto-ojs.css" rel="stylesheet">
+
+
+</head>
+
+<body class="nav-sidebar floating">
+
+<div id="quarto-search-results"></div>
+  <header id="quarto-header" class="headroom fixed-top">
+  <nav class="quarto-secondary-nav">
+    <div class="container-fluid d-flex">
+      <button type="button" class="quarto-btn-toggle btn" data-bs-toggle="collapse" role="button" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">
+        <i class="bi bi-layout-text-sidebar-reverse"></i>
+      </button>
+        <nav class="quarto-page-breadcrumbs" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="../../book/03-matmul/09-matmul.html">Part 3: Matrix Multiplication</a></li><li class="breadcrumb-item"><a href="../../book/03-matmul/10-batched-matmul-linear.html"><span class="chapter-number">12</span>&nbsp; <span class="chapter-title">Chapter 10: Batched Matmul and Linear Layers</span></a></li></ol></nav>
+        <a class="flex-grow-1" role="navigation" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">      
+        </a>
+      <button type="button" class="btn quarto-search-button" aria-label="Search" onclick="window.quartoOpenSearch();">
+        <i class="bi bi-search"></i>
+      </button>
+    </div>
+  </nav>
+</header>
+<!-- content -->
+<div id="quarto-content" class="quarto-container page-columns page-rows-contents page-layout-article">
+<!-- sidebar -->
+  <nav id="quarto-sidebar" class="sidebar collapse collapse-horizontal quarto-sidebar-collapse-item sidebar-navigation floating overflow-auto">
+    <div class="pt-lg-2 mt-2 text-left sidebar-header">
+    <div class="sidebar-title mb-0 py-0">
+      <a href="../../">Learning Triton by Rebuilding Modern LLM Kernels</a> 
+    </div>
+      </div>
+        <div class="mt-2 flex-shrink-0 align-items-center">
+        <div class="sidebar-search">
+        <div id="quarto-search" class="" title="Search"></div>
+        </div>
+        </div>
+    <div class="sidebar-menu-container"> 
+    <ul class="list-unstyled mt-1">
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../index.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">1</span>&nbsp; <span class="chapter-title">Learning Triton by Rebuilding Modern LLM Kernels</span></span></a>
+  </div>
+</li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-1" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 0: Orientation</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-1" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-1" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/00-orientation/00-why-triton.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">2</span>&nbsp; <span class="chapter-title">Chapter 00: Why Triton Exists</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/00-orientation/01-setup.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">3</span>&nbsp; <span class="chapter-title">Chapter 01: Environment Setup</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-2" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 1: Triton Fundamentals</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-2" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-2" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/01-fundamentals/02-mental-model.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">4</span>&nbsp; <span class="chapter-title">Chapter 2: The Triton Mental Model</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/01-fundamentals/03-memory-pointers-strides.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">5</span>&nbsp; <span class="chapter-title">Chapter 3: Memory, Pointers, Strides, and Masks</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/01-fundamentals/04-reductions.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">6</span>&nbsp; <span class="chapter-title">Chapter 4: Reductions</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-3" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 2: Basic Neural Network Kernels</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-3" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-3" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/02-basic-nn/05-fused-softmax.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">7</span>&nbsp; <span class="chapter-title">Chapter 5: Fused Softmax</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/02-basic-nn/06-layernorm.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">8</span>&nbsp; <span class="chapter-title">Chapter 6: LayerNorm</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/02-basic-nn/07-rmsnorm.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">9</span>&nbsp; <span class="chapter-title">Chapter 7: RMSNorm</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/02-basic-nn/08-activations-swiglu.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">10</span>&nbsp; <span class="chapter-title">Chapter 8: Activation Functions and Gated MLPs</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-4" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 3: Matrix Multiplication</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-4" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-4" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/03-matmul/09-matmul.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">11</span>&nbsp; <span class="chapter-title">Chapter 9: Matmul From Scratch</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/03-matmul/10-batched-matmul-linear.html" class="sidebar-item-text sidebar-link active">
+ <span class="menu-text"><span class="chapter-number">12</span>&nbsp; <span class="chapter-title">Chapter 10: Batched Matmul and Linear Layers</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/03-matmul/11-persistent-matmul.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">13</span>&nbsp; <span class="chapter-title">Chapter 11: Persistent Matmul and Advanced Matmul Concepts</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-5" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 4: Attention and Transformer Kernels</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-5" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-5" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/12-attention-math.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">14</span>&nbsp; <span class="chapter-title">Chapter 12: Attention Math Refresher for Kernel Writers</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/13-naive-attention.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">15</span>&nbsp; <span class="chapter-title">Chapter 13: Naive Attention in PyTorch and Triton Pieces</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/14-flashattention-fwd.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">16</span>&nbsp; <span class="chapter-title">Chapter 14: FlashAttention Forward in Triton</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/15-attention-backward.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">17</span>&nbsp; <span class="chapter-title">Chapter 15: Attention Backward — Conceptual and Optional Implementation</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/16-rope-alibi.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">18</span>&nbsp; <span class="chapter-title">Chapter 16: Rotary Positional Embeddings, ALiBi, and Position Kernels</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/17-kv-cache.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">19</span>&nbsp; <span class="chapter-title">Chapter 17: KV Cache Kernels for Inference</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-6" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 5: Modern LLM Layer Fusion</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-6" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-6" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/05-llm-fusion/18-residual-rmsnorm.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">20</span>&nbsp; <span class="chapter-title">Chapter 18: Residual Add + RMSNorm Fusion</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/05-llm-fusion/19-fused-bias-act-gate.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">21</span>&nbsp; <span class="chapter-title">Chapter 19: Fused Bias + Activation + Gate</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/05-llm-fusion/20-cross-entropy.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">22</span>&nbsp; <span class="chapter-title">Chapter 20: Cross Entropy and Logits Kernels</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/05-llm-fusion/21-sampling.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">23</span>&nbsp; <span class="chapter-title">Chapter 21: Sampling Kernels for Inference</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-7" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 6: Quantization-Oriented Kernels</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-7" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-7" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/06-quantization/22-low-precision.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">24</span>&nbsp; <span class="chapter-title">Chapter 22: Low Precision Basics</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/06-quantization/23-dequant-matmul.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">25</span>&nbsp; <span class="chapter-title">Chapter 23: Int8 / FP8 Style Dequant + Matmul Concepts</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-8" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 7: Debugging, Testing, Profiling, Optimization</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-8" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-8" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/07-debug-perf/24-debugging.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">26</span>&nbsp; <span class="chapter-title">Chapter 24: Debugging Triton Kernels</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/07-debug-perf/25-benchmarking.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">27</span>&nbsp; <span class="chapter-title">Chapter 25: Benchmarking Correctly</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/07-debug-perf/26-autotuning.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">28</span>&nbsp; <span class="chapter-title">Chapter 26: Autotuning</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/07-debug-perf/27-perf-tuning.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">29</span>&nbsp; <span class="chapter-title">Chapter 27: Performance Tuning Mental Model</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-9" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 8: Capstone Projects</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-9" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-9" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/08-capstone/28-mini-library.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">30</span>&nbsp; <span class="chapter-title">Chapter 28: Build a Mini Triton LLM Kernel Library</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/08-capstone/29-replace-transformer-pieces.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">31</span>&nbsp; <span class="chapter-title">Chapter 29: Replace Pieces of a Tiny Transformer</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/08-capstone/30-design-playbook.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">32</span>&nbsp; <span class="chapter-title">Chapter 30: Final Kernel Design Playbook</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/appendix-study-plan.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">33</span>&nbsp; <span class="chapter-title">Appendix: Study Plan, Memory Kernels, and the Capstone Challenge</span></span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../kernel_checklist.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">34</span>&nbsp; <span class="chapter-title">Triton Kernel Design Checklist</span></span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../llm_kernel_map.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">35</span>&nbsp; <span class="chapter-title">LLM Component → Triton Kernel Map</span></span></a>
+  </div>
+</li>
+    </ul>
+    </div>
+</nav>
+<div id="quarto-sidebar-glass" class="quarto-sidebar-collapse-item" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item"></div>
+<!-- margin-sidebar -->
+    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar">
+        <nav id="TOC" role="doc-toc" class="toc-active">
+    <h2 id="toc-title">Table of contents</h2>
+   
+  <ul>
+  <li><a href="#pytorch-reference" id="toc-pytorch-reference" class="nav-link active" data-scroll-target="#pytorch-reference"><span class="header-section-number">12.0.1</span> PyTorch reference</a></li>
+  <li><a href="#triton-implementation" id="toc-triton-implementation" class="nav-link" data-scroll-target="#triton-implementation"><span class="header-section-number">12.0.2</span> Triton implementation</a></li>
+  <li><a href="#shape-trace" id="toc-shape-trace" class="nav-link" data-scroll-target="#shape-trace"><span class="header-section-number">12.0.3</span> Shape trace</a></li>
+  <li><a href="#pointer-arithmetic-and-masks" id="toc-pointer-arithmetic-and-masks" class="nav-link" data-scroll-target="#pointer-arithmetic-and-masks"><span class="header-section-number">12.0.4</span> Pointer arithmetic and masks</a></li>
+  <li><a href="#correctness-test" id="toc-correctness-test" class="nav-link" data-scroll-target="#correctness-test"><span class="header-section-number">12.0.5</span> Correctness test</a></li>
+  <li><a href="#benchmark" id="toc-benchmark" class="nav-link" data-scroll-target="#benchmark"><span class="header-section-number">12.0.6</span> Benchmark</a></li>
+  <li><a href="#optimization-discussion" id="toc-optimization-discussion" class="nav-link" data-scroll-target="#optimization-discussion"><span class="header-section-number">12.0.7</span> Optimization discussion</a></li>
+  <li><a href="#common-bugs" id="toc-common-bugs" class="nav-link" data-scroll-target="#common-bugs"><span class="header-section-number">12.0.8</span> Common bugs</a></li>
+  <li><a href="#exercises" id="toc-exercises" class="nav-link" data-scroll-target="#exercises"><span class="header-section-number">12.0.9</span> Exercises</a></li>
+  </ul>
+</nav>
+    </div>
+<!-- main -->
+<main class="content" id="quarto-document-content">
+
+<header id="title-block-header" class="quarto-title-block default"><nav class="quarto-page-breadcrumbs quarto-title-breadcrumbs d-none d-lg-block" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="../../book/03-matmul/09-matmul.html">Part 3: Matrix Multiplication</a></li><li class="breadcrumb-item"><a href="../../book/03-matmul/10-batched-matmul-linear.html"><span class="chapter-number">12</span>&nbsp; <span class="chapter-title">Chapter 10: Batched Matmul and Linear Layers</span></a></li></ol></nav>
+<div class="quarto-title">
+<div class="quarto-title-block"><div><h1 class="title"><span class="chapter-number">12</span>&nbsp; <span class="chapter-title">Chapter 10: Batched Matmul and Linear Layers</span></h1><button type="button" class="btn code-tools-button" id="quarto-code-tools-source"><i class="bi"></i> Code</button></div></div>
+</div>
+
+
+
+<div class="quarto-title-meta">
+
+    
+  
+    
+  </div>
+  
+
+
+</header>
+
+
+<p>The matmul from Chapter 9 takes you most of the way to writing your own linear layer, but transformer workloads do not look like <code>(M, K) @ (K, N) -&gt; (M, N)</code>. They look like</p>
+<ul>
+<li><code>(B, M, K) @ (B, K, N) -&gt; (B, M, N)</code> – batched matmul for attention scores and weighted values.</li>
+<li><code>(B, T, in) @ W^T + b -&gt; (B, T, out)</code> – the linear layer you call thousands of times per forward pass.</li>
+</ul>
+<p>This chapter handles both. Then it does the thing that makes writing your own kernels worth the trouble in the first place: fuses bias, GELU, and the activation into the linear’s epilogue so the intermediate never round-trips through DRAM.</p>
+<section id="pytorch-reference" class="level3" data-number="12.0.1">
+<h3 data-number="12.0.1" class="anchored" data-anchor-id="pytorch-reference"><span class="header-section-number">12.0.1</span> PyTorch reference</h3>
+<div class="sourceCode" id="cb1"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="co"># eval: false</span></span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch</span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch.nn.functional <span class="im">as</span> F</span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a><span class="co"># Batched matmul.</span></span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> batched_matmul_ref(a, b):</span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a>    <span class="co"># a: (B, M, K)   b: (B, K, N)   out: (B, M, N)</span></span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> torch.matmul(a, b)</span>
+<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a><span class="co"># Linear + bias + GELU. PyTorch convention: W is (out, in).</span></span>
+<span id="cb1-11"><a href="#cb1-11" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> linear_bias_gelu_ref(x, w, b):</span>
+<span id="cb1-12"><a href="#cb1-12" aria-hidden="true" tabindex="-1"></a>    <span class="co"># x: (..., in)   w: (out, in)   b: (out,)</span></span>
+<span id="cb1-13"><a href="#cb1-13" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> F.gelu(F.linear(x, w, b), approximate<span class="op">=</span><span class="st">"tanh"</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</section>
+<section id="triton-implementation" class="level3" data-number="12.0.2">
+<h3 data-number="12.0.2" class="anchored" data-anchor-id="triton-implementation"><span class="header-section-number">12.0.2</span> Triton implementation</h3>
+<section id="batched-matmul" class="level4" data-number="12.0.2.1">
+<h4 data-number="12.0.2.1" class="anchored" data-anchor-id="batched-matmul"><span class="header-section-number">12.0.2.1</span> Batched matmul</h4>
+<p>Two strategies:</p>
+<ol type="a">
+<li><p><strong>Host loop.</strong> Loop over the batch on the CPU and launch one matmul kernel per batch element. Simple to write. Pays B kernel launches.</p></li>
+<li><p><strong>3D-grid kernel.</strong> One kernel launch with a grid of <code>(B, num_pid_m, num_pid_n)</code>. Each program is identified by <code>(pid_b, pid_m, pid_n)</code>. The kernel hoists a batch stride out of the K-loop – each program does <code>a_ptr += pid_b * stride_ab</code> once at the top, then behaves exactly like a single-batch matmul.</p></li>
+</ol>
+<p>Use (b). Launch overhead is per-launch, not per-program; one kernel with a 3D grid amortizes it across the whole batch.</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="co"># eval: false</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.jit</span></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> batched_matmul_kernel(</span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>    a_ptr, b_ptr, c_ptr,</span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a>    M, N, K,</span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a>    stride_ab, stride_am, stride_ak,</span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a>    stride_bb, stride_bk, stride_bn,</span>
+<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a>    stride_cb, stride_cm, stride_cn,</span>
+<span id="cb2-9"><a href="#cb2-9" aria-hidden="true" tabindex="-1"></a>    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,</span>
+<span id="cb2-10"><a href="#cb2-10" aria-hidden="true" tabindex="-1"></a>):</span>
+<span id="cb2-11"><a href="#cb2-11" aria-hidden="true" tabindex="-1"></a>    pid_b <span class="op">=</span> tl.program_id(axis<span class="op">=</span><span class="dv">0</span>)</span>
+<span id="cb2-12"><a href="#cb2-12" aria-hidden="true" tabindex="-1"></a>    pid_m <span class="op">=</span> tl.program_id(axis<span class="op">=</span><span class="dv">1</span>)</span>
+<span id="cb2-13"><a href="#cb2-13" aria-hidden="true" tabindex="-1"></a>    pid_n <span class="op">=</span> tl.program_id(axis<span class="op">=</span><span class="dv">2</span>)</span>
+<span id="cb2-14"><a href="#cb2-14" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-15"><a href="#cb2-15" aria-hidden="true" tabindex="-1"></a>    a_ptr <span class="op">+=</span> pid_b <span class="op">*</span> stride_ab</span>
+<span id="cb2-16"><a href="#cb2-16" aria-hidden="true" tabindex="-1"></a>    b_ptr <span class="op">+=</span> pid_b <span class="op">*</span> stride_bb</span>
+<span id="cb2-17"><a href="#cb2-17" aria-hidden="true" tabindex="-1"></a>    c_ptr <span class="op">+=</span> pid_b <span class="op">*</span> stride_cb</span>
+<span id="cb2-18"><a href="#cb2-18" aria-hidden="true" tabindex="-1"></a>    <span class="co"># ... rest is identical to single-batch matmul ...</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<p>Full source at <code>src/ch10_batched_linear/batched_matmul.py</code>.</p>
+</section>
+<section id="linear-bias-gelu" class="level4" data-number="12.0.2.2">
+<h4 data-number="12.0.2.2" class="anchored" data-anchor-id="linear-bias-gelu"><span class="header-section-number">12.0.2.2</span> Linear + bias + GELU</h4>
+<p>PyTorch’s <code>nn.Linear</code> stores <code>W</code> with shape <code>(out, in)</code>, not <code>(in, out)</code>. The forward is <code>Y = X W^T + b</code>. You have two options for the transpose:</p>
+<ol type="1">
+<li>Materialize <code>W.T.contiguous()</code> and matmul. Wastes memory and time.</li>
+<li>Bake the transpose into the pointer math. The kernel treats <code>W</code> as if it were <code>(in, out)</code> by walking <code>stride_w_in</code> down the rows and <code>stride_w_out</code> across the columns of the loaded tile. No physical transpose. This is what <code>F.linear</code> does internally.</li>
+</ol>
+<p>We also flatten the leading batch+token dims. <code>X: (B, T, in)</code> becomes <code>X: (B*T, in)</code> for the matmul. Reshape is a stride op when the input is contiguous, so it costs nothing.</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="co"># eval: false</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.jit</span></span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> linear_bias_gelu_kernel(</span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>    x_ptr, w_ptr, b_ptr, y_ptr,</span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a>    M, N, K,</span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a>    stride_xm, stride_xk,</span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a>    stride_wn, stride_wk,        <span class="co"># W is (out=N, in=K); stride_wn = in, stride_wk = 1</span></span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a>    stride_ym, stride_yn,</span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a>    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,</span>
+<span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a>):</span>
+<span id="cb3-11"><a href="#cb3-11" aria-hidden="true" tabindex="-1"></a>    pid <span class="op">=</span> tl.program_id(<span class="dv">0</span>)</span>
+<span id="cb3-12"><a href="#cb3-12" aria-hidden="true" tabindex="-1"></a>    num_pid_n <span class="op">=</span> tl.cdiv(N, BLOCK_N)</span>
+<span id="cb3-13"><a href="#cb3-13" aria-hidden="true" tabindex="-1"></a>    pid_m, pid_n <span class="op">=</span> pid <span class="op">//</span> num_pid_n, pid <span class="op">%</span> num_pid_n</span>
+<span id="cb3-14"><a href="#cb3-14" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-15"><a href="#cb3-15" aria-hidden="true" tabindex="-1"></a>    offs_m <span class="op">=</span> pid_m <span class="op">*</span> BLOCK_M <span class="op">+</span> tl.arange(<span class="dv">0</span>, BLOCK_M)</span>
+<span id="cb3-16"><a href="#cb3-16" aria-hidden="true" tabindex="-1"></a>    offs_n <span class="op">=</span> pid_n <span class="op">*</span> BLOCK_N <span class="op">+</span> tl.arange(<span class="dv">0</span>, BLOCK_N)</span>
+<span id="cb3-17"><a href="#cb3-17" aria-hidden="true" tabindex="-1"></a>    offs_k <span class="op">=</span> tl.arange(<span class="dv">0</span>, BLOCK_K)</span>
+<span id="cb3-18"><a href="#cb3-18" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-19"><a href="#cb3-19" aria-hidden="true" tabindex="-1"></a>    x_ptrs <span class="op">=</span> x_ptr <span class="op">+</span> offs_m[:, <span class="va">None</span>] <span class="op">*</span> stride_xm <span class="op">+</span> offs_k[<span class="va">None</span>, :] <span class="op">*</span> stride_xk</span>
+<span id="cb3-20"><a href="#cb3-20" aria-hidden="true" tabindex="-1"></a>    <span class="co"># W^T trick: address with offs_k on the row, offs_n on the column.</span></span>
+<span id="cb3-21"><a href="#cb3-21" aria-hidden="true" tabindex="-1"></a>    w_ptrs <span class="op">=</span> w_ptr <span class="op">+</span> offs_k[:, <span class="va">None</span>] <span class="op">*</span> stride_wk <span class="op">+</span> offs_n[<span class="va">None</span>, :] <span class="op">*</span> stride_wn</span>
+<span id="cb3-22"><a href="#cb3-22" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-23"><a href="#cb3-23" aria-hidden="true" tabindex="-1"></a>    acc <span class="op">=</span> tl.zeros((BLOCK_M, BLOCK_N), dtype<span class="op">=</span>tl.float32)</span>
+<span id="cb3-24"><a href="#cb3-24" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> k <span class="kw">in</span> <span class="bu">range</span>(tl.cdiv(K, BLOCK_K)):</span>
+<span id="cb3-25"><a href="#cb3-25" aria-hidden="true" tabindex="-1"></a>        <span class="co"># ... load, mask, dot, advance ...</span></span>
+<span id="cb3-26"><a href="#cb3-26" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-27"><a href="#cb3-27" aria-hidden="true" tabindex="-1"></a>    bias <span class="op">=</span> tl.load(b_ptr <span class="op">+</span> offs_n, mask<span class="op">=</span>offs_n <span class="op">&lt;</span> N, other<span class="op">=</span><span class="fl">0.0</span>).to(tl.float32)</span>
+<span id="cb3-28"><a href="#cb3-28" aria-hidden="true" tabindex="-1"></a>    acc <span class="op">+=</span> bias[<span class="va">None</span>, :]</span>
+<span id="cb3-29"><a href="#cb3-29" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-30"><a href="#cb3-30" aria-hidden="true" tabindex="-1"></a>    <span class="co"># GELU (tanh approximation), inside the kernel.</span></span>
+<span id="cb3-31"><a href="#cb3-31" aria-hidden="true" tabindex="-1"></a>    c0 <span class="op">=</span> <span class="fl">0.7978845608028654</span>   <span class="co"># sqrt(2/pi)</span></span>
+<span id="cb3-32"><a href="#cb3-32" aria-hidden="true" tabindex="-1"></a>    inner <span class="op">=</span> c0 <span class="op">*</span> (acc <span class="op">+</span> <span class="fl">0.044715</span> <span class="op">*</span> acc <span class="op">*</span> acc <span class="op">*</span> acc)</span>
+<span id="cb3-33"><a href="#cb3-33" aria-hidden="true" tabindex="-1"></a>    acc <span class="op">=</span> <span class="fl">0.5</span> <span class="op">*</span> acc <span class="op">*</span> (<span class="fl">1.0</span> <span class="op">+</span> tl.math.tanh(inner))</span>
+<span id="cb3-34"><a href="#cb3-34" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-35"><a href="#cb3-35" aria-hidden="true" tabindex="-1"></a>    y <span class="op">=</span> acc.to(y_ptr.dtype.element_ty)</span>
+<span id="cb3-36"><a href="#cb3-36" aria-hidden="true" tabindex="-1"></a>    <span class="co"># ... store ...</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<p>The full kernel is at <code>src/ch10_batched_linear/linear_bias_gelu.py</code>. The walkthrough above leaves out the masks and pointer-advance bookkeeping; they are identical to Chapter 9.</p>
+</section>
+<section id="when-to-write-your-own-linear" class="level4" data-number="12.0.2.3">
+<h4 data-number="12.0.2.3" class="anchored" data-anchor-id="when-to-write-your-own-linear"><span class="header-section-number">12.0.2.3</span> When to write your own linear</h4>
+<ul>
+<li><strong>Yes:</strong> when you want epilogue fusion (bias, activation, residual, dropout, dequantization). The fused kernel saves one read and one write of the <code>(B*T, out)</code> intermediate per fused op.</li>
+<li><strong>No:</strong> for stock matmul where there is no epilogue. cuBLAS dominates on square shapes, especially on Ampere and newer. Use <code>F.linear</code> for the un-fused case and reserve your kernel for the fused variants.</li>
+</ul>
+</section>
+</section>
+<section id="shape-trace" class="level3" data-number="12.0.3">
+<h3 data-number="12.0.3" class="anchored" data-anchor-id="shape-trace"><span class="header-section-number">12.0.3</span> Shape trace</h3>
+<p>For <code>X: (4, 1024, 4096)</code>, <code>W: (4096, 4096)</code>, <code>b: (4096,)</code>:</p>
+<pre><code>Reshape X:                  X_2d : (B*T, in) = (4096, 4096)   fp16
+W:                                  (out, in) = (4096, 4096)   fp16
+b:                                  (out,)    = (4096,)         fp16
+Y_2d:                               (4096, 4096)                fp16, output
+Constants:                  BLOCK_M=128 BLOCK_N=128 BLOCK_K=32
+
+M = 4096, N = 4096, K = 4096
+
+Grid:                       ceil(M/BLOCK_M) * ceil(N/BLOCK_N) = 32 * 32 = 1024
+
+Per program:
+  pid                          scalar              int32
+  pid_m, pid_n                 scalar each         int32
+
+  offs_m                       (128,)              int32
+  offs_n                       (128,)              int32
+  offs_k                       (32,)               int32
+
+  x_ptrs                       (128, 32)           ptr&lt;fp16&gt;
+  w_ptrs                       (32, 128)           ptr&lt;fp16&gt;     # transpose via stride math
+  acc                          (128, 128)          fp32
+
+  K-loop:                      128 iterations
+    x = load(x_ptrs, mask)     (128, 32)           fp16
+    w = load(w_ptrs, mask)     (32, 128)           fp16
+    acc += tl.dot(x, w)        (128, 128)          fp32
+    x_ptrs += BLOCK_K * stride_xk
+    w_ptrs += BLOCK_K * stride_wk
+
+Epilogue (inside the kernel, no extra DRAM round-trip):
+  bias = load(b_ptr + offs_n)  (128,)              fp32
+  acc += bias[None, :]         (128, 128)          fp32
+  inner = c0 * (acc + 0.044715 * acc^3)   (128, 128)  fp32
+  acc = 0.5 * acc * (1 + tanh(inner))     (128, 128)  fp32
+  y   = acc.to(fp16)                       (128, 128)  fp16
+  store(y_ptrs, y, mask)
+
+Reshape Y_2d back to (B, T, out) = (4, 1024, 4096)         fp16</code></pre>
+<p>If you launched the unfused version (linear, then bias, then GELU), you would write the <code>(4096, 4096)</code> intermediate to DRAM, read it back, write the bias-added version, read it back, write the GELU output. Three extra round-trips of a 32 MB tensor. The fused kernel saves all of that.</p>
+</section>
+<section id="pointer-arithmetic-and-masks" class="level3" data-number="12.0.4">
+<h3 data-number="12.0.4" class="anchored" data-anchor-id="pointer-arithmetic-and-masks"><span class="header-section-number">12.0.4</span> Pointer arithmetic and masks</h3>
+<p>Two new things compared to Chapter 9.</p>
+<p><strong>Batch stride.</strong> In <code>batched_matmul_kernel</code>, the first thing each program does is <code>a_ptr += pid_b * stride_ab</code>. After that, every other pointer-math line is identical to single-batch matmul. The compiler hoists this addition outside the K-loop because <code>pid_b</code> is invariant.</p>
+<p>For a <code>(B, M, K)</code> contiguous tensor: <code>stride_ab = M*K</code>, <code>stride_am = K</code>, <code>stride_ak = 1</code>.</p>
+<p><strong>Transpose-by-stride.</strong> In <code>linear_bias_gelu_kernel</code>, <code>W</code> is <code>(out, in)</code> but we want a <code>(BLOCK_K, BLOCK_N)</code> tile of <code>W^T</code>. We compute</p>
+<pre><code>w_ptrs = w_ptr + offs_k[:, None] * stride_wk + offs_n[None, :] * stride_wn</code></pre>
+<p><code>stride_wn = in</code> (jump one row of W when <code>offs_n</code> increases), <code>stride_wk = 1</code> (jump one element within a row when <code>offs_k</code> increases). Loading at these pointers gives the transposed tile directly. No <code>W.T.contiguous()</code>, no temp allocation, no extra DRAM traffic. The cost is that the read pattern across W is column-major, which is slightly worse for L2 reuse than reading row-major – but Triton’s swizzling inside <code>tl.dot</code> covers that.</p>
+<p>Masks: same <code>(offs_m &lt; M) &amp; (offs_k &lt; k_remaining)</code> pattern as Chapter 9. The bias load gets <code>offs_n &lt; N</code>. The residual-add variant (Exercise 5) needs the full 2D <code>(offs_m &lt; M) &amp; (offs_n &lt; N)</code> mask.</p>
+</section>
+<section id="correctness-test" class="level3" data-number="12.0.5">
+<h3 data-number="12.0.5" class="anchored" data-anchor-id="correctness-test"><span class="header-section-number">12.0.5</span> Correctness test</h3>
+<div class="sourceCode" id="cb6"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="co"># eval: false</span></span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch</span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch.nn.functional <span class="im">as</span> F</span>
+<span id="cb6-4"><a href="#cb6-4" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> src.ch10_batched_linear <span class="im">import</span> linear_bias_gelu</span>
+<span id="cb6-5"><a href="#cb6-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-6"><a href="#cb6-6" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> test_linear_bias_gelu_3d_batch():</span>
+<span id="cb6-7"><a href="#cb6-7" aria-hidden="true" tabindex="-1"></a>    torch.manual_seed(<span class="dv">0</span>)</span>
+<span id="cb6-8"><a href="#cb6-8" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> torch.randn((<span class="dv">4</span>, <span class="dv">128</span>, <span class="dv">256</span>), device<span class="op">=</span><span class="st">"cuda"</span>, dtype<span class="op">=</span>torch.float16)</span>
+<span id="cb6-9"><a href="#cb6-9" aria-hidden="true" tabindex="-1"></a>    w <span class="op">=</span> torch.randn((<span class="dv">512</span>, <span class="dv">256</span>),    device<span class="op">=</span><span class="st">"cuda"</span>, dtype<span class="op">=</span>torch.float16)</span>
+<span id="cb6-10"><a href="#cb6-10" aria-hidden="true" tabindex="-1"></a>    b <span class="op">=</span> torch.randn((<span class="dv">512</span>,),        device<span class="op">=</span><span class="st">"cuda"</span>, dtype<span class="op">=</span>torch.float16)</span>
+<span id="cb6-11"><a href="#cb6-11" aria-hidden="true" tabindex="-1"></a>    out <span class="op">=</span> linear_bias_gelu(x, w, b)</span>
+<span id="cb6-12"><a href="#cb6-12" aria-hidden="true" tabindex="-1"></a>    ref <span class="op">=</span> F.gelu(F.linear(x.<span class="bu">float</span>(), w.<span class="bu">float</span>(), b.<span class="bu">float</span>()),</span>
+<span id="cb6-13"><a href="#cb6-13" aria-hidden="true" tabindex="-1"></a>                 approximate<span class="op">=</span><span class="st">"tanh"</span>).to(torch.float16)</span>
+<span id="cb6-14"><a href="#cb6-14" aria-hidden="true" tabindex="-1"></a>    torch.testing.assert_close(out, ref, rtol<span class="op">=</span><span class="fl">2e-2</span>, atol<span class="op">=</span><span class="fl">2e-2</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<p>The full test module covers batched matmul (small, non-pow2, large batch) and the linear+bias+GELU kernel (small, 3D batch, non-pow2). The tolerance is loosened slightly to <code>2e-2</code> because the long K plus the GELU non-linearity amplify fp16 cast error.</p>
+</section>
+<section id="benchmark" class="level3" data-number="12.0.6">
+<h3 data-number="12.0.6" class="anchored" data-anchor-id="benchmark"><span class="header-section-number">12.0.6</span> Benchmark</h3>
+<div class="sourceCode" id="cb7"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="co"># eval: false</span></span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch</span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch.nn.functional <span class="im">as</span> F</span>
+<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> triton</span>
+<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> src.ch10_batched_linear <span class="im">import</span> linear_bias_gelu</span>
+<span id="cb7-6"><a href="#cb7-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-7"><a href="#cb7-7" aria-hidden="true" tabindex="-1"></a><span class="cf">for</span> n <span class="kw">in</span> [<span class="dv">512</span>, <span class="dv">1024</span>, <span class="dv">2048</span>, <span class="dv">4096</span>]:</span>
+<span id="cb7-8"><a href="#cb7-8" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> torch.randn((<span class="dv">4</span>, <span class="dv">1024</span>, n), device<span class="op">=</span><span class="st">"cuda"</span>, dtype<span class="op">=</span>torch.float16)</span>
+<span id="cb7-9"><a href="#cb7-9" aria-hidden="true" tabindex="-1"></a>    w <span class="op">=</span> torch.randn((n, n),       device<span class="op">=</span><span class="st">"cuda"</span>, dtype<span class="op">=</span>torch.float16)</span>
+<span id="cb7-10"><a href="#cb7-10" aria-hidden="true" tabindex="-1"></a>    b <span class="op">=</span> torch.randn((n,),         device<span class="op">=</span><span class="st">"cuda"</span>, dtype<span class="op">=</span>torch.float16)</span>
+<span id="cb7-11"><a href="#cb7-11" aria-hidden="true" tabindex="-1"></a>    unfused <span class="op">=</span> <span class="kw">lambda</span>: F.gelu(F.linear(x, w, b), approximate<span class="op">=</span><span class="st">"tanh"</span>)</span>
+<span id="cb7-12"><a href="#cb7-12" aria-hidden="true" tabindex="-1"></a>    fused   <span class="op">=</span> <span class="kw">lambda</span>: linear_bias_gelu(x, w, b)</span>
+<span id="cb7-13"><a href="#cb7-13" aria-hidden="true" tabindex="-1"></a>    <span class="bu">print</span>(n,</span>
+<span id="cb7-14"><a href="#cb7-14" aria-hidden="true" tabindex="-1"></a>          triton.testing.do_bench(unfused),</span>
+<span id="cb7-15"><a href="#cb7-15" aria-hidden="true" tabindex="-1"></a>          triton.testing.do_bench(fused))</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="callout callout-style-simple callout-warning">
+<div class="callout-body d-flex">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-body-container">
+<p><strong>Placeholder data.</strong> The numbers below are hardcoded illustrative values, not measurements. Replace with output from your own <code>triton.testing.do_bench</code> run before drawing conclusions.</p>
+</div>
+</div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code hidden" id="cb8" data-startfrom="278" data-source-offset="0"><pre class="sourceCode js code-with-copy"><code class="sourceCode javascript" style="counter-reset: source-line 277;"><span id="cb8-278"><a href="#cb8-278" aria-hidden="true" tabindex="-1"></a>{</span>
+<span id="cb8-279"><a href="#cb8-279" aria-hidden="true" tabindex="-1"></a>  <span class="kw">const</span> data <span class="op">=</span> [</span>
+<span id="cb8-280"><a href="#cb8-280" aria-hidden="true" tabindex="-1"></a>    {<span class="dt">N</span><span class="op">:</span> <span class="dv">512</span><span class="op">,</span>  <span class="dt">unfused_ms</span><span class="op">:</span> <span class="fl">0.6</span><span class="op">,</span> <span class="dt">fused_ms</span><span class="op">:</span> <span class="fl">0.5</span>}<span class="op">,</span></span>
+<span id="cb8-281"><a href="#cb8-281" aria-hidden="true" tabindex="-1"></a>    {<span class="dt">N</span><span class="op">:</span> <span class="dv">1024</span><span class="op">,</span> <span class="dt">unfused_ms</span><span class="op">:</span> <span class="fl">1.8</span><span class="op">,</span> <span class="dt">fused_ms</span><span class="op">:</span> <span class="fl">1.3</span>}<span class="op">,</span></span>
+<span id="cb8-282"><a href="#cb8-282" aria-hidden="true" tabindex="-1"></a>    {<span class="dt">N</span><span class="op">:</span> <span class="dv">2048</span><span class="op">,</span> <span class="dt">unfused_ms</span><span class="op">:</span> <span class="fl">6.2</span><span class="op">,</span> <span class="dt">fused_ms</span><span class="op">:</span> <span class="fl">4.5</span>}<span class="op">,</span></span>
+<span id="cb8-283"><a href="#cb8-283" aria-hidden="true" tabindex="-1"></a>    {<span class="dt">N</span><span class="op">:</span> <span class="dv">4096</span><span class="op">,</span> <span class="dt">unfused_ms</span><span class="op">:</span> <span class="fl">22.0</span><span class="op">,</span> <span class="dt">fused_ms</span><span class="op">:</span> <span class="fl">16.0</span>}<span class="op">,</span></span>
+<span id="cb8-284"><a href="#cb8-284" aria-hidden="true" tabindex="-1"></a>  ]<span class="op">;</span></span>
+<span id="cb8-285"><a href="#cb8-285" aria-hidden="true" tabindex="-1"></a>  <span class="kw">const</span> long <span class="op">=</span> data<span class="op">.</span><span class="fu">flatMap</span>(d <span class="kw">=&gt;</span> [</span>
+<span id="cb8-286"><a href="#cb8-286" aria-hidden="true" tabindex="-1"></a>    {<span class="dt">N</span><span class="op">:</span> d<span class="op">.</span><span class="at">N</span><span class="op">,</span> <span class="dt">impl</span><span class="op">:</span> <span class="st">"torch unfused"</span><span class="op">,</span> <span class="dt">ms</span><span class="op">:</span> d<span class="op">.</span><span class="at">unfused_ms</span>}<span class="op">,</span></span>
+<span id="cb8-287"><a href="#cb8-287" aria-hidden="true" tabindex="-1"></a>    {<span class="dt">N</span><span class="op">:</span> d<span class="op">.</span><span class="at">N</span><span class="op">,</span> <span class="dt">impl</span><span class="op">:</span> <span class="st">"triton fused"</span><span class="op">,</span>  <span class="dt">ms</span><span class="op">:</span> d<span class="op">.</span><span class="at">fused_ms</span>}</span>
+<span id="cb8-288"><a href="#cb8-288" aria-hidden="true" tabindex="-1"></a>  ])<span class="op">;</span></span>
+<span id="cb8-289"><a href="#cb8-289" aria-hidden="true" tabindex="-1"></a>  <span class="cf">return</span> Plot<span class="op">.</span><span class="fu">plot</span>({</span>
+<span id="cb8-290"><a href="#cb8-290" aria-hidden="true" tabindex="-1"></a>    <span class="dt">width</span><span class="op">:</span> <span class="dv">720</span><span class="op">,</span></span>
+<span id="cb8-291"><a href="#cb8-291" aria-hidden="true" tabindex="-1"></a>    <span class="dt">color</span><span class="op">:</span> {<span class="dt">legend</span><span class="op">:</span> <span class="kw">true</span><span class="op">,</span> <span class="dt">domain</span><span class="op">:</span> [<span class="st">"torch unfused"</span><span class="op">,</span> <span class="st">"triton fused"</span>]<span class="op">,</span> <span class="dt">range</span><span class="op">:</span> [<span class="st">"orange"</span><span class="op">,</span> <span class="st">"steelblue"</span>]}<span class="op">,</span></span>
+<span id="cb8-292"><a href="#cb8-292" aria-hidden="true" tabindex="-1"></a>    <span class="dt">y</span><span class="op">:</span> {<span class="dt">label</span><span class="op">:</span> <span class="st">"median latency (ms) — lower is better"</span><span class="op">,</span> <span class="dt">grid</span><span class="op">:</span> <span class="kw">true</span>}<span class="op">,</span></span>
+<span id="cb8-293"><a href="#cb8-293" aria-hidden="true" tabindex="-1"></a>    <span class="dt">x</span><span class="op">:</span> {<span class="dt">label</span><span class="op">:</span> <span class="st">"N (= in = out, hidden size)"</span>}<span class="op">,</span></span>
+<span id="cb8-294"><a href="#cb8-294" aria-hidden="true" tabindex="-1"></a>    <span class="dt">marks</span><span class="op">:</span> [</span>
+<span id="cb8-295"><a href="#cb8-295" aria-hidden="true" tabindex="-1"></a>      Plot<span class="op">.</span><span class="fu">line</span>(long<span class="op">,</span> {<span class="dt">x</span><span class="op">:</span> <span class="st">"N"</span><span class="op">,</span> <span class="dt">y</span><span class="op">:</span> <span class="st">"ms"</span><span class="op">,</span> <span class="dt">stroke</span><span class="op">:</span> <span class="st">"impl"</span>})<span class="op">,</span></span>
+<span id="cb8-296"><a href="#cb8-296" aria-hidden="true" tabindex="-1"></a>      Plot<span class="op">.</span><span class="fu">dot</span>(long<span class="op">,</span>  {<span class="dt">x</span><span class="op">:</span> <span class="st">"N"</span><span class="op">,</span> <span class="dt">y</span><span class="op">:</span> <span class="st">"ms"</span><span class="op">,</span> <span class="dt">fill</span><span class="op">:</span> <span class="st">"impl"</span>})</span>
+<span id="cb8-297"><a href="#cb8-297" aria-hidden="true" tabindex="-1"></a>    ]</span>
+<span id="cb8-298"><a href="#cb8-298" aria-hidden="true" tabindex="-1"></a>  })<span class="op">;</span></span>
+<span id="cb8-299"><a href="#cb8-299" aria-hidden="true" tabindex="-1"></a>}</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div id="fig-linear-bias-gelu-bench" class="cell-output cell-output-display quarto-float quarto-figure quarto-figure-center anchored">
+<figure class="quarto-float quarto-float-fig figure">
+<div aria-describedby="fig-linear-bias-gelu-bench-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+<div id="ojs-cell-1" data-nodetype="expression">
+
+</div>
+</div>
+<figcaption class="quarto-float-caption-bottom quarto-float-caption quarto-float-fig" id="fig-linear-bias-gelu-bench-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+Figure&nbsp;12.1: Linear + bias + GELU forward median latency vs square hidden size N (= in = out). Lower is better. Unfused PyTorch baseline vs the fused Triton kernel.
+</figcaption>
+</figure>
+</div>
+</div>
+<p>The fused kernel saves the cost of writing and re-reading the bias-added intermediate. The expected speedup is modest – 1.2x-1.5x in the compute-bound regime, more when the intermediate is large and the GPU is memory-bound on the bias and GELU passes.</p>
+</section>
+<section id="optimization-discussion" class="level3" data-number="12.0.7">
+<h3 data-number="12.0.7" class="anchored" data-anchor-id="optimization-discussion"><span class="header-section-number">12.0.7</span> Optimization discussion</h3>
+<p>The batched matmul kernel is essentially the Chapter 9 kernel with a batch-stride preamble; the same block-size and <code>GROUP_SIZE_M</code> knobs apply. Add <code>@triton.autotune</code> over the same configs and you are done.</p>
+<p>For the fused linear, two extra considerations:</p>
+<ul>
+<li><strong>Bias broadcast cost.</strong> The bias load is one <code>BLOCK_N</code> vector per program, cached in registers. Free in the limit. Do not load it inside the K-loop by accident.</li>
+<li><strong>Epilogue arithmetic.</strong> The GELU adds a handful of FMA + tanh ops per output element. Tanh is the expensive one; if you need maximum throughput, the polynomial approximation <code>0.5 * x * (1 + tanh(...))</code> is already the standard fast form. Skipping straight to <code>F.gelu(x)</code> (the erf form) inside Triton needs <code>tl.math.erf</code>, which is slower.</li>
+</ul>
+<p>What this is bound by: same as Chapter 9 – compute-bound on tensor cores in the K-loop, with a trivial epilogue tax. If you are far from peak, suspect block sizes first.</p>
+</section>
+<section id="common-bugs" class="level3" data-number="12.0.8">
+<h3 data-number="12.0.8" class="anchored" data-anchor-id="common-bugs"><span class="header-section-number">12.0.8</span> Common bugs</h3>
+<ol type="1">
+<li><strong>Forgetting that <code>nn.Linear</code> uses <code>W^T</code>.</strong> Calling the kernel with <code>W</code> strides as if it were <code>(in, out)</code> gives you <code>Y = X @ W</code>, not <code>Y = X @ W^T</code>. Output has the wrong shape, or worse, the right shape with garbage values when <code>in == out</code>. The fix is the transpose-by- stride pointer math; the test against <code>F.linear</code> catches it immediately.</li>
+<li><strong>Wrong batch stride.</strong> For <code>(B, M, K)</code> contiguous, <code>stride_ab</code> is <code>M * K</code>, not <code>M</code> or <code>K</code> alone. Passing the wrong one means every batch program reads from the same address and you get either NaNs or silently duplicated output. Pass <code>a.stride(0)</code> explicitly and forget about it.</li>
+<li><strong>Bias broadcast over the wrong axis.</strong> Bias is <code>(N,)</code> and you want to add it as <code>bias[None, :]</code> (broadcast over rows). Doing <code>bias[:, None]</code> adds the wrong elements to the wrong outputs and the test mismatches by a lot rather than a little.</li>
+<li><strong>Reshape that materializes.</strong> If <code>X: (B, T, in)</code> is non-contiguous (because of a <code>.transpose()</code> earlier), <code>x.reshape(-1, in)</code> will silently allocate and copy. Either <code>.contiguous()</code> first (explicit) or change the kernel to take a 3D <code>X</code> and walk the <code>(B, T)</code> axes with two stride args.</li>
+</ol>
+</section>
+<section id="exercises" class="level3" data-number="12.0.9">
+<h3 data-number="12.0.9" class="anchored" data-anchor-id="exercises"><span class="header-section-number">12.0.9</span> Exercises</h3>
+<section id="beginner" class="level4" data-number="12.0.9.1">
+<h4 data-number="12.0.9.1" class="anchored" data-anchor-id="beginner"><span class="header-section-number">12.0.9.1</span> Beginner</h4>
+<ol type="1">
+<li><p><strong>Plain batched matmul.</strong> Strip the masks from <code>batched_matmul_kernel</code> (assume divisibility). Verify against <code>torch.matmul</code> for <code>(8, 256, 256) @ (8, 256, 256)</code>.</p></li>
+<li><p><strong>Linear without bias.</strong> Adapt the fused kernel to compute <code>Y = X @ W^T</code> only. Should be a one-line deletion plus removing the bias argument from the launcher.</p></li>
+<li><p><strong>Linear with bias, no activation.</strong> Same as the fused kernel but stop after the bias add. This is the kernel <code>F.linear</code> represents.</p></li>
+</ol>
+</section>
+<section id="intermediate" class="level4" data-number="12.0.9.2">
+<h4 data-number="12.0.9.2" class="anchored" data-anchor-id="intermediate"><span class="header-section-number">12.0.9.2</span> Intermediate</h4>
+<ol start="4" type="1">
+<li><p><strong>Reimplement fused linear + bias + GELU from scratch.</strong> Walk through the kernel by hand, then write it without looking. Confirm against <code>F.gelu(F.linear(x, w, b), approximate="tanh")</code>.</p></li>
+<li><p><strong>Fused linear + bias + residual.</strong> <code>Y = X @ W^T + b + R</code> where R has the same shape as Y. Load R alongside the bias in the epilogue, add it in fp32, cast, store. This is the FFN-output fusion in a typical transformer block.</p></li>
+</ol>
+</section>
+<section id="advanced" class="level4" data-number="12.0.9.3">
+<h4 data-number="12.0.9.3" class="anchored" data-anchor-id="advanced"><span class="header-section-number">12.0.9.3</span> Advanced</h4>
+<ol start="6" type="1">
+<li><strong>Discuss fused linear + LayerNorm.</strong> Write a short paragraph explaining what goes wrong. Hint: LayerNorm needs the mean and variance of the full hidden-dim vector for each row. A matmul tile only produces <code>BLOCK_N</code> columns at a time. Sketch what cooperative reduction across tiles would cost and why most implementations leave LayerNorm as a separate kernel.</li>
+</ol>
+<p>Solutions in <code>solutions/ch10_solutions.py</code>.</p>
+
+
+<!-- -->
+
+</section>
+</section>
+
+</main> <!-- /main -->
+<script type="ojs-module-contents">
+eyJjb250ZW50cyI6W3sibWV0aG9kTmFtZSI6ImludGVycHJldCIsImNlbGxOYW1lIjoib2pzLWNlbGwtMSIsImlubGluZSI6ZmFsc2UsInNvdXJjZSI6IntcbiAgY29uc3QgZGF0YSA9IFtcbiAgICB7TjogNTEyLCAgdW5mdXNlZF9tczogMC42LCBmdXNlZF9tczogMC41fSxcbiAgICB7TjogMTAyNCwgdW5mdXNlZF9tczogMS44LCBmdXNlZF9tczogMS4zfSxcbiAgICB7TjogMjA0OCwgdW5mdXNlZF9tczogNi4yLCBmdXNlZF9tczogNC41fSxcbiAgICB7TjogNDA5NiwgdW5mdXNlZF9tczogMjIuMCwgZnVzZWRfbXM6IDE2LjB9LFxuICBdO1xuICBjb25zdCBsb25nID0gZGF0YS5mbGF0TWFwKGQgPT4gW1xuICAgIHtOOiBkLk4sIGltcGw6IFwidG9yY2ggdW5mdXNlZFwiLCBtczogZC51bmZ1c2VkX21zfSxcbiAgICB7TjogZC5OLCBpbXBsOiBcInRyaXRvbiBmdXNlZFwiLCAgbXM6IGQuZnVzZWRfbXN9XG4gIF0pO1xuICByZXR1cm4gUGxvdC5wbG90KHtcbiAgICB3aWR0aDogNzIwLFxuICAgIGNvbG9yOiB7bGVnZW5kOiB0cnVlLCBkb21haW46IFtcInRvcmNoIHVuZnVzZWRcIiwgXCJ0cml0b24gZnVzZWRcIl0sIHJhbmdlOiBbXCJvcmFuZ2VcIiwgXCJzdGVlbGJsdWVcIl19LFxuICAgIHk6IHtsYWJlbDogXCJtZWRpYW4gbGF0ZW5jeSAobXMpIOKAlCBsb3dlciBpcyBiZXR0ZXJcIiwgZ3JpZDogdHJ1ZX0sXG4gICAgeDoge2xhYmVsOiBcIk4gKD0gaW4gPSBvdXQsIGhpZGRlbiBzaXplKVwifSxcbiAgICBtYXJrczogW1xuICAgICAgUGxvdC5saW5lKGxvbmcsIHt4OiBcIk5cIiwgeTogXCJtc1wiLCBzdHJva2U6IFwiaW1wbFwifSksXG4gICAgICBQbG90LmRvdChsb25nLCAge3g6IFwiTlwiLCB5OiBcIm1zXCIsIGZpbGw6IFwiaW1wbFwifSlcbiAgICBdXG4gIH0pO1xufVxuIn1dfQ==
+</script>
+<script type="module">
+if (window.location.protocol === "file:") { alert("The OJS runtime does not work with file:// URLs. Please use a web server to view this document."); }
+window._ojs.paths.runtimeToDoc = "../../book/03-matmul";
+window._ojs.paths.runtimeToRoot = "../..";
+window._ojs.paths.docToRoot = "../..";
+window._ojs.selfContained = false;
+window._ojs.runtime.interpretFromScriptTags();
+</script>
+<script id="quarto-html-after-body" type="application/javascript">
+window.document.addEventListener("DOMContentLoaded", function (event) {
+  const toggleBodyColorMode = (bsSheetEl) => {
+    const mode = bsSheetEl.getAttribute("data-mode");
+    const bodyEl = window.document.querySelector("body");
+    if (mode === "dark") {
+      bodyEl.classList.add("quarto-dark");
+      bodyEl.classList.remove("quarto-light");
+    } else {
+      bodyEl.classList.add("quarto-light");
+      bodyEl.classList.remove("quarto-dark");
+    }
+  }
+  const toggleBodyColorPrimary = () => {
+    const bsSheetEl = window.document.querySelector("link#quarto-bootstrap");
+    if (bsSheetEl) {
+      toggleBodyColorMode(bsSheetEl);
+    }
+  }
+  toggleBodyColorPrimary();  
+  const icon = "";
+  const anchorJS = new window.AnchorJS();
+  anchorJS.options = {
+    placement: 'right',
+    icon: icon
+  };
+  anchorJS.add('.anchored');
+  const isCodeAnnotation = (el) => {
+    for (const clz of el.classList) {
+      if (clz.startsWith('code-annotation-')) {                     
+        return true;
+      }
+    }
+    return false;
+  }
+  const onCopySuccess = function(e) {
+    // button target
+    const button = e.trigger;
+    // don't keep focus
+    button.blur();
+    // flash "checked"
+    button.classList.add('code-copy-button-checked');
+    var currentTitle = button.getAttribute("title");
+    button.setAttribute("title", "Copied!");
+    let tooltip;
+    if (window.bootstrap) {
+      button.setAttribute("data-bs-toggle", "tooltip");
+      button.setAttribute("data-bs-placement", "left");
+      button.setAttribute("data-bs-title", "Copied!");
+      tooltip = new bootstrap.Tooltip(button, 
+        { trigger: "manual", 
+          customClass: "code-copy-button-tooltip",
+          offset: [0, -8]});
+      tooltip.show();    
+    }
+    setTimeout(function() {
+      if (tooltip) {
+        tooltip.hide();
+        button.removeAttribute("data-bs-title");
+        button.removeAttribute("data-bs-toggle");
+        button.removeAttribute("data-bs-placement");
+      }
+      button.setAttribute("title", currentTitle);
+      button.classList.remove('code-copy-button-checked');
+    }, 1000);
+    // clear code selection
+    e.clearSelection();
+  }
+  const getTextToCopy = function(trigger) {
+      const codeEl = trigger.previousElementSibling.cloneNode(true);
+      for (const childEl of codeEl.children) {
+        if (isCodeAnnotation(childEl)) {
+          childEl.remove();
+        }
+      }
+      return codeEl.innerText;
+  }
+  const clipboard = new window.ClipboardJS('.code-copy-button:not([data-in-quarto-modal])', {
+    text: getTextToCopy
+  });
+  clipboard.on('success', onCopySuccess);
+  if (window.document.getElementById('quarto-embedded-source-code-modal')) {
+    // For code content inside modals, clipBoardJS needs to be initialized with a container option
+    // TODO: Check when it could be a function (https://github.com/zenorocha/clipboard.js/issues/860)
+    const clipboardModal = new window.ClipboardJS('.code-copy-button[data-in-quarto-modal]', {
+      text: getTextToCopy,
+      container: window.document.getElementById('quarto-embedded-source-code-modal')
+    });
+    clipboardModal.on('success', onCopySuccess);
+  }
+  const viewSource = window.document.getElementById('quarto-view-source') ||
+                     window.document.getElementById('quarto-code-tools-source');
+  if (viewSource) {
+    const sourceUrl = viewSource.getAttribute("data-quarto-source-url");
+    viewSource.addEventListener("click", function(e) {
+      if (sourceUrl) {
+        // rstudio viewer pane
+        if (/\bcapabilities=\b/.test(window.location)) {
+          window.open(sourceUrl);
+        } else {
+          window.location.href = sourceUrl;
+        }
+      } else {
+        const modal = new bootstrap.Modal(document.getElementById('quarto-embedded-source-code-modal'));
+        modal.show();
+      }
+      return false;
+    });
+  }
+  function toggleCodeHandler(show) {
+    return function(e) {
+      const detailsSrc = window.document.querySelectorAll(".cell > details > .sourceCode");
+      for (let i=0; i<detailsSrc.length; i++) {
+        const details = detailsSrc[i].parentElement;
+        if (show) {
+          details.open = true;
+        } else {
+          details.removeAttribute("open");
+        }
+      }
+      const cellCodeDivs = window.document.querySelectorAll(".cell > .sourceCode");
+      const fromCls = show ? "hidden" : "unhidden";
+      const toCls = show ? "unhidden" : "hidden";
+      for (let i=0; i<cellCodeDivs.length; i++) {
+        const codeDiv = cellCodeDivs[i];
+        if (codeDiv.classList.contains(fromCls)) {
+          codeDiv.classList.remove(fromCls);
+          codeDiv.classList.add(toCls);
+        } 
+      }
+      return false;
+    }
+  }
+  const hideAllCode = window.document.getElementById("quarto-hide-all-code");
+  if (hideAllCode) {
+    hideAllCode.addEventListener("click", toggleCodeHandler(false));
+  }
+  const showAllCode = window.document.getElementById("quarto-show-all-code");
+  if (showAllCode) {
+    showAllCode.addEventListener("click", toggleCodeHandler(true));
+  }
+    var localhostRegex = new RegExp(/^(?:http|https):\/\/localhost\:?[0-9]*\//);
+    var mailtoRegex = new RegExp(/^mailto:/);
+      var filterRegex = new RegExp('/' + window.location.host + '/');
+    var isInternal = (href) => {
+        return filterRegex.test(href) || localhostRegex.test(href) || mailtoRegex.test(href);
+    }
+    // Inspect non-navigation links and adorn them if external
+ 	var links = window.document.querySelectorAll('a[href]:not(.nav-link):not(.navbar-brand):not(.toc-action):not(.sidebar-link):not(.sidebar-item-toggle):not(.pagination-link):not(.no-external):not([aria-hidden]):not(.dropdown-item):not(.quarto-navigation-tool):not(.about-link)');
+    for (var i=0; i<links.length; i++) {
+      const link = links[i];
+      if (!isInternal(link.href)) {
+        // undo the damage that might have been done by quarto-nav.js in the case of
+        // links that we want to consider external
+        if (link.dataset.originalHref !== undefined) {
+          link.href = link.dataset.originalHref;
+        }
+      }
+    }
+  function tippyHover(el, contentFn, onTriggerFn, onUntriggerFn) {
+    const config = {
+      allowHTML: true,
+      maxWidth: 500,
+      delay: 100,
+      arrow: false,
+      appendTo: function(el) {
+          return el.parentElement;
+      },
+      interactive: true,
+      interactiveBorder: 10,
+      theme: 'quarto',
+      placement: 'bottom-start',
+    };
+    if (contentFn) {
+      config.content = contentFn;
+    }
+    if (onTriggerFn) {
+      config.onTrigger = onTriggerFn;
+    }
+    if (onUntriggerFn) {
+      config.onUntrigger = onUntriggerFn;
+    }
+    window.tippy(el, config); 
+  }
+  const noterefs = window.document.querySelectorAll('a[role="doc-noteref"]');
+  for (var i=0; i<noterefs.length; i++) {
+    const ref = noterefs[i];
+    tippyHover(ref, function() {
+      // use id or data attribute instead here
+      let href = ref.getAttribute('data-footnote-href') || ref.getAttribute('href');
+      try { href = new URL(href).hash; } catch {}
+      const id = href.replace(/^#\/?/, "");
+      const note = window.document.getElementById(id);
+      if (note) {
+        return note.innerHTML;
+      } else {
+        return "";
+      }
+    });
+  }
+  const xrefs = window.document.querySelectorAll('a.quarto-xref');
+  const processXRef = (id, note) => {
+    // Strip column container classes
+    const stripColumnClz = (el) => {
+      el.classList.remove("page-full", "page-columns");
+      if (el.children) {
+        for (const child of el.children) {
+          stripColumnClz(child);
+        }
+      }
+    }
+    stripColumnClz(note)
+    if (id === null || id.startsWith('sec-')) {
+      // Special case sections, only their first couple elements
+      const container = document.createElement("div");
+      if (note.children && note.children.length > 2) {
+        container.appendChild(note.children[0].cloneNode(true));
+        for (let i = 1; i < note.children.length; i++) {
+          const child = note.children[i];
+          if (child.tagName === "P" && child.innerText === "") {
+            continue;
+          } else {
+            container.appendChild(child.cloneNode(true));
+            break;
+          }
+        }
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(container);
+        }
+        return container.innerHTML
+      } else {
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(note);
+        }
+        return note.innerHTML;
+      }
+    } else {
+      // Remove any anchor links if they are present
+      const anchorLink = note.querySelector('a.anchorjs-link');
+      if (anchorLink) {
+        anchorLink.remove();
+      }
+      if (window.Quarto?.typesetMath) {
+        window.Quarto.typesetMath(note);
+      }
+      // TODO in 1.5, we should make sure this works without a callout special case
+      if (note.classList.contains("callout")) {
+        return note.outerHTML;
+      } else {
+        return note.innerHTML;
+      }
+    }
+  }
+  for (var i=0; i<xrefs.length; i++) {
+    const xref = xrefs[i];
+    tippyHover(xref, undefined, function(instance) {
+      instance.disable();
+      let url = xref.getAttribute('href');
+      let hash = undefined; 
+      if (url.startsWith('#')) {
+        hash = url;
+      } else {
+        try { hash = new URL(url).hash; } catch {}
+      }
+      if (hash) {
+        const id = hash.replace(/^#\/?/, "");
+        const note = window.document.getElementById(id);
+        if (note !== null) {
+          try {
+            const html = processXRef(id, note.cloneNode(true));
+            instance.setContent(html);
+          } finally {
+            instance.enable();
+            instance.show();
+          }
+        } else {
+          // See if we can fetch this
+          fetch(url.split('#')[0])
+          .then(res => res.text())
+          .then(html => {
+            const parser = new DOMParser();
+            const htmlDoc = parser.parseFromString(html, "text/html");
+            const note = htmlDoc.getElementById(id);
+            if (note !== null) {
+              const html = processXRef(id, note);
+              instance.setContent(html);
+            } 
+          }).finally(() => {
+            instance.enable();
+            instance.show();
+          });
+        }
+      } else {
+        // See if we can fetch a full url (with no hash to target)
+        // This is a special case and we should probably do some content thinning / targeting
+        fetch(url)
+        .then(res => res.text())
+        .then(html => {
+          const parser = new DOMParser();
+          const htmlDoc = parser.parseFromString(html, "text/html");
+          const note = htmlDoc.querySelector('main.content');
+          if (note !== null) {
+            // This should only happen for chapter cross references
+            // (since there is no id in the URL)
+            // remove the first header
+            if (note.children.length > 0 && note.children[0].tagName === "HEADER") {
+              note.children[0].remove();
+            }
+            const html = processXRef(null, note);
+            instance.setContent(html);
+          } 
+        }).finally(() => {
+          instance.enable();
+          instance.show();
+        });
+      }
+    }, function(instance) {
+    });
+  }
+      let selectedAnnoteEl;
+      const selectorForAnnotation = ( cell, annotation) => {
+        let cellAttr = 'data-code-cell="' + cell + '"';
+        let lineAttr = 'data-code-annotation="' +  annotation + '"';
+        const selector = 'span[' + cellAttr + '][' + lineAttr + ']';
+        return selector;
+      }
+      const selectCodeLines = (annoteEl) => {
+        const doc = window.document;
+        const targetCell = annoteEl.getAttribute("data-target-cell");
+        const targetAnnotation = annoteEl.getAttribute("data-target-annotation");
+        const annoteSpan = window.document.querySelector(selectorForAnnotation(targetCell, targetAnnotation));
+        const lines = annoteSpan.getAttribute("data-code-lines").split(",");
+        const lineIds = lines.map((line) => {
+          return targetCell + "-" + line;
+        })
+        let top = null;
+        let height = null;
+        let parent = null;
+        if (lineIds.length > 0) {
+            //compute the position of the single el (top and bottom and make a div)
+            const el = window.document.getElementById(lineIds[0]);
+            top = el.offsetTop;
+            height = el.offsetHeight;
+            parent = el.parentElement.parentElement;
+          if (lineIds.length > 1) {
+            const lastEl = window.document.getElementById(lineIds[lineIds.length - 1]);
+            const bottom = lastEl.offsetTop + lastEl.offsetHeight;
+            height = bottom - top;
+          }
+          if (top !== null && height !== null && parent !== null) {
+            // cook up a div (if necessary) and position it 
+            let div = window.document.getElementById("code-annotation-line-highlight");
+            if (div === null) {
+              div = window.document.createElement("div");
+              div.setAttribute("id", "code-annotation-line-highlight");
+              div.style.position = 'absolute';
+              parent.appendChild(div);
+            }
+            div.style.top = top - 2 + "px";
+            div.style.height = height + 4 + "px";
+            div.style.left = 0;
+            let gutterDiv = window.document.getElementById("code-annotation-line-highlight-gutter");
+            if (gutterDiv === null) {
+              gutterDiv = window.document.createElement("div");
+              gutterDiv.setAttribute("id", "code-annotation-line-highlight-gutter");
+              gutterDiv.style.position = 'absolute';
+              const codeCell = window.document.getElementById(targetCell);
+              const gutter = codeCell.querySelector('.code-annotation-gutter');
+              gutter.appendChild(gutterDiv);
+            }
+            gutterDiv.style.top = top - 2 + "px";
+            gutterDiv.style.height = height + 4 + "px";
+          }
+          selectedAnnoteEl = annoteEl;
+        }
+      };
+      const unselectCodeLines = () => {
+        const elementsIds = ["code-annotation-line-highlight", "code-annotation-line-highlight-gutter"];
+        elementsIds.forEach((elId) => {
+          const div = window.document.getElementById(elId);
+          if (div) {
+            div.remove();
+          }
+        });
+        selectedAnnoteEl = undefined;
+      };
+        // Handle positioning of the toggle
+    window.addEventListener(
+      "resize",
+      throttle(() => {
+        elRect = undefined;
+        if (selectedAnnoteEl) {
+          selectCodeLines(selectedAnnoteEl);
+        }
+      }, 10)
+    );
+    function throttle(fn, ms) {
+    let throttle = false;
+    let timer;
+      return (...args) => {
+        if(!throttle) { // first call gets through
+            fn.apply(this, args);
+            throttle = true;
+        } else { // all the others get throttled
+            if(timer) clearTimeout(timer); // cancel #2
+            timer = setTimeout(() => {
+              fn.apply(this, args);
+              timer = throttle = false;
+            }, ms);
+        }
+      };
+    }
+      // Attach click handler to the DT
+      const annoteDls = window.document.querySelectorAll('dt[data-target-cell]');
+      for (const annoteDlNode of annoteDls) {
+        annoteDlNode.addEventListener('click', (event) => {
+          const clickedEl = event.target;
+          if (clickedEl !== selectedAnnoteEl) {
+            unselectCodeLines();
+            const activeEl = window.document.querySelector('dt[data-target-cell].code-annotation-active');
+            if (activeEl) {
+              activeEl.classList.remove('code-annotation-active');
+            }
+            selectCodeLines(clickedEl);
+            clickedEl.classList.add('code-annotation-active');
+          } else {
+            // Unselect the line
+            unselectCodeLines();
+            clickedEl.classList.remove('code-annotation-active');
+          }
+        });
+      }
+  const findCites = (el) => {
+    const parentEl = el.parentElement;
+    if (parentEl) {
+      const cites = parentEl.dataset.cites;
+      if (cites) {
+        return {
+          el,
+          cites: cites.split(' ')
+        };
+      } else {
+        return findCites(el.parentElement)
+      }
+    } else {
+      return undefined;
+    }
+  };
+  var bibliorefs = window.document.querySelectorAll('a[role="doc-biblioref"]');
+  for (var i=0; i<bibliorefs.length; i++) {
+    const ref = bibliorefs[i];
+    const citeInfo = findCites(ref);
+    if (citeInfo) {
+      tippyHover(citeInfo.el, function() {
+        var popup = window.document.createElement('div');
+        citeInfo.cites.forEach(function(cite) {
+          var citeDiv = window.document.createElement('div');
+          citeDiv.classList.add('hanging-indent');
+          citeDiv.classList.add('csl-entry');
+          var biblioDiv = window.document.getElementById('ref-' + cite);
+          if (biblioDiv) {
+            citeDiv.innerHTML = biblioDiv.innerHTML;
+          }
+          popup.appendChild(citeDiv);
+        });
+        return popup.innerHTML;
+      });
+    }
+  }
+});
+</script>
+<nav class="page-navigation">
+  <div class="nav-page nav-page-previous">
+      <a href="../../book/03-matmul/09-matmul.html" class="pagination-link" aria-label="Chapter 9: Matmul From Scratch">
+        <i class="bi bi-arrow-left-short"></i> <span class="nav-page-text"><span class="chapter-number">11</span>&nbsp; <span class="chapter-title">Chapter 9: Matmul From Scratch</span></span>
+      </a>          
+  </div>
+  <div class="nav-page nav-page-next">
+      <a href="../../book/03-matmul/11-persistent-matmul.html" class="pagination-link" aria-label="Chapter 11: Persistent Matmul and Advanced Matmul Concepts">
+        <span class="nav-page-text"><span class="chapter-number">13</span>&nbsp; <span class="chapter-title">Chapter 11: Persistent Matmul and Advanced Matmul Concepts</span></span> <i class="bi bi-arrow-right-short"></i>
+      </a>
+  </div>
+</nav><div class="modal fade" id="quarto-embedded-source-code-modal" tabindex="-1" aria-labelledby="quarto-embedded-source-code-modal-label" aria-hidden="true"><div class="modal-dialog modal-dialog-scrollable"><div class="modal-content"><div class="modal-header"><h5 class="modal-title" id="quarto-embedded-source-code-modal-label">Source Code</h5><button class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><div class="">
+<div class="sourceCode" id="cb9" data-shortcodes="false"><pre class="sourceCode markdown code-with-copy"><code class="sourceCode markdown"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="co">---</span></span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a><span class="an">title:</span><span class="co"> "Chapter 10: Batched Matmul and Linear Layers"</span></span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a><span class="co">---</span></span>
+<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-5"><a href="#cb9-5" aria-hidden="true" tabindex="-1"></a>The matmul from Chapter 9 takes you most of the way to writing your own</span>
+<span id="cb9-6"><a href="#cb9-6" aria-hidden="true" tabindex="-1"></a>linear layer, but transformer workloads do not look like</span>
+<span id="cb9-7"><a href="#cb9-7" aria-hidden="true" tabindex="-1"></a><span class="in">`(M, K) @ (K, N) -&gt; (M, N)`</span>. They look like</span>
+<span id="cb9-8"><a href="#cb9-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-9"><a href="#cb9-9" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span><span class="in">`(B, M, K) @ (B, K, N) -&gt; (B, M, N)`</span> -- batched matmul for attention</span>
+<span id="cb9-10"><a href="#cb9-10" aria-hidden="true" tabindex="-1"></a>  scores and weighted values.</span>
+<span id="cb9-11"><a href="#cb9-11" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span><span class="in">`(B, T, in) @ W^T + b -&gt; (B, T, out)`</span> -- the linear layer you call</span>
+<span id="cb9-12"><a href="#cb9-12" aria-hidden="true" tabindex="-1"></a>  thousands of times per forward pass.</span>
+<span id="cb9-13"><a href="#cb9-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-14"><a href="#cb9-14" aria-hidden="true" tabindex="-1"></a>This chapter handles both. Then it does the thing that makes writing</span>
+<span id="cb9-15"><a href="#cb9-15" aria-hidden="true" tabindex="-1"></a>your own kernels worth the trouble in the first place: fuses bias, GELU,</span>
+<span id="cb9-16"><a href="#cb9-16" aria-hidden="true" tabindex="-1"></a>and the activation into the linear's epilogue so the intermediate never</span>
+<span id="cb9-17"><a href="#cb9-17" aria-hidden="true" tabindex="-1"></a>round-trips through DRAM.</span>
+<span id="cb9-18"><a href="#cb9-18" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-19"><a href="#cb9-19" aria-hidden="true" tabindex="-1"></a><span class="fu">### PyTorch reference</span></span>
+<span id="cb9-20"><a href="#cb9-20" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-21"><a href="#cb9-21" aria-hidden="true" tabindex="-1"></a><span class="in">```python</span></span>
+<span id="cb9-22"><a href="#cb9-22" aria-hidden="true" tabindex="-1"></a><span class="co"># eval: false</span></span>
+<span id="cb9-23"><a href="#cb9-23" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch</span>
+<span id="cb9-24"><a href="#cb9-24" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch.nn.functional <span class="im">as</span> F</span>
+<span id="cb9-25"><a href="#cb9-25" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-26"><a href="#cb9-26" aria-hidden="true" tabindex="-1"></a><span class="co"># Batched matmul.</span></span>
+<span id="cb9-27"><a href="#cb9-27" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> batched_matmul_ref(a, b):</span>
+<span id="cb9-28"><a href="#cb9-28" aria-hidden="true" tabindex="-1"></a>    <span class="co"># a: (B, M, K)   b: (B, K, N)   out: (B, M, N)</span></span>
+<span id="cb9-29"><a href="#cb9-29" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> torch.matmul(a, b)</span>
+<span id="cb9-30"><a href="#cb9-30" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-31"><a href="#cb9-31" aria-hidden="true" tabindex="-1"></a><span class="co"># Linear + bias + GELU. PyTorch convention: W is (out, in).</span></span>
+<span id="cb9-32"><a href="#cb9-32" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> linear_bias_gelu_ref(x, w, b):</span>
+<span id="cb9-33"><a href="#cb9-33" aria-hidden="true" tabindex="-1"></a>    <span class="co"># x: (..., in)   w: (out, in)   b: (out,)</span></span>
+<span id="cb9-34"><a href="#cb9-34" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> F.gelu(F.linear(x, w, b), approximate<span class="op">=</span><span class="st">"tanh"</span>)</span>
+<span id="cb9-35"><a href="#cb9-35" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb9-36"><a href="#cb9-36" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-37"><a href="#cb9-37" aria-hidden="true" tabindex="-1"></a><span class="fu">### Triton implementation</span></span>
+<span id="cb9-38"><a href="#cb9-38" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-39"><a href="#cb9-39" aria-hidden="true" tabindex="-1"></a><span class="fu">#### Batched matmul</span></span>
+<span id="cb9-40"><a href="#cb9-40" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-41"><a href="#cb9-41" aria-hidden="true" tabindex="-1"></a>Two strategies:</span>
+<span id="cb9-42"><a href="#cb9-42" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-43"><a href="#cb9-43" aria-hidden="true" tabindex="-1"></a>(a) **Host loop.** Loop over the batch on the CPU and launch one matmul</span>
+<span id="cb9-44"><a href="#cb9-44" aria-hidden="true" tabindex="-1"></a>kernel per batch element. Simple to write. Pays B kernel launches.</span>
+<span id="cb9-45"><a href="#cb9-45" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-46"><a href="#cb9-46" aria-hidden="true" tabindex="-1"></a>(b) **3D-grid kernel.** One kernel launch with a grid of</span>
+<span id="cb9-47"><a href="#cb9-47" aria-hidden="true" tabindex="-1"></a><span class="in">`(B, num_pid_m, num_pid_n)`</span>. Each program is identified by `(pid_b,</span>
+<span id="cb9-48"><a href="#cb9-48" aria-hidden="true" tabindex="-1"></a>pid_m, pid_n)`. The kernel hoists a batch stride out of the K-loop --</span>
+<span id="cb9-49"><a href="#cb9-49" aria-hidden="true" tabindex="-1"></a>each program does <span class="in">`a_ptr += pid_b * stride_ab`</span> once at the top, then</span>
+<span id="cb9-50"><a href="#cb9-50" aria-hidden="true" tabindex="-1"></a>behaves exactly like a single-batch matmul.</span>
+<span id="cb9-51"><a href="#cb9-51" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-52"><a href="#cb9-52" aria-hidden="true" tabindex="-1"></a>Use (b). Launch overhead is per-launch, not per-program; one kernel with</span>
+<span id="cb9-53"><a href="#cb9-53" aria-hidden="true" tabindex="-1"></a>a 3D grid amortizes it across the whole batch.</span>
+<span id="cb9-54"><a href="#cb9-54" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-55"><a href="#cb9-55" aria-hidden="true" tabindex="-1"></a><span class="in">```python</span></span>
+<span id="cb9-56"><a href="#cb9-56" aria-hidden="true" tabindex="-1"></a><span class="co"># eval: false</span></span>
+<span id="cb9-57"><a href="#cb9-57" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.jit</span></span>
+<span id="cb9-58"><a href="#cb9-58" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> batched_matmul_kernel(</span>
+<span id="cb9-59"><a href="#cb9-59" aria-hidden="true" tabindex="-1"></a>    a_ptr, b_ptr, c_ptr,</span>
+<span id="cb9-60"><a href="#cb9-60" aria-hidden="true" tabindex="-1"></a>    M, N, K,</span>
+<span id="cb9-61"><a href="#cb9-61" aria-hidden="true" tabindex="-1"></a>    stride_ab, stride_am, stride_ak,</span>
+<span id="cb9-62"><a href="#cb9-62" aria-hidden="true" tabindex="-1"></a>    stride_bb, stride_bk, stride_bn,</span>
+<span id="cb9-63"><a href="#cb9-63" aria-hidden="true" tabindex="-1"></a>    stride_cb, stride_cm, stride_cn,</span>
+<span id="cb9-64"><a href="#cb9-64" aria-hidden="true" tabindex="-1"></a>    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,</span>
+<span id="cb9-65"><a href="#cb9-65" aria-hidden="true" tabindex="-1"></a>):</span>
+<span id="cb9-66"><a href="#cb9-66" aria-hidden="true" tabindex="-1"></a>    pid_b <span class="op">=</span> tl.program_id(axis<span class="op">=</span><span class="dv">0</span>)</span>
+<span id="cb9-67"><a href="#cb9-67" aria-hidden="true" tabindex="-1"></a>    pid_m <span class="op">=</span> tl.program_id(axis<span class="op">=</span><span class="dv">1</span>)</span>
+<span id="cb9-68"><a href="#cb9-68" aria-hidden="true" tabindex="-1"></a>    pid_n <span class="op">=</span> tl.program_id(axis<span class="op">=</span><span class="dv">2</span>)</span>
+<span id="cb9-69"><a href="#cb9-69" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-70"><a href="#cb9-70" aria-hidden="true" tabindex="-1"></a>    a_ptr <span class="op">+=</span> pid_b <span class="op">*</span> stride_ab</span>
+<span id="cb9-71"><a href="#cb9-71" aria-hidden="true" tabindex="-1"></a>    b_ptr <span class="op">+=</span> pid_b <span class="op">*</span> stride_bb</span>
+<span id="cb9-72"><a href="#cb9-72" aria-hidden="true" tabindex="-1"></a>    c_ptr <span class="op">+=</span> pid_b <span class="op">*</span> stride_cb</span>
+<span id="cb9-73"><a href="#cb9-73" aria-hidden="true" tabindex="-1"></a>    <span class="co"># ... rest is identical to single-batch matmul ...</span></span>
+<span id="cb9-74"><a href="#cb9-74" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb9-75"><a href="#cb9-75" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-76"><a href="#cb9-76" aria-hidden="true" tabindex="-1"></a>Full source at <span class="in">`src/ch10_batched_linear/batched_matmul.py`</span>.</span>
+<span id="cb9-77"><a href="#cb9-77" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-78"><a href="#cb9-78" aria-hidden="true" tabindex="-1"></a><span class="fu">#### Linear + bias + GELU</span></span>
+<span id="cb9-79"><a href="#cb9-79" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-80"><a href="#cb9-80" aria-hidden="true" tabindex="-1"></a>PyTorch's <span class="in">`nn.Linear`</span> stores <span class="in">`W`</span> with shape <span class="in">`(out, in)`</span>, not <span class="in">`(in, out)`</span>.</span>
+<span id="cb9-81"><a href="#cb9-81" aria-hidden="true" tabindex="-1"></a>The forward is <span class="in">`Y = X W^T + b`</span>. You have two options for the transpose:</span>
+<span id="cb9-82"><a href="#cb9-82" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-83"><a href="#cb9-83" aria-hidden="true" tabindex="-1"></a><span class="ss">1. </span>Materialize <span class="in">`W.T.contiguous()`</span> and matmul. Wastes memory and time.</span>
+<span id="cb9-84"><a href="#cb9-84" aria-hidden="true" tabindex="-1"></a><span class="ss">2. </span>Bake the transpose into the pointer math. The kernel treats <span class="in">`W`</span> as</span>
+<span id="cb9-85"><a href="#cb9-85" aria-hidden="true" tabindex="-1"></a>   if it were <span class="in">`(in, out)`</span> by walking <span class="in">`stride_w_in`</span> down the rows and</span>
+<span id="cb9-86"><a href="#cb9-86" aria-hidden="true" tabindex="-1"></a>   <span class="in">`stride_w_out`</span> across the columns of the loaded tile. No physical</span>
+<span id="cb9-87"><a href="#cb9-87" aria-hidden="true" tabindex="-1"></a>   transpose. This is what <span class="in">`F.linear`</span> does internally.</span>
+<span id="cb9-88"><a href="#cb9-88" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-89"><a href="#cb9-89" aria-hidden="true" tabindex="-1"></a>We also flatten the leading batch+token dims. <span class="in">`X: (B, T, in)`</span> becomes</span>
+<span id="cb9-90"><a href="#cb9-90" aria-hidden="true" tabindex="-1"></a><span class="in">`X: (B*T, in)`</span> for the matmul. Reshape is a stride op when the input is</span>
+<span id="cb9-91"><a href="#cb9-91" aria-hidden="true" tabindex="-1"></a>contiguous, so it costs nothing.</span>
+<span id="cb9-92"><a href="#cb9-92" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-93"><a href="#cb9-93" aria-hidden="true" tabindex="-1"></a><span class="in">```python</span></span>
+<span id="cb9-94"><a href="#cb9-94" aria-hidden="true" tabindex="-1"></a><span class="co"># eval: false</span></span>
+<span id="cb9-95"><a href="#cb9-95" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.jit</span></span>
+<span id="cb9-96"><a href="#cb9-96" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> linear_bias_gelu_kernel(</span>
+<span id="cb9-97"><a href="#cb9-97" aria-hidden="true" tabindex="-1"></a>    x_ptr, w_ptr, b_ptr, y_ptr,</span>
+<span id="cb9-98"><a href="#cb9-98" aria-hidden="true" tabindex="-1"></a>    M, N, K,</span>
+<span id="cb9-99"><a href="#cb9-99" aria-hidden="true" tabindex="-1"></a>    stride_xm, stride_xk,</span>
+<span id="cb9-100"><a href="#cb9-100" aria-hidden="true" tabindex="-1"></a>    stride_wn, stride_wk,        <span class="co"># W is (out=N, in=K); stride_wn = in, stride_wk = 1</span></span>
+<span id="cb9-101"><a href="#cb9-101" aria-hidden="true" tabindex="-1"></a>    stride_ym, stride_yn,</span>
+<span id="cb9-102"><a href="#cb9-102" aria-hidden="true" tabindex="-1"></a>    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,</span>
+<span id="cb9-103"><a href="#cb9-103" aria-hidden="true" tabindex="-1"></a>):</span>
+<span id="cb9-104"><a href="#cb9-104" aria-hidden="true" tabindex="-1"></a>    pid <span class="op">=</span> tl.program_id(<span class="dv">0</span>)</span>
+<span id="cb9-105"><a href="#cb9-105" aria-hidden="true" tabindex="-1"></a>    num_pid_n <span class="op">=</span> tl.cdiv(N, BLOCK_N)</span>
+<span id="cb9-106"><a href="#cb9-106" aria-hidden="true" tabindex="-1"></a>    pid_m, pid_n <span class="op">=</span> pid <span class="op">//</span> num_pid_n, pid <span class="op">%</span> num_pid_n</span>
+<span id="cb9-107"><a href="#cb9-107" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-108"><a href="#cb9-108" aria-hidden="true" tabindex="-1"></a>    offs_m <span class="op">=</span> pid_m <span class="op">*</span> BLOCK_M <span class="op">+</span> tl.arange(<span class="dv">0</span>, BLOCK_M)</span>
+<span id="cb9-109"><a href="#cb9-109" aria-hidden="true" tabindex="-1"></a>    offs_n <span class="op">=</span> pid_n <span class="op">*</span> BLOCK_N <span class="op">+</span> tl.arange(<span class="dv">0</span>, BLOCK_N)</span>
+<span id="cb9-110"><a href="#cb9-110" aria-hidden="true" tabindex="-1"></a>    offs_k <span class="op">=</span> tl.arange(<span class="dv">0</span>, BLOCK_K)</span>
+<span id="cb9-111"><a href="#cb9-111" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-112"><a href="#cb9-112" aria-hidden="true" tabindex="-1"></a>    x_ptrs <span class="op">=</span> x_ptr <span class="op">+</span> offs_m[:, <span class="va">None</span>] <span class="op">*</span> stride_xm <span class="op">+</span> offs_k[<span class="va">None</span>, :] <span class="op">*</span> stride_xk</span>
+<span id="cb9-113"><a href="#cb9-113" aria-hidden="true" tabindex="-1"></a>    <span class="co"># W^T trick: address with offs_k on the row, offs_n on the column.</span></span>
+<span id="cb9-114"><a href="#cb9-114" aria-hidden="true" tabindex="-1"></a>    w_ptrs <span class="op">=</span> w_ptr <span class="op">+</span> offs_k[:, <span class="va">None</span>] <span class="op">*</span> stride_wk <span class="op">+</span> offs_n[<span class="va">None</span>, :] <span class="op">*</span> stride_wn</span>
+<span id="cb9-115"><a href="#cb9-115" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-116"><a href="#cb9-116" aria-hidden="true" tabindex="-1"></a>    acc <span class="op">=</span> tl.zeros((BLOCK_M, BLOCK_N), dtype<span class="op">=</span>tl.float32)</span>
+<span id="cb9-117"><a href="#cb9-117" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> k <span class="kw">in</span> <span class="bu">range</span>(tl.cdiv(K, BLOCK_K)):</span>
+<span id="cb9-118"><a href="#cb9-118" aria-hidden="true" tabindex="-1"></a>        <span class="co"># ... load, mask, dot, advance ...</span></span>
+<span id="cb9-119"><a href="#cb9-119" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-120"><a href="#cb9-120" aria-hidden="true" tabindex="-1"></a>    bias <span class="op">=</span> tl.load(b_ptr <span class="op">+</span> offs_n, mask<span class="op">=</span>offs_n <span class="op">&lt;</span> N, other<span class="op">=</span><span class="fl">0.0</span>).to(tl.float32)</span>
+<span id="cb9-121"><a href="#cb9-121" aria-hidden="true" tabindex="-1"></a>    acc <span class="op">+=</span> bias[<span class="va">None</span>, :]</span>
+<span id="cb9-122"><a href="#cb9-122" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-123"><a href="#cb9-123" aria-hidden="true" tabindex="-1"></a>    <span class="co"># GELU (tanh approximation), inside the kernel.</span></span>
+<span id="cb9-124"><a href="#cb9-124" aria-hidden="true" tabindex="-1"></a>    c0 <span class="op">=</span> <span class="fl">0.7978845608028654</span>   <span class="co"># sqrt(2/pi)</span></span>
+<span id="cb9-125"><a href="#cb9-125" aria-hidden="true" tabindex="-1"></a>    inner <span class="op">=</span> c0 <span class="op">*</span> (acc <span class="op">+</span> <span class="fl">0.044715</span> <span class="op">*</span> acc <span class="op">*</span> acc <span class="op">*</span> acc)</span>
+<span id="cb9-126"><a href="#cb9-126" aria-hidden="true" tabindex="-1"></a>    acc <span class="op">=</span> <span class="fl">0.5</span> <span class="op">*</span> acc <span class="op">*</span> (<span class="fl">1.0</span> <span class="op">+</span> tl.math.tanh(inner))</span>
+<span id="cb9-127"><a href="#cb9-127" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-128"><a href="#cb9-128" aria-hidden="true" tabindex="-1"></a>    y <span class="op">=</span> acc.to(y_ptr.dtype.element_ty)</span>
+<span id="cb9-129"><a href="#cb9-129" aria-hidden="true" tabindex="-1"></a>    <span class="co"># ... store ...</span></span>
+<span id="cb9-130"><a href="#cb9-130" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb9-131"><a href="#cb9-131" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-132"><a href="#cb9-132" aria-hidden="true" tabindex="-1"></a>The full kernel is at <span class="in">`src/ch10_batched_linear/linear_bias_gelu.py`</span>. The</span>
+<span id="cb9-133"><a href="#cb9-133" aria-hidden="true" tabindex="-1"></a>walkthrough above leaves out the masks and pointer-advance bookkeeping;</span>
+<span id="cb9-134"><a href="#cb9-134" aria-hidden="true" tabindex="-1"></a>they are identical to Chapter 9.</span>
+<span id="cb9-135"><a href="#cb9-135" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-136"><a href="#cb9-136" aria-hidden="true" tabindex="-1"></a><span class="fu">#### When to write your own linear</span></span>
+<span id="cb9-137"><a href="#cb9-137" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-138"><a href="#cb9-138" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**Yes:** when you want epilogue fusion (bias, activation, residual,</span>
+<span id="cb9-139"><a href="#cb9-139" aria-hidden="true" tabindex="-1"></a>  dropout, dequantization). The fused kernel saves one read and one</span>
+<span id="cb9-140"><a href="#cb9-140" aria-hidden="true" tabindex="-1"></a>  write of the <span class="in">`(B*T, out)`</span> intermediate per fused op.</span>
+<span id="cb9-141"><a href="#cb9-141" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**No:** for stock matmul where there is no epilogue. cuBLAS dominates</span>
+<span id="cb9-142"><a href="#cb9-142" aria-hidden="true" tabindex="-1"></a>  on square shapes, especially on Ampere and newer. Use <span class="in">`F.linear`</span> for</span>
+<span id="cb9-143"><a href="#cb9-143" aria-hidden="true" tabindex="-1"></a>  the un-fused case and reserve your kernel for the fused variants.</span>
+<span id="cb9-144"><a href="#cb9-144" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-145"><a href="#cb9-145" aria-hidden="true" tabindex="-1"></a><span class="fu">### Shape trace</span></span>
+<span id="cb9-146"><a href="#cb9-146" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-147"><a href="#cb9-147" aria-hidden="true" tabindex="-1"></a>For <span class="in">`X: (4, 1024, 4096)`</span>, <span class="in">`W: (4096, 4096)`</span>, <span class="in">`b: (4096,)`</span>:</span>
+<span id="cb9-148"><a href="#cb9-148" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-149"><a href="#cb9-149" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb9-150"><a href="#cb9-150" aria-hidden="true" tabindex="-1"></a><span class="in">Reshape X:                  X_2d : (B*T, in) = (4096, 4096)   fp16</span></span>
+<span id="cb9-151"><a href="#cb9-151" aria-hidden="true" tabindex="-1"></a><span class="in">W:                                  (out, in) = (4096, 4096)   fp16</span></span>
+<span id="cb9-152"><a href="#cb9-152" aria-hidden="true" tabindex="-1"></a><span class="in">b:                                  (out,)    = (4096,)         fp16</span></span>
+<span id="cb9-153"><a href="#cb9-153" aria-hidden="true" tabindex="-1"></a><span class="in">Y_2d:                               (4096, 4096)                fp16, output</span></span>
+<span id="cb9-154"><a href="#cb9-154" aria-hidden="true" tabindex="-1"></a><span class="in">Constants:                  BLOCK_M=128 BLOCK_N=128 BLOCK_K=32</span></span>
+<span id="cb9-155"><a href="#cb9-155" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-156"><a href="#cb9-156" aria-hidden="true" tabindex="-1"></a><span class="in">M = 4096, N = 4096, K = 4096</span></span>
+<span id="cb9-157"><a href="#cb9-157" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-158"><a href="#cb9-158" aria-hidden="true" tabindex="-1"></a><span class="in">Grid:                       ceil(M/BLOCK_M) * ceil(N/BLOCK_N) = 32 * 32 = 1024</span></span>
+<span id="cb9-159"><a href="#cb9-159" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-160"><a href="#cb9-160" aria-hidden="true" tabindex="-1"></a><span class="in">Per program:</span></span>
+<span id="cb9-161"><a href="#cb9-161" aria-hidden="true" tabindex="-1"></a><span class="in">  pid                          scalar              int32</span></span>
+<span id="cb9-162"><a href="#cb9-162" aria-hidden="true" tabindex="-1"></a><span class="in">  pid_m, pid_n                 scalar each         int32</span></span>
+<span id="cb9-163"><a href="#cb9-163" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-164"><a href="#cb9-164" aria-hidden="true" tabindex="-1"></a><span class="in">  offs_m                       (128,)              int32</span></span>
+<span id="cb9-165"><a href="#cb9-165" aria-hidden="true" tabindex="-1"></a><span class="in">  offs_n                       (128,)              int32</span></span>
+<span id="cb9-166"><a href="#cb9-166" aria-hidden="true" tabindex="-1"></a><span class="in">  offs_k                       (32,)               int32</span></span>
+<span id="cb9-167"><a href="#cb9-167" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-168"><a href="#cb9-168" aria-hidden="true" tabindex="-1"></a><span class="in">  x_ptrs                       (128, 32)           ptr&lt;fp16&gt;</span></span>
+<span id="cb9-169"><a href="#cb9-169" aria-hidden="true" tabindex="-1"></a><span class="in">  w_ptrs                       (32, 128)           ptr&lt;fp16&gt;     # transpose via stride math</span></span>
+<span id="cb9-170"><a href="#cb9-170" aria-hidden="true" tabindex="-1"></a><span class="in">  acc                          (128, 128)          fp32</span></span>
+<span id="cb9-171"><a href="#cb9-171" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-172"><a href="#cb9-172" aria-hidden="true" tabindex="-1"></a><span class="in">  K-loop:                      128 iterations</span></span>
+<span id="cb9-173"><a href="#cb9-173" aria-hidden="true" tabindex="-1"></a><span class="in">    x = load(x_ptrs, mask)     (128, 32)           fp16</span></span>
+<span id="cb9-174"><a href="#cb9-174" aria-hidden="true" tabindex="-1"></a><span class="in">    w = load(w_ptrs, mask)     (32, 128)           fp16</span></span>
+<span id="cb9-175"><a href="#cb9-175" aria-hidden="true" tabindex="-1"></a><span class="in">    acc += tl.dot(x, w)        (128, 128)          fp32</span></span>
+<span id="cb9-176"><a href="#cb9-176" aria-hidden="true" tabindex="-1"></a><span class="in">    x_ptrs += BLOCK_K * stride_xk</span></span>
+<span id="cb9-177"><a href="#cb9-177" aria-hidden="true" tabindex="-1"></a><span class="in">    w_ptrs += BLOCK_K * stride_wk</span></span>
+<span id="cb9-178"><a href="#cb9-178" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-179"><a href="#cb9-179" aria-hidden="true" tabindex="-1"></a><span class="in">Epilogue (inside the kernel, no extra DRAM round-trip):</span></span>
+<span id="cb9-180"><a href="#cb9-180" aria-hidden="true" tabindex="-1"></a><span class="in">  bias = load(b_ptr + offs_n)  (128,)              fp32</span></span>
+<span id="cb9-181"><a href="#cb9-181" aria-hidden="true" tabindex="-1"></a><span class="in">  acc += bias[None, :]         (128, 128)          fp32</span></span>
+<span id="cb9-182"><a href="#cb9-182" aria-hidden="true" tabindex="-1"></a><span class="in">  inner = c0 * (acc + 0.044715 * acc^3)   (128, 128)  fp32</span></span>
+<span id="cb9-183"><a href="#cb9-183" aria-hidden="true" tabindex="-1"></a><span class="in">  acc = 0.5 * acc * (1 + tanh(inner))     (128, 128)  fp32</span></span>
+<span id="cb9-184"><a href="#cb9-184" aria-hidden="true" tabindex="-1"></a><span class="in">  y   = acc.to(fp16)                       (128, 128)  fp16</span></span>
+<span id="cb9-185"><a href="#cb9-185" aria-hidden="true" tabindex="-1"></a><span class="in">  store(y_ptrs, y, mask)</span></span>
+<span id="cb9-186"><a href="#cb9-186" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-187"><a href="#cb9-187" aria-hidden="true" tabindex="-1"></a><span class="in">Reshape Y_2d back to (B, T, out) = (4, 1024, 4096)         fp16</span></span>
+<span id="cb9-188"><a href="#cb9-188" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb9-189"><a href="#cb9-189" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-190"><a href="#cb9-190" aria-hidden="true" tabindex="-1"></a>If you launched the unfused version (linear, then bias, then GELU), you</span>
+<span id="cb9-191"><a href="#cb9-191" aria-hidden="true" tabindex="-1"></a>would write the <span class="in">`(4096, 4096)`</span> intermediate to DRAM, read it back, write</span>
+<span id="cb9-192"><a href="#cb9-192" aria-hidden="true" tabindex="-1"></a>the bias-added version, read it back, write the GELU output. Three</span>
+<span id="cb9-193"><a href="#cb9-193" aria-hidden="true" tabindex="-1"></a>extra round-trips of a 32 MB tensor. The fused kernel saves all of</span>
+<span id="cb9-194"><a href="#cb9-194" aria-hidden="true" tabindex="-1"></a>that.</span>
+<span id="cb9-195"><a href="#cb9-195" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-196"><a href="#cb9-196" aria-hidden="true" tabindex="-1"></a><span class="fu">### Pointer arithmetic and masks</span></span>
+<span id="cb9-197"><a href="#cb9-197" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-198"><a href="#cb9-198" aria-hidden="true" tabindex="-1"></a>Two new things compared to Chapter 9.</span>
+<span id="cb9-199"><a href="#cb9-199" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-200"><a href="#cb9-200" aria-hidden="true" tabindex="-1"></a>**Batch stride.** In <span class="in">`batched_matmul_kernel`</span>, the first thing each</span>
+<span id="cb9-201"><a href="#cb9-201" aria-hidden="true" tabindex="-1"></a>program does is <span class="in">`a_ptr += pid_b * stride_ab`</span>. After that, every other</span>
+<span id="cb9-202"><a href="#cb9-202" aria-hidden="true" tabindex="-1"></a>pointer-math line is identical to single-batch matmul. The compiler</span>
+<span id="cb9-203"><a href="#cb9-203" aria-hidden="true" tabindex="-1"></a>hoists this addition outside the K-loop because <span class="in">`pid_b`</span> is invariant.</span>
+<span id="cb9-204"><a href="#cb9-204" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-205"><a href="#cb9-205" aria-hidden="true" tabindex="-1"></a>For a <span class="in">`(B, M, K)`</span> contiguous tensor: <span class="in">`stride_ab = M*K`</span>, <span class="in">`stride_am = K`</span>,</span>
+<span id="cb9-206"><a href="#cb9-206" aria-hidden="true" tabindex="-1"></a><span class="in">`stride_ak = 1`</span>.</span>
+<span id="cb9-207"><a href="#cb9-207" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-208"><a href="#cb9-208" aria-hidden="true" tabindex="-1"></a>**Transpose-by-stride.** In <span class="in">`linear_bias_gelu_kernel`</span>, <span class="in">`W`</span> is <span class="in">`(out, in)`</span></span>
+<span id="cb9-209"><a href="#cb9-209" aria-hidden="true" tabindex="-1"></a>but we want a <span class="in">`(BLOCK_K, BLOCK_N)`</span> tile of <span class="in">`W^T`</span>. We compute</span>
+<span id="cb9-210"><a href="#cb9-210" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-211"><a href="#cb9-211" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb9-212"><a href="#cb9-212" aria-hidden="true" tabindex="-1"></a><span class="in">w_ptrs = w_ptr + offs_k[:, None] * stride_wk + offs_n[None, :] * stride_wn</span></span>
+<span id="cb9-213"><a href="#cb9-213" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb9-214"><a href="#cb9-214" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-215"><a href="#cb9-215" aria-hidden="true" tabindex="-1"></a><span class="in">`stride_wn = in`</span> (jump one row of W when <span class="in">`offs_n`</span> increases),</span>
+<span id="cb9-216"><a href="#cb9-216" aria-hidden="true" tabindex="-1"></a><span class="in">`stride_wk = 1`</span> (jump one element within a row when <span class="in">`offs_k`</span> increases).</span>
+<span id="cb9-217"><a href="#cb9-217" aria-hidden="true" tabindex="-1"></a>Loading at these pointers gives the transposed tile directly. No</span>
+<span id="cb9-218"><a href="#cb9-218" aria-hidden="true" tabindex="-1"></a><span class="in">`W.T.contiguous()`</span>, no temp allocation, no extra DRAM traffic. The cost</span>
+<span id="cb9-219"><a href="#cb9-219" aria-hidden="true" tabindex="-1"></a>is that the read pattern across W is column-major, which is slightly</span>
+<span id="cb9-220"><a href="#cb9-220" aria-hidden="true" tabindex="-1"></a>worse for L2 reuse than reading row-major -- but Triton's swizzling</span>
+<span id="cb9-221"><a href="#cb9-221" aria-hidden="true" tabindex="-1"></a>inside <span class="in">`tl.dot`</span> covers that.</span>
+<span id="cb9-222"><a href="#cb9-222" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-223"><a href="#cb9-223" aria-hidden="true" tabindex="-1"></a>Masks: same <span class="in">`(offs_m &lt; M) &amp; (offs_k &lt; k_remaining)`</span> pattern as Chapter</span>
+<span id="cb9-224"><a href="#cb9-224" aria-hidden="true" tabindex="-1"></a><span class="ss">9. </span>The bias load gets <span class="in">`offs_n &lt; N`</span>. The residual-add variant (Exercise</span>
+<span id="cb9-225"><a href="#cb9-225" aria-hidden="true" tabindex="-1"></a>5) needs the full 2D <span class="in">`(offs_m &lt; M) &amp; (offs_n &lt; N)`</span> mask.</span>
+<span id="cb9-226"><a href="#cb9-226" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-227"><a href="#cb9-227" aria-hidden="true" tabindex="-1"></a><span class="fu">### Correctness test</span></span>
+<span id="cb9-228"><a href="#cb9-228" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-229"><a href="#cb9-229" aria-hidden="true" tabindex="-1"></a><span class="in">```python</span></span>
+<span id="cb9-230"><a href="#cb9-230" aria-hidden="true" tabindex="-1"></a><span class="co"># eval: false</span></span>
+<span id="cb9-231"><a href="#cb9-231" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch</span>
+<span id="cb9-232"><a href="#cb9-232" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch.nn.functional <span class="im">as</span> F</span>
+<span id="cb9-233"><a href="#cb9-233" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> src.ch10_batched_linear <span class="im">import</span> linear_bias_gelu</span>
+<span id="cb9-234"><a href="#cb9-234" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-235"><a href="#cb9-235" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> test_linear_bias_gelu_3d_batch():</span>
+<span id="cb9-236"><a href="#cb9-236" aria-hidden="true" tabindex="-1"></a>    torch.manual_seed(<span class="dv">0</span>)</span>
+<span id="cb9-237"><a href="#cb9-237" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> torch.randn((<span class="dv">4</span>, <span class="dv">128</span>, <span class="dv">256</span>), device<span class="op">=</span><span class="st">"cuda"</span>, dtype<span class="op">=</span>torch.float16)</span>
+<span id="cb9-238"><a href="#cb9-238" aria-hidden="true" tabindex="-1"></a>    w <span class="op">=</span> torch.randn((<span class="dv">512</span>, <span class="dv">256</span>),    device<span class="op">=</span><span class="st">"cuda"</span>, dtype<span class="op">=</span>torch.float16)</span>
+<span id="cb9-239"><a href="#cb9-239" aria-hidden="true" tabindex="-1"></a>    b <span class="op">=</span> torch.randn((<span class="dv">512</span>,),        device<span class="op">=</span><span class="st">"cuda"</span>, dtype<span class="op">=</span>torch.float16)</span>
+<span id="cb9-240"><a href="#cb9-240" aria-hidden="true" tabindex="-1"></a>    out <span class="op">=</span> linear_bias_gelu(x, w, b)</span>
+<span id="cb9-241"><a href="#cb9-241" aria-hidden="true" tabindex="-1"></a>    ref <span class="op">=</span> F.gelu(F.linear(x.<span class="bu">float</span>(), w.<span class="bu">float</span>(), b.<span class="bu">float</span>()),</span>
+<span id="cb9-242"><a href="#cb9-242" aria-hidden="true" tabindex="-1"></a>                 approximate<span class="op">=</span><span class="st">"tanh"</span>).to(torch.float16)</span>
+<span id="cb9-243"><a href="#cb9-243" aria-hidden="true" tabindex="-1"></a>    torch.testing.assert_close(out, ref, rtol<span class="op">=</span><span class="fl">2e-2</span>, atol<span class="op">=</span><span class="fl">2e-2</span>)</span>
+<span id="cb9-244"><a href="#cb9-244" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb9-245"><a href="#cb9-245" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-246"><a href="#cb9-246" aria-hidden="true" tabindex="-1"></a>The full test module covers batched matmul (small, non-pow2, large</span>
+<span id="cb9-247"><a href="#cb9-247" aria-hidden="true" tabindex="-1"></a>batch) and the linear+bias+GELU kernel (small, 3D batch, non-pow2). The</span>
+<span id="cb9-248"><a href="#cb9-248" aria-hidden="true" tabindex="-1"></a>tolerance is loosened slightly to <span class="in">`2e-2`</span> because the long K plus the</span>
+<span id="cb9-249"><a href="#cb9-249" aria-hidden="true" tabindex="-1"></a>GELU non-linearity amplify fp16 cast error.</span>
+<span id="cb9-250"><a href="#cb9-250" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-251"><a href="#cb9-251" aria-hidden="true" tabindex="-1"></a><span class="fu">### Benchmark</span></span>
+<span id="cb9-252"><a href="#cb9-252" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-253"><a href="#cb9-253" aria-hidden="true" tabindex="-1"></a><span class="in">```python</span></span>
+<span id="cb9-254"><a href="#cb9-254" aria-hidden="true" tabindex="-1"></a><span class="co"># eval: false</span></span>
+<span id="cb9-255"><a href="#cb9-255" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch</span>
+<span id="cb9-256"><a href="#cb9-256" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch.nn.functional <span class="im">as</span> F</span>
+<span id="cb9-257"><a href="#cb9-257" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> triton</span>
+<span id="cb9-258"><a href="#cb9-258" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> src.ch10_batched_linear <span class="im">import</span> linear_bias_gelu</span>
+<span id="cb9-259"><a href="#cb9-259" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-260"><a href="#cb9-260" aria-hidden="true" tabindex="-1"></a><span class="cf">for</span> n <span class="kw">in</span> [<span class="dv">512</span>, <span class="dv">1024</span>, <span class="dv">2048</span>, <span class="dv">4096</span>]:</span>
+<span id="cb9-261"><a href="#cb9-261" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> torch.randn((<span class="dv">4</span>, <span class="dv">1024</span>, n), device<span class="op">=</span><span class="st">"cuda"</span>, dtype<span class="op">=</span>torch.float16)</span>
+<span id="cb9-262"><a href="#cb9-262" aria-hidden="true" tabindex="-1"></a>    w <span class="op">=</span> torch.randn((n, n),       device<span class="op">=</span><span class="st">"cuda"</span>, dtype<span class="op">=</span>torch.float16)</span>
+<span id="cb9-263"><a href="#cb9-263" aria-hidden="true" tabindex="-1"></a>    b <span class="op">=</span> torch.randn((n,),         device<span class="op">=</span><span class="st">"cuda"</span>, dtype<span class="op">=</span>torch.float16)</span>
+<span id="cb9-264"><a href="#cb9-264" aria-hidden="true" tabindex="-1"></a>    unfused <span class="op">=</span> <span class="kw">lambda</span>: F.gelu(F.linear(x, w, b), approximate<span class="op">=</span><span class="st">"tanh"</span>)</span>
+<span id="cb9-265"><a href="#cb9-265" aria-hidden="true" tabindex="-1"></a>    fused   <span class="op">=</span> <span class="kw">lambda</span>: linear_bias_gelu(x, w, b)</span>
+<span id="cb9-266"><a href="#cb9-266" aria-hidden="true" tabindex="-1"></a>    <span class="bu">print</span>(n,</span>
+<span id="cb9-267"><a href="#cb9-267" aria-hidden="true" tabindex="-1"></a>          triton.testing.do_bench(unfused),</span>
+<span id="cb9-268"><a href="#cb9-268" aria-hidden="true" tabindex="-1"></a>          triton.testing.do_bench(fused))</span>
+<span id="cb9-269"><a href="#cb9-269" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb9-270"><a href="#cb9-270" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-271"><a href="#cb9-271" aria-hidden="true" tabindex="-1"></a>::: {.callout-warning appearance="simple"}</span>
+<span id="cb9-272"><a href="#cb9-272" aria-hidden="true" tabindex="-1"></a>**Placeholder data.** The numbers below are hardcoded illustrative values, not measurements. Replace with output from your own <span class="in">`triton.testing.do_bench`</span> run before drawing conclusions.</span>
+<span id="cb9-273"><a href="#cb9-273" aria-hidden="true" tabindex="-1"></a>:::</span>
+<span id="cb9-274"><a href="#cb9-274" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-277"><a href="#cb9-277" aria-hidden="true" tabindex="-1"></a><span class="in">```{ojs}</span></span>
+<span id="cb9-278"><a href="#cb9-278" aria-hidden="true" tabindex="-1"></a><span class="in">//| echo: false</span></span>
+<span id="cb9-279"><a href="#cb9-279" aria-hidden="true" tabindex="-1"></a><span class="in">//| label: fig-linear-bias-gelu-bench</span></span>
+<span id="cb9-280"><a href="#cb9-280" aria-hidden="true" tabindex="-1"></a><span class="in">//| fig-cap: "Linear + bias + GELU forward median latency vs square hidden size N (= in = out). Lower is better. Unfused PyTorch baseline vs the fused Triton kernel."</span></span>
+<span id="cb9-281"><a href="#cb9-281" aria-hidden="true" tabindex="-1"></a><span class="in">{</span></span>
+<span id="cb9-282"><a href="#cb9-282" aria-hidden="true" tabindex="-1"></a><span class="in">  const data = [</span></span>
+<span id="cb9-283"><a href="#cb9-283" aria-hidden="true" tabindex="-1"></a><span class="in">    {N: 512,  unfused_ms: 0.6, fused_ms: 0.5},</span></span>
+<span id="cb9-284"><a href="#cb9-284" aria-hidden="true" tabindex="-1"></a><span class="in">    {N: 1024, unfused_ms: 1.8, fused_ms: 1.3},</span></span>
+<span id="cb9-285"><a href="#cb9-285" aria-hidden="true" tabindex="-1"></a><span class="in">    {N: 2048, unfused_ms: 6.2, fused_ms: 4.5},</span></span>
+<span id="cb9-286"><a href="#cb9-286" aria-hidden="true" tabindex="-1"></a><span class="in">    {N: 4096, unfused_ms: 22.0, fused_ms: 16.0},</span></span>
+<span id="cb9-287"><a href="#cb9-287" aria-hidden="true" tabindex="-1"></a><span class="in">  ];</span></span>
+<span id="cb9-288"><a href="#cb9-288" aria-hidden="true" tabindex="-1"></a><span class="in">  const long = data.flatMap(d =&gt; [</span></span>
+<span id="cb9-289"><a href="#cb9-289" aria-hidden="true" tabindex="-1"></a><span class="in">    {N: d.N, impl: "torch unfused", ms: d.unfused_ms},</span></span>
+<span id="cb9-290"><a href="#cb9-290" aria-hidden="true" tabindex="-1"></a><span class="in">    {N: d.N, impl: "triton fused",  ms: d.fused_ms}</span></span>
+<span id="cb9-291"><a href="#cb9-291" aria-hidden="true" tabindex="-1"></a><span class="in">  ]);</span></span>
+<span id="cb9-292"><a href="#cb9-292" aria-hidden="true" tabindex="-1"></a><span class="in">  return Plot.plot({</span></span>
+<span id="cb9-293"><a href="#cb9-293" aria-hidden="true" tabindex="-1"></a><span class="in">    width: 720,</span></span>
+<span id="cb9-294"><a href="#cb9-294" aria-hidden="true" tabindex="-1"></a><span class="in">    color: {legend: true, domain: ["torch unfused", "triton fused"], range: ["orange", "steelblue"]},</span></span>
+<span id="cb9-295"><a href="#cb9-295" aria-hidden="true" tabindex="-1"></a><span class="in">    y: {label: "median latency (ms) — lower is better", grid: true},</span></span>
+<span id="cb9-296"><a href="#cb9-296" aria-hidden="true" tabindex="-1"></a><span class="in">    x: {label: "N (= in = out, hidden size)"},</span></span>
+<span id="cb9-297"><a href="#cb9-297" aria-hidden="true" tabindex="-1"></a><span class="in">    marks: [</span></span>
+<span id="cb9-298"><a href="#cb9-298" aria-hidden="true" tabindex="-1"></a><span class="in">      Plot.line(long, {x: "N", y: "ms", stroke: "impl"}),</span></span>
+<span id="cb9-299"><a href="#cb9-299" aria-hidden="true" tabindex="-1"></a><span class="in">      Plot.dot(long,  {x: "N", y: "ms", fill: "impl"})</span></span>
+<span id="cb9-300"><a href="#cb9-300" aria-hidden="true" tabindex="-1"></a><span class="in">    ]</span></span>
+<span id="cb9-301"><a href="#cb9-301" aria-hidden="true" tabindex="-1"></a><span class="in">  });</span></span>
+<span id="cb9-302"><a href="#cb9-302" aria-hidden="true" tabindex="-1"></a><span class="in">}</span></span>
+<span id="cb9-303"><a href="#cb9-303" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb9-304"><a href="#cb9-304" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-305"><a href="#cb9-305" aria-hidden="true" tabindex="-1"></a>The fused kernel saves the cost of writing and re-reading the bias-added</span>
+<span id="cb9-306"><a href="#cb9-306" aria-hidden="true" tabindex="-1"></a>intermediate. The expected speedup is modest -- 1.2x-1.5x in the</span>
+<span id="cb9-307"><a href="#cb9-307" aria-hidden="true" tabindex="-1"></a>compute-bound regime, more when the intermediate is large and the GPU is</span>
+<span id="cb9-308"><a href="#cb9-308" aria-hidden="true" tabindex="-1"></a>memory-bound on the bias and GELU passes.</span>
+<span id="cb9-309"><a href="#cb9-309" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-310"><a href="#cb9-310" aria-hidden="true" tabindex="-1"></a><span class="fu">### Optimization discussion</span></span>
+<span id="cb9-311"><a href="#cb9-311" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-312"><a href="#cb9-312" aria-hidden="true" tabindex="-1"></a>The batched matmul kernel is essentially the Chapter 9 kernel with a</span>
+<span id="cb9-313"><a href="#cb9-313" aria-hidden="true" tabindex="-1"></a>batch-stride preamble; the same block-size and <span class="in">`GROUP_SIZE_M`</span> knobs</span>
+<span id="cb9-314"><a href="#cb9-314" aria-hidden="true" tabindex="-1"></a>apply. Add <span class="in">`@triton.autotune`</span> over the same configs and you are done.</span>
+<span id="cb9-315"><a href="#cb9-315" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-316"><a href="#cb9-316" aria-hidden="true" tabindex="-1"></a>For the fused linear, two extra considerations:</span>
+<span id="cb9-317"><a href="#cb9-317" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-318"><a href="#cb9-318" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**Bias broadcast cost.** The bias load is one <span class="in">`BLOCK_N`</span> vector per</span>
+<span id="cb9-319"><a href="#cb9-319" aria-hidden="true" tabindex="-1"></a>  program, cached in registers. Free in the limit. Do not load it</span>
+<span id="cb9-320"><a href="#cb9-320" aria-hidden="true" tabindex="-1"></a>  inside the K-loop by accident.</span>
+<span id="cb9-321"><a href="#cb9-321" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**Epilogue arithmetic.** The GELU adds a handful of FMA + tanh ops</span>
+<span id="cb9-322"><a href="#cb9-322" aria-hidden="true" tabindex="-1"></a>  per output element. Tanh is the expensive one; if you need maximum</span>
+<span id="cb9-323"><a href="#cb9-323" aria-hidden="true" tabindex="-1"></a>  throughput, the polynomial approximation</span>
+<span id="cb9-324"><a href="#cb9-324" aria-hidden="true" tabindex="-1"></a>  <span class="in">`0.5 * x * (1 + tanh(...))`</span> is already the standard fast form.</span>
+<span id="cb9-325"><a href="#cb9-325" aria-hidden="true" tabindex="-1"></a>  Skipping straight to <span class="in">`F.gelu(x)`</span> (the erf form) inside Triton needs</span>
+<span id="cb9-326"><a href="#cb9-326" aria-hidden="true" tabindex="-1"></a>  <span class="in">`tl.math.erf`</span>, which is slower.</span>
+<span id="cb9-327"><a href="#cb9-327" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-328"><a href="#cb9-328" aria-hidden="true" tabindex="-1"></a>What this is bound by: same as Chapter 9 -- compute-bound on tensor</span>
+<span id="cb9-329"><a href="#cb9-329" aria-hidden="true" tabindex="-1"></a>cores in the K-loop, with a trivial epilogue tax. If you are far from</span>
+<span id="cb9-330"><a href="#cb9-330" aria-hidden="true" tabindex="-1"></a>peak, suspect block sizes first.</span>
+<span id="cb9-331"><a href="#cb9-331" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-332"><a href="#cb9-332" aria-hidden="true" tabindex="-1"></a><span class="fu">### Common bugs</span></span>
+<span id="cb9-333"><a href="#cb9-333" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-334"><a href="#cb9-334" aria-hidden="true" tabindex="-1"></a><span class="ss">1. </span>**Forgetting that `nn.Linear` uses `W^T`.** Calling the kernel with</span>
+<span id="cb9-335"><a href="#cb9-335" aria-hidden="true" tabindex="-1"></a>   <span class="in">`W`</span> strides as if it were <span class="in">`(in, out)`</span> gives you <span class="in">`Y = X @ W`</span>, not</span>
+<span id="cb9-336"><a href="#cb9-336" aria-hidden="true" tabindex="-1"></a>   <span class="in">`Y = X @ W^T`</span>. Output has the wrong shape, or worse, the right shape</span>
+<span id="cb9-337"><a href="#cb9-337" aria-hidden="true" tabindex="-1"></a>   with garbage values when <span class="in">`in == out`</span>. The fix is the transpose-by-</span>
+<span id="cb9-338"><a href="#cb9-338" aria-hidden="true" tabindex="-1"></a>   stride pointer math; the test against <span class="in">`F.linear`</span> catches it</span>
+<span id="cb9-339"><a href="#cb9-339" aria-hidden="true" tabindex="-1"></a>   immediately.</span>
+<span id="cb9-340"><a href="#cb9-340" aria-hidden="true" tabindex="-1"></a><span class="ss">2. </span>**Wrong batch stride.** For <span class="in">`(B, M, K)`</span> contiguous, <span class="in">`stride_ab`</span> is</span>
+<span id="cb9-341"><a href="#cb9-341" aria-hidden="true" tabindex="-1"></a>   <span class="in">`M * K`</span>, not <span class="in">`M`</span> or <span class="in">`K`</span> alone. Passing the wrong one means every</span>
+<span id="cb9-342"><a href="#cb9-342" aria-hidden="true" tabindex="-1"></a>   batch program reads from the same address and you get either NaNs</span>
+<span id="cb9-343"><a href="#cb9-343" aria-hidden="true" tabindex="-1"></a>   or silently duplicated output. Pass <span class="in">`a.stride(0)`</span> explicitly and</span>
+<span id="cb9-344"><a href="#cb9-344" aria-hidden="true" tabindex="-1"></a>   forget about it.</span>
+<span id="cb9-345"><a href="#cb9-345" aria-hidden="true" tabindex="-1"></a><span class="ss">3. </span>**Bias broadcast over the wrong axis.** Bias is <span class="in">`(N,)`</span> and you want</span>
+<span id="cb9-346"><a href="#cb9-346" aria-hidden="true" tabindex="-1"></a>   to add it as <span class="in">`bias[None, :]`</span> (broadcast over rows). Doing</span>
+<span id="cb9-347"><a href="#cb9-347" aria-hidden="true" tabindex="-1"></a>   <span class="in">`bias[:, None]`</span> adds the wrong elements to the wrong outputs and</span>
+<span id="cb9-348"><a href="#cb9-348" aria-hidden="true" tabindex="-1"></a>   the test mismatches by a lot rather than a little.</span>
+<span id="cb9-349"><a href="#cb9-349" aria-hidden="true" tabindex="-1"></a><span class="ss">4. </span>**Reshape that materializes.** If <span class="in">`X: (B, T, in)`</span> is non-contiguous</span>
+<span id="cb9-350"><a href="#cb9-350" aria-hidden="true" tabindex="-1"></a>   (because of a <span class="in">`.transpose()`</span> earlier), <span class="in">`x.reshape(-1, in)`</span> will</span>
+<span id="cb9-351"><a href="#cb9-351" aria-hidden="true" tabindex="-1"></a>   silently allocate and copy. Either <span class="in">`.contiguous()`</span> first</span>
+<span id="cb9-352"><a href="#cb9-352" aria-hidden="true" tabindex="-1"></a>   (explicit) or change the kernel to take a 3D <span class="in">`X`</span> and walk the</span>
+<span id="cb9-353"><a href="#cb9-353" aria-hidden="true" tabindex="-1"></a>   <span class="in">`(B, T)`</span> axes with two stride args.</span>
+<span id="cb9-354"><a href="#cb9-354" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-355"><a href="#cb9-355" aria-hidden="true" tabindex="-1"></a><span class="fu">### Exercises</span></span>
+<span id="cb9-356"><a href="#cb9-356" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-357"><a href="#cb9-357" aria-hidden="true" tabindex="-1"></a><span class="fu">#### Beginner</span></span>
+<span id="cb9-358"><a href="#cb9-358" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-359"><a href="#cb9-359" aria-hidden="true" tabindex="-1"></a><span class="ss">1. </span>**Plain batched matmul.** Strip the masks from</span>
+<span id="cb9-360"><a href="#cb9-360" aria-hidden="true" tabindex="-1"></a>   <span class="in">`batched_matmul_kernel`</span> (assume divisibility). Verify against</span>
+<span id="cb9-361"><a href="#cb9-361" aria-hidden="true" tabindex="-1"></a>   <span class="in">`torch.matmul`</span> for <span class="in">`(8, 256, 256) @ (8, 256, 256)`</span>.</span>
+<span id="cb9-362"><a href="#cb9-362" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-363"><a href="#cb9-363" aria-hidden="true" tabindex="-1"></a><span class="ss">2. </span>**Linear without bias.** Adapt the fused kernel to compute</span>
+<span id="cb9-364"><a href="#cb9-364" aria-hidden="true" tabindex="-1"></a>   <span class="in">`Y = X @ W^T`</span> only. Should be a one-line deletion plus removing the</span>
+<span id="cb9-365"><a href="#cb9-365" aria-hidden="true" tabindex="-1"></a>   bias argument from the launcher.</span>
+<span id="cb9-366"><a href="#cb9-366" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-367"><a href="#cb9-367" aria-hidden="true" tabindex="-1"></a><span class="ss">3. </span>**Linear with bias, no activation.** Same as the fused kernel but</span>
+<span id="cb9-368"><a href="#cb9-368" aria-hidden="true" tabindex="-1"></a>   stop after the bias add. This is the kernel <span class="in">`F.linear`</span> represents.</span>
+<span id="cb9-369"><a href="#cb9-369" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-370"><a href="#cb9-370" aria-hidden="true" tabindex="-1"></a><span class="fu">#### Intermediate</span></span>
+<span id="cb9-371"><a href="#cb9-371" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-372"><a href="#cb9-372" aria-hidden="true" tabindex="-1"></a><span class="ss">4. </span>**Reimplement fused linear + bias + GELU from scratch.** Walk</span>
+<span id="cb9-373"><a href="#cb9-373" aria-hidden="true" tabindex="-1"></a>   through the kernel by hand, then write it without looking. Confirm</span>
+<span id="cb9-374"><a href="#cb9-374" aria-hidden="true" tabindex="-1"></a>   against <span class="in">`F.gelu(F.linear(x, w, b), approximate="tanh")`</span>.</span>
+<span id="cb9-375"><a href="#cb9-375" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-376"><a href="#cb9-376" aria-hidden="true" tabindex="-1"></a><span class="ss">5. </span>**Fused linear + bias + residual.** <span class="in">`Y = X @ W^T + b + R`</span> where R</span>
+<span id="cb9-377"><a href="#cb9-377" aria-hidden="true" tabindex="-1"></a>   has the same shape as Y. Load R alongside the bias in the</span>
+<span id="cb9-378"><a href="#cb9-378" aria-hidden="true" tabindex="-1"></a>   epilogue, add it in fp32, cast, store. This is the FFN-output</span>
+<span id="cb9-379"><a href="#cb9-379" aria-hidden="true" tabindex="-1"></a>   fusion in a typical transformer block.</span>
+<span id="cb9-380"><a href="#cb9-380" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-381"><a href="#cb9-381" aria-hidden="true" tabindex="-1"></a><span class="fu">#### Advanced</span></span>
+<span id="cb9-382"><a href="#cb9-382" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-383"><a href="#cb9-383" aria-hidden="true" tabindex="-1"></a><span class="ss">6. </span>**Discuss fused linear + LayerNorm.** Write a short paragraph</span>
+<span id="cb9-384"><a href="#cb9-384" aria-hidden="true" tabindex="-1"></a>   explaining what goes wrong. Hint: LayerNorm needs the mean and</span>
+<span id="cb9-385"><a href="#cb9-385" aria-hidden="true" tabindex="-1"></a>   variance of the full hidden-dim vector for each row. A matmul tile</span>
+<span id="cb9-386"><a href="#cb9-386" aria-hidden="true" tabindex="-1"></a>   only produces <span class="in">`BLOCK_N`</span> columns at a time. Sketch what cooperative</span>
+<span id="cb9-387"><a href="#cb9-387" aria-hidden="true" tabindex="-1"></a>   reduction across tiles would cost and why most implementations</span>
+<span id="cb9-388"><a href="#cb9-388" aria-hidden="true" tabindex="-1"></a>   leave LayerNorm as a separate kernel.</span>
+<span id="cb9-389"><a href="#cb9-389" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-390"><a href="#cb9-390" aria-hidden="true" tabindex="-1"></a>Solutions in <span class="in">`solutions/ch10_solutions.py`</span>.</span>
+</code><button title="Copy to Clipboard" class="code-copy-button" data-in-quarto-modal=""><i class="bi"></i></button></pre></div>
+</div></div></div></div></div>
+</div> <!-- /content -->
+
+
+
+
+</body></html>

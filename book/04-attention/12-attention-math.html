@@ -1,0 +1,1312 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"><head>
+
+<meta charset="utf-8">
+<meta name="generator" content="quarto-1.5.57">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+
+<title>14&nbsp; Chapter 12: Attention Math Refresher for Kernel Writers – Learning Triton by Rebuilding Modern LLM Kernels</title>
+<style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+  width: 0.8em;
+  margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
+  vertical-align: middle;
+}
+/* CSS for syntax highlighting */
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { display: inline-block; text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+  { counter-reset: source-line 0; }
+pre.numberSource code > span
+  { position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+  { content: counter(source-line);
+    position: relative; left: -1em; text-align: right; vertical-align: baseline;
+    border: none; display: inline-block;
+    -webkit-touch-callout: none; -webkit-user-select: none;
+    -khtml-user-select: none; -moz-user-select: none;
+    -ms-user-select: none; user-select: none;
+    padding: 0 4px; width: 4em;
+  }
+pre.numberSource { margin-left: 3em;  padding-left: 4px; }
+div.sourceCode
+  {   }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+</style>
+
+
+<script src="../../site_libs/quarto-nav/quarto-nav.js"></script>
+<script src="../../site_libs/quarto-nav/headroom.min.js"></script>
+<script src="../../site_libs/clipboard/clipboard.min.js"></script>
+<script src="../../site_libs/quarto-search/autocomplete.umd.js"></script>
+<script src="../../site_libs/quarto-search/fuse.min.js"></script>
+<script src="../../site_libs/quarto-search/quarto-search.js"></script>
+<meta name="quarto:offset" content="../../">
+<link href="../../book/04-attention/13-naive-attention.html" rel="next">
+<link href="../../book/03-matmul/11-persistent-matmul.html" rel="prev">
+<script src="../../site_libs/quarto-html/quarto.js"></script>
+<script src="../../site_libs/quarto-html/popper.min.js"></script>
+<script src="../../site_libs/quarto-html/tippy.umd.min.js"></script>
+<script src="../../site_libs/quarto-html/anchor.min.js"></script>
+<link href="../../site_libs/quarto-html/tippy.css" rel="stylesheet">
+<link href="../../site_libs/quarto-html/quarto-syntax-highlighting.css" rel="stylesheet" id="quarto-text-highlighting-styles">
+<script src="../../site_libs/bootstrap/bootstrap.min.js"></script>
+<link href="../../site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
+<link href="../../site_libs/bootstrap/bootstrap.min.css" rel="stylesheet" id="quarto-bootstrap" data-mode="light">
+<script id="quarto-search-options" type="application/json">{
+  "location": "sidebar",
+  "copy-button": false,
+  "collapse-after": 3,
+  "panel-placement": "start",
+  "type": "textbox",
+  "limit": 50,
+  "keyboard-shortcut": [
+    "f",
+    "/",
+    "s"
+  ],
+  "show-item-context": false,
+  "language": {
+    "search-no-results-text": "No results",
+    "search-matching-documents-text": "matching documents",
+    "search-copy-link-title": "Copy link to search",
+    "search-hide-matches-text": "Hide additional matches",
+    "search-more-match-text": "more match in this document",
+    "search-more-matches-text": "more matches in this document",
+    "search-clear-button-title": "Clear",
+    "search-text-placeholder": "",
+    "search-detached-cancel-button-title": "Cancel",
+    "search-submit-button-title": "Submit",
+    "search-label": "Search"
+  }
+}</script>
+<meta name="mermaid-theme" content="default">
+<script src="../../site_libs/quarto-diagram/mermaid.min.js"></script>
+<script src="../../site_libs/quarto-diagram/mermaid-init.js"></script>
+<link href="../../site_libs/quarto-diagram/mermaid.css" rel="stylesheet">
+
+
+</head>
+
+<body class="nav-sidebar floating">
+
+<div id="quarto-search-results"></div>
+  <header id="quarto-header" class="headroom fixed-top">
+  <nav class="quarto-secondary-nav">
+    <div class="container-fluid d-flex">
+      <button type="button" class="quarto-btn-toggle btn" data-bs-toggle="collapse" role="button" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">
+        <i class="bi bi-layout-text-sidebar-reverse"></i>
+      </button>
+        <nav class="quarto-page-breadcrumbs" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="../../book/04-attention/12-attention-math.html">Part 4: Attention and Transformer Kernels</a></li><li class="breadcrumb-item"><a href="../../book/04-attention/12-attention-math.html"><span class="chapter-number">14</span>&nbsp; <span class="chapter-title">Chapter 12: Attention Math Refresher for Kernel Writers</span></a></li></ol></nav>
+        <a class="flex-grow-1" role="navigation" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">      
+        </a>
+      <button type="button" class="btn quarto-search-button" aria-label="Search" onclick="window.quartoOpenSearch();">
+        <i class="bi bi-search"></i>
+      </button>
+    </div>
+  </nav>
+</header>
+<!-- content -->
+<div id="quarto-content" class="quarto-container page-columns page-rows-contents page-layout-article">
+<!-- sidebar -->
+  <nav id="quarto-sidebar" class="sidebar collapse collapse-horizontal quarto-sidebar-collapse-item sidebar-navigation floating overflow-auto">
+    <div class="pt-lg-2 mt-2 text-left sidebar-header">
+    <div class="sidebar-title mb-0 py-0">
+      <a href="../../">Learning Triton by Rebuilding Modern LLM Kernels</a> 
+    </div>
+      </div>
+        <div class="mt-2 flex-shrink-0 align-items-center">
+        <div class="sidebar-search">
+        <div id="quarto-search" class="" title="Search"></div>
+        </div>
+        </div>
+    <div class="sidebar-menu-container"> 
+    <ul class="list-unstyled mt-1">
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../index.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">1</span>&nbsp; <span class="chapter-title">Learning Triton by Rebuilding Modern LLM Kernels</span></span></a>
+  </div>
+</li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-1" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 0: Orientation</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-1" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-1" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/00-orientation/00-why-triton.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">2</span>&nbsp; <span class="chapter-title">Chapter 00: Why Triton Exists</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/00-orientation/01-setup.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">3</span>&nbsp; <span class="chapter-title">Chapter 01: Environment Setup</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-2" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 1: Triton Fundamentals</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-2" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-2" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/01-fundamentals/02-mental-model.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">4</span>&nbsp; <span class="chapter-title">Chapter 2: The Triton Mental Model</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/01-fundamentals/03-memory-pointers-strides.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">5</span>&nbsp; <span class="chapter-title">Chapter 3: Memory, Pointers, Strides, and Masks</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/01-fundamentals/04-reductions.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">6</span>&nbsp; <span class="chapter-title">Chapter 4: Reductions</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-3" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 2: Basic Neural Network Kernels</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-3" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-3" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/02-basic-nn/05-fused-softmax.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">7</span>&nbsp; <span class="chapter-title">Chapter 5: Fused Softmax</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/02-basic-nn/06-layernorm.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">8</span>&nbsp; <span class="chapter-title">Chapter 6: LayerNorm</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/02-basic-nn/07-rmsnorm.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">9</span>&nbsp; <span class="chapter-title">Chapter 7: RMSNorm</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/02-basic-nn/08-activations-swiglu.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">10</span>&nbsp; <span class="chapter-title">Chapter 8: Activation Functions and Gated MLPs</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-4" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 3: Matrix Multiplication</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-4" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-4" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/03-matmul/09-matmul.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">11</span>&nbsp; <span class="chapter-title">Chapter 9: Matmul From Scratch</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/03-matmul/10-batched-matmul-linear.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">12</span>&nbsp; <span class="chapter-title">Chapter 10: Batched Matmul and Linear Layers</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/03-matmul/11-persistent-matmul.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">13</span>&nbsp; <span class="chapter-title">Chapter 11: Persistent Matmul and Advanced Matmul Concepts</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-5" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 4: Attention and Transformer Kernels</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-5" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-5" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/12-attention-math.html" class="sidebar-item-text sidebar-link active">
+ <span class="menu-text"><span class="chapter-number">14</span>&nbsp; <span class="chapter-title">Chapter 12: Attention Math Refresher for Kernel Writers</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/13-naive-attention.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">15</span>&nbsp; <span class="chapter-title">Chapter 13: Naive Attention in PyTorch and Triton Pieces</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/14-flashattention-fwd.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">16</span>&nbsp; <span class="chapter-title">Chapter 14: FlashAttention Forward in Triton</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/15-attention-backward.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">17</span>&nbsp; <span class="chapter-title">Chapter 15: Attention Backward — Conceptual and Optional Implementation</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/16-rope-alibi.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">18</span>&nbsp; <span class="chapter-title">Chapter 16: Rotary Positional Embeddings, ALiBi, and Position Kernels</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/17-kv-cache.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">19</span>&nbsp; <span class="chapter-title">Chapter 17: KV Cache Kernels for Inference</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-6" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 5: Modern LLM Layer Fusion</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-6" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-6" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/05-llm-fusion/18-residual-rmsnorm.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">20</span>&nbsp; <span class="chapter-title">Chapter 18: Residual Add + RMSNorm Fusion</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/05-llm-fusion/19-fused-bias-act-gate.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">21</span>&nbsp; <span class="chapter-title">Chapter 19: Fused Bias + Activation + Gate</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/05-llm-fusion/20-cross-entropy.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">22</span>&nbsp; <span class="chapter-title">Chapter 20: Cross Entropy and Logits Kernels</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/05-llm-fusion/21-sampling.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">23</span>&nbsp; <span class="chapter-title">Chapter 21: Sampling Kernels for Inference</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-7" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 6: Quantization-Oriented Kernels</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-7" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-7" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/06-quantization/22-low-precision.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">24</span>&nbsp; <span class="chapter-title">Chapter 22: Low Precision Basics</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/06-quantization/23-dequant-matmul.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">25</span>&nbsp; <span class="chapter-title">Chapter 23: Int8 / FP8 Style Dequant + Matmul Concepts</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-8" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 7: Debugging, Testing, Profiling, Optimization</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-8" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-8" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/07-debug-perf/24-debugging.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">26</span>&nbsp; <span class="chapter-title">Chapter 24: Debugging Triton Kernels</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/07-debug-perf/25-benchmarking.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">27</span>&nbsp; <span class="chapter-title">Chapter 25: Benchmarking Correctly</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/07-debug-perf/26-autotuning.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">28</span>&nbsp; <span class="chapter-title">Chapter 26: Autotuning</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/07-debug-perf/27-perf-tuning.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">29</span>&nbsp; <span class="chapter-title">Chapter 27: Performance Tuning Mental Model</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-9" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 8: Capstone Projects</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-9" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-9" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/08-capstone/28-mini-library.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">30</span>&nbsp; <span class="chapter-title">Chapter 28: Build a Mini Triton LLM Kernel Library</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/08-capstone/29-replace-transformer-pieces.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">31</span>&nbsp; <span class="chapter-title">Chapter 29: Replace Pieces of a Tiny Transformer</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/08-capstone/30-design-playbook.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">32</span>&nbsp; <span class="chapter-title">Chapter 30: Final Kernel Design Playbook</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/appendix-study-plan.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">33</span>&nbsp; <span class="chapter-title">Appendix: Study Plan, Memory Kernels, and the Capstone Challenge</span></span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../kernel_checklist.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">34</span>&nbsp; <span class="chapter-title">Triton Kernel Design Checklist</span></span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../llm_kernel_map.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">35</span>&nbsp; <span class="chapter-title">LLM Component → Triton Kernel Map</span></span></a>
+  </div>
+</li>
+    </ul>
+    </div>
+</nav>
+<div id="quarto-sidebar-glass" class="quarto-sidebar-collapse-item" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item"></div>
+<!-- margin-sidebar -->
+    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar">
+        <nav id="TOC" role="doc-toc" class="toc-active">
+    <h2 id="toc-title">Table of contents</h2>
+   
+  <ul>
+  <li><a href="#shapes-and-the-layout-debate" id="toc-shapes-and-the-layout-debate" class="nav-link active" data-scroll-target="#shapes-and-the-layout-debate"><span class="header-section-number">14.1</span> Shapes and the layout debate</a></li>
+  <li><a href="#the-five-step-recipe" id="toc-the-five-step-recipe" class="nav-link" data-scroll-target="#the-five-step-recipe"><span class="header-section-number">14.2</span> The five-step recipe</a></li>
+  <li><a href="#memory-accounting-why-naive-attention-dies" id="toc-memory-accounting-why-naive-attention-dies" class="nav-link" data-scroll-target="#memory-accounting-why-naive-attention-dies"><span class="header-section-number">14.3</span> Memory accounting: why naive attention dies</a></li>
+  <li><a href="#a-worked-example" id="toc-a-worked-example" class="nav-link" data-scroll-target="#a-worked-example"><span class="header-section-number">14.4</span> A worked example</a></li>
+  <li><a href="#what-flashattention-does-differently" id="toc-what-flashattention-does-differently" class="nav-link" data-scroll-target="#what-flashattention-does-differently"><span class="header-section-number">14.5</span> What FlashAttention does differently</a></li>
+  <li><a href="#io-complexity-briefly" id="toc-io-complexity-briefly" class="nav-link" data-scroll-target="#io-complexity-briefly"><span class="header-section-number">14.6</span> IO complexity, briefly</a></li>
+  <li><a href="#side-by-side-data-flow" id="toc-side-by-side-data-flow" class="nav-link" data-scroll-target="#side-by-side-data-flow"><span class="header-section-number">14.7</span> Side-by-side data flow</a></li>
+  <li><a href="#numerical-stability-checklist" id="toc-numerical-stability-checklist" class="nav-link" data-scroll-target="#numerical-stability-checklist"><span class="header-section-number">14.8</span> Numerical stability checklist</a>
+  <ul class="collapse">
+  <li><a href="#exercises" id="toc-exercises" class="nav-link" data-scroll-target="#exercises"><span class="header-section-number">14.8.1</span> Exercises</a></li>
+  </ul></li>
+  </ul>
+</nav>
+    </div>
+<!-- main -->
+<main class="content" id="quarto-document-content">
+
+<header id="title-block-header" class="quarto-title-block default"><nav class="quarto-page-breadcrumbs quarto-title-breadcrumbs d-none d-lg-block" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="../../book/04-attention/12-attention-math.html">Part 4: Attention and Transformer Kernels</a></li><li class="breadcrumb-item"><a href="../../book/04-attention/12-attention-math.html"><span class="chapter-number">14</span>&nbsp; <span class="chapter-title">Chapter 12: Attention Math Refresher for Kernel Writers</span></a></li></ol></nav>
+<div class="quarto-title">
+<div class="quarto-title-block"><div><h1 class="title"><span class="chapter-number">14</span>&nbsp; <span class="chapter-title">Chapter 12: Attention Math Refresher for Kernel Writers</span></h1><button type="button" class="btn code-tools-button" id="quarto-code-tools-source"><i class="bi"></i> Code</button></div></div>
+</div>
+
+
+
+<div class="quarto-title-meta">
+
+    
+  
+    
+  </div>
+  
+
+
+</header>
+
+
+<p>You already know what attention computes. The textbooks treat it as a formula. Kernel writers treat it as a memory layout problem with a softmax in the middle. This chapter reframes the math from the second perspective. Every quantity is sized, every intermediate is accounted for in bytes, and every step is connected to where it lives — registers, SRAM, or HBM. By the end of the chapter you should be able to point at the line <code>scores = Q @ K^T</code> and say, out loud, why that line is the entire reason FlashAttention exists.</p>
+<p>There is no Triton in this chapter and no benchmarks. We are setting up the accounting that the next two chapters spend ferociously.</p>
+<section id="shapes-and-the-layout-debate" class="level2" data-number="14.1">
+<h2 data-number="14.1" class="anchored" data-anchor-id="shapes-and-the-layout-debate"><span class="header-section-number">14.1</span> Shapes and the layout debate</h2>
+<p>We use the four-dimensional layout <code>[B, H, S, D]</code> throughout the book:</p>
+<ul>
+<li><code>B</code> is batch size.</li>
+<li><code>H</code> is the number of attention heads.</li>
+<li><code>S</code> is the sequence length.</li>
+<li><code>D</code> is the head dimension (the per-head channel count).</li>
+</ul>
+<p>So <code>Q</code>, <code>K</code>, <code>V</code> all live as <code>[B, H, S, D]</code> tensors.</p>
+<p>You will see two layout camps in real code. The “head-major” camp puts <code>H</code> before <code>S</code>, which is what we do here, and which is also what PyTorch’s <code>scaled_dot_product_attention</code> expects. The “seq-major” camp puts <code>S</code> before <code>H</code>, which is what <code>nn.MultiheadAttention</code> historically used and what some inference frameworks prefer because it keeps each token’s full hidden state contiguous in memory.</p>
+<p>For a kernel writer, the practical difference is:</p>
+<ul>
+<li><code>[B, H, S, D]</code> makes per-head kernels trivial — the <code>(B, H)</code> pair becomes the outer grid axis and each program owns one <code>[S, D]</code> slice.</li>
+<li><code>[B, S, H, D]</code> is better when you fuse with token-wise ops (LayerNorm across the hidden dimension), because the per-token hidden state <code>[H * D]</code> is contiguous.</li>
+</ul>
+<p>For attention specifically <code>[B, H, S, D]</code> is the friendlier choice and we commit to it. Treat <code>(B, H)</code> as a flattened “batch” dimension of size <code>B * H</code> for the inner kernel; it will simplify the launcher.</p>
+</section>
+<section id="the-five-step-recipe" class="level2" data-number="14.2">
+<h2 data-number="14.2" class="anchored" data-anchor-id="the-five-step-recipe"><span class="header-section-number">14.2</span> The five-step recipe</h2>
+<p>Standard scaled dot-product attention with a causal mask:</p>
+<ol type="1">
+<li><code>scores = Q @ K^T</code>, shape <code>[B, H, S, S]</code>.</li>
+<li><code>scores = scores / sqrt(D)</code> to keep variance bounded after the dot product.</li>
+<li><code>scores = scores.masked_fill(future_positions, -inf)</code> for causal attention.</li>
+<li><code>probs = softmax(scores, dim=-1)</code>, shape <code>[B, H, S, S]</code>.</li>
+<li><code>out = probs @ V</code>, shape <code>[B, H, S, D]</code>.</li>
+</ol>
+<p>The output is the same shape as <code>Q</code>. Everything in the middle is a <code>[B, H, S, S]</code> tensor — quadratic in the sequence length. That tensor is the entire problem.</p>
+</section>
+<section id="memory-accounting-why-naive-attention-dies" class="level2" data-number="14.3">
+<h2 data-number="14.3" class="anchored" data-anchor-id="memory-accounting-why-naive-attention-dies"><span class="header-section-number">14.3</span> Memory accounting: why naive attention dies</h2>
+<p>Take a moderately sized configuration: <code>B = 4</code>, <code>H = 32</code>, <code>S = 4096</code>, <code>D = 64</code>, fp16.</p>
+<p>The activations:</p>
+<ul>
+<li><code>Q</code>, <code>K</code>, <code>V</code>: each <code>4 * 32 * 4096 * 64 * 2 bytes = 64 MB</code>. Total <code>192 MB</code>.</li>
+<li><code>scores</code>: <code>4 * 32 * 4096 * 4096 * 2 bytes = 4 GB</code>.</li>
+<li><code>probs</code>: another <code>4 GB</code>.</li>
+<li><code>out</code>: <code>64 MB</code>.</li>
+</ul>
+<p>The two <code>[B, H, S, S]</code> tensors dwarf everything else by a factor of roughly fifty. They will not all fit on the author’s reference 2070 SUPER, which has 8 GB total VRAM and is hosting the model parameters too. Even on an A100 80 GB you would burn <code>10%</code> of memory on a single layer’s attention activations.</p>
+<p>Double the sequence to <code>S = 8192</code> and the <code>scores</code> tensor becomes <code>16 GB</code> per copy. The <code>2070 SUPER</code> is well past out-of-memory; even the A100 starts to feel it.</p>
+<p>This is not a theoretical concern. This is the reason FlashAttention exists.</p>
+</section>
+<section id="a-worked-example" class="level2" data-number="14.4">
+<h2 data-number="14.4" class="anchored" data-anchor-id="a-worked-example"><span class="header-section-number">14.4</span> A worked example</h2>
+<p>Pick the smallest non-trivial shape: <code>B = 1</code>, <code>H = 1</code>, <code>S = 4</code>, <code>D = 2</code>, no batch flattening, fp32 for the arithmetic.</p>
+<pre><code>Q = [[1, 0], [0, 1], [1, 1], [0, 0]]    # shape (4, 2)
+K = [[1, 0], [1, 1], [0, 1], [1, 0]]    # shape (4, 2)
+V = [[2, 0], [0, 2], [1, 1], [0, 0]]    # shape (4, 2)
+
+scale = 1 / sqrt(2) ≈ 0.7071
+
+scores = Q @ K^T  =                      # shape (4, 4)
+  [[1, 1, 0, 1],
+   [0, 1, 1, 0],
+   [1, 2, 1, 1],
+   [0, 0, 0, 0]]
+
+scaled = scores * 0.7071 =
+  [[0.707, 0.707, 0.000, 0.707],
+   [0.000, 0.707, 0.707, 0.000],
+   [0.707, 1.414, 0.707, 0.707],
+   [0.000, 0.000, 0.000, 0.000]]
+
+causal mask (upper triangle to -inf):
+  [[0.707, -inf,  -inf,  -inf ],
+   [0.000, 0.707, -inf,  -inf ],
+   [0.707, 1.414, 0.707, -inf ],
+   [0.000, 0.000, 0.000, 0.000]]
+
+softmax(dim=-1):
+  row 0: [1.000, 0.000, 0.000, 0.000]
+  row 1: [0.330, 0.670, 0.000, 0.000]
+  row 2: [0.211, 0.428, 0.211, ...]  # third entry shares the 0.211 mass; fourth is -inf
+  row 3: [0.250, 0.250, 0.250, 0.250]
+
+out = probs @ V                          # shape (4, 2)</code></pre>
+<p>The key observation: each output row is a convex combination of the value rows whose tokens the query is allowed to see. The softmax weights are derived from a per-row max and per-row sum. <strong>A single output row only needs its own row of <code>scores</code>, not the whole matrix.</strong> This is the seed of the idea.</p>
+</section>
+<section id="what-flashattention-does-differently" class="level2" data-number="14.5">
+<h2 data-number="14.5" class="anchored" data-anchor-id="what-flashattention-does-differently"><span class="header-section-number">14.5</span> What FlashAttention does differently</h2>
+<p>FlashAttention rearranges the loop so the <code>[B, H, S, S]</code> tensor is never materialized in HBM. The trick is to walk the K/V axis in blocks and update each output row incrementally:</p>
+<ol type="1">
+<li>Pick a tile of <code>BLOCK_M</code> rows of <code>Q</code>. Load it into SRAM.</li>
+<li>Loop over tiles of <code>BLOCK_N</code> rows of <code>K</code> and <code>V</code>.</li>
+<li>For each <code>K</code> tile, compute the partial scores <code>[BLOCK_M, BLOCK_N]</code> in registers, mask, take the running max, exponentiate, multiply by the <code>V</code> tile, and add to a per-Q-row running accumulator.</li>
+<li>After the loop, divide by the running sum to finish the softmax.</li>
+</ol>
+<p>The “running max” plus “running sum” plus “running output accumulator” is the <strong>online softmax</strong> recurrence. Chapter 14 is where we implement it. The crucial point for this chapter is that the only quantities that ever leave SRAM and touch HBM are <code>Q</code>, <code>K</code>, <code>V</code>, and <code>out</code>. The <code>[B, H, S, S]</code> score tensor never exists outside the inner loop’s registers.</p>
+</section>
+<section id="io-complexity-briefly" class="level2" data-number="14.6">
+<h2 data-number="14.6" class="anchored" data-anchor-id="io-complexity-briefly"><span class="header-section-number">14.6</span> IO complexity, briefly</h2>
+<p>The naive forward reads/writes the <code>[B, H, S, S]</code> <code>scores</code> tensor twice (once after the matmul, once after the softmax) and the <code>[B, H, S, D]</code> output once. HBM traffic per <code>(B, H)</code> slice is on the order of <code>S^2 + S * D</code>. With <code>S = 4096</code> and <code>D = 64</code> that is <code>~16M</code> elements of HBM traffic dominated by the <code>S^2</code> term.</p>
+<p>FlashAttention reads <code>Q</code> once, reads <code>K</code> and <code>V</code> roughly <code>ceil(S / BLOCK_M)</code> times each (because the same K/V tile is reused across multiple Q tiles), and writes <code>out</code> once. HBM traffic per <code>(B, H)</code> slice is on the order of <code>S * D + (S / BLOCK_M) * S * D = S * D * (1 + S / BLOCK_M)</code>. With <code>S = 4096</code>, <code>D = 64</code>, <code>BLOCK_M = 64</code>, that comes out to <code>~16M</code> elements — comparable on the surface, but distributed very differently: there is no quadratic dependency on <code>S</code> for any <strong>single</strong> tensor, and the working set per program is just three tiles plus an accumulator, which fits in SRAM. The bandwidth savings show up most when <code>BLOCK_M</code> is large enough that each K/V tile gets reused many times before being evicted from SRAM.</p>
+</section>
+<section id="side-by-side-data-flow" class="level2" data-number="14.7">
+<h2 data-number="14.7" class="anchored" data-anchor-id="side-by-side-data-flow"><span class="header-section-number">14.7</span> Side-by-side data flow</h2>
+<div class="cell" data-layout-align="default">
+<div class="cell-output-display">
+<div>
+<p></p><figure class="figure"><p></p>
+<div>
+<pre class="mermaid mermaid-js">sequenceDiagram
+    participant HBM as HBM
+    participant SRAM as SRAM / registers
+    participant Out as Output (HBM)
+
+    Note over HBM,Out: Naive attention
+    HBM-&gt;&gt;SRAM: load Q, K
+    SRAM-&gt;&gt;HBM: store scores [B,H,S,S]
+    HBM-&gt;&gt;SRAM: load scores
+    SRAM-&gt;&gt;HBM: store probs [B,H,S,S]
+    HBM-&gt;&gt;SRAM: load probs, V
+    SRAM-&gt;&gt;Out: store out [B,H,S,D]
+
+    Note over HBM,Out: FlashAttention
+    HBM-&gt;&gt;SRAM: load Q tile [BLOCK_M, D]
+    loop over K/V tiles
+        HBM-&gt;&gt;SRAM: load K_j, V_j tiles [BLOCK_N, D]
+        SRAM-&gt;&gt;SRAM: compute s_ij, update (m, l, acc) in registers
+    end
+    SRAM-&gt;&gt;Out: store out tile [BLOCK_M, D]
+</pre>
+</div>
+<p></p></figure><p></p>
+</div>
+</div>
+</div>
+<p>The naive path writes and reads the quadratic tensor in HBM twice. The Flash path never writes it at all. That is the whole story.</p>
+</section>
+<section id="numerical-stability-checklist" class="level2" data-number="14.8">
+<h2 data-number="14.8" class="anchored" data-anchor-id="numerical-stability-checklist"><span class="header-section-number">14.8</span> Numerical stability checklist</h2>
+<p>Three numerical points carry over to every attention kernel in this book:</p>
+<ol type="1">
+<li><strong>Max-subtraction in softmax.</strong> Always subtract the row max before exponentiating. Without it, <code>exp(scores)</code> overflows at <code>scores &gt; ~88</code> in fp32 and <code>~16</code> in fp16.</li>
+<li><strong>fp32 accumulation.</strong> Even when inputs are fp16, do the dot products and the softmax denominator in fp32. The score matmul has a reduction of length <code>D = 64</code> or <code>128</code>; the softmax denominator is a reduction of length <code>S</code>. Both will lose precision in fp16.</li>
+<li><strong>fp16 output store.</strong> Cast the final result back to fp16 at the very end. The cast costs nothing once the value is in a register.</li>
+</ol>
+<p>These three rules are not optional. They will reappear in every attention kernel.</p>
+<section id="exercises" class="level3" data-number="14.8.1">
+<h3 data-number="14.8.1" class="anchored" data-anchor-id="exercises"><span class="header-section-number">14.8.1</span> Exercises</h3>
+<ol type="1">
+<li><strong>Beginner.</strong> Compute the memory cost of the <code>scores</code> tensor for <code>B = 8</code>, <code>H = 16</code>, <code>S = 2048</code>, <code>D = 128</code>, in both fp16 and fp32. Compare to the size of <code>Q</code>, <code>K</code>, <code>V</code>, <code>out</code>. Which one dominates?</li>
+<li><strong>Beginner.</strong> A typical 70 B parameter model has <code>H = 64</code> heads and <code>D = 128</code> per head. Suppose you want to serve <code>B = 16</code> requests at <code>S = 4096</code>. How much memory does the per-layer <code>scores</code> tensor take in fp16? How does that compare to the per-layer KV cache (which is <code>2 * B * H * S * D * 2 bytes</code>)?</li>
+<li><strong>Intermediate.</strong> For <code>S = 4096</code>, <code>D = 64</code>, and <code>BLOCK_M = BLOCK_N = 64</code>, compute the number of times each K tile is read by the FlashAttention forward. Compare to the naive case, where each K element is read exactly once per output row.</li>
+<li><strong>Intermediate.</strong> Show that for a causal mask, the average number of K/V tiles a Q tile must visit is <code>(num_kv_tiles + 1) / 2</code>, not <code>num_kv_tiles</code>. This is the basis for the “causal pruning” you will write in Chapter 14.</li>
+<li><strong>Advanced.</strong> Sketch the memory accounting for the <strong>backward</strong> pass of naive attention. Which tensors must be saved from the forward, and which can be recomputed? Argue why FlashAttention’s backward only needs to save <code>Q</code>, <code>K</code>, <code>V</code>, <code>out</code>, and the per-row log-sum-exp.</li>
+</ol>
+<p>The next chapter writes the naive forward in Triton. We will materialize the <code>[B, H, S, S]</code> tensor on purpose. The chapter after that throws it away.</p>
+
+
+<!-- -->
+
+</section>
+</section>
+
+</main> <!-- /main -->
+<script id="quarto-html-after-body" type="application/javascript">
+window.document.addEventListener("DOMContentLoaded", function (event) {
+  const toggleBodyColorMode = (bsSheetEl) => {
+    const mode = bsSheetEl.getAttribute("data-mode");
+    const bodyEl = window.document.querySelector("body");
+    if (mode === "dark") {
+      bodyEl.classList.add("quarto-dark");
+      bodyEl.classList.remove("quarto-light");
+    } else {
+      bodyEl.classList.add("quarto-light");
+      bodyEl.classList.remove("quarto-dark");
+    }
+  }
+  const toggleBodyColorPrimary = () => {
+    const bsSheetEl = window.document.querySelector("link#quarto-bootstrap");
+    if (bsSheetEl) {
+      toggleBodyColorMode(bsSheetEl);
+    }
+  }
+  toggleBodyColorPrimary();  
+  const icon = "";
+  const anchorJS = new window.AnchorJS();
+  anchorJS.options = {
+    placement: 'right',
+    icon: icon
+  };
+  anchorJS.add('.anchored');
+  const isCodeAnnotation = (el) => {
+    for (const clz of el.classList) {
+      if (clz.startsWith('code-annotation-')) {                     
+        return true;
+      }
+    }
+    return false;
+  }
+  const onCopySuccess = function(e) {
+    // button target
+    const button = e.trigger;
+    // don't keep focus
+    button.blur();
+    // flash "checked"
+    button.classList.add('code-copy-button-checked');
+    var currentTitle = button.getAttribute("title");
+    button.setAttribute("title", "Copied!");
+    let tooltip;
+    if (window.bootstrap) {
+      button.setAttribute("data-bs-toggle", "tooltip");
+      button.setAttribute("data-bs-placement", "left");
+      button.setAttribute("data-bs-title", "Copied!");
+      tooltip = new bootstrap.Tooltip(button, 
+        { trigger: "manual", 
+          customClass: "code-copy-button-tooltip",
+          offset: [0, -8]});
+      tooltip.show();    
+    }
+    setTimeout(function() {
+      if (tooltip) {
+        tooltip.hide();
+        button.removeAttribute("data-bs-title");
+        button.removeAttribute("data-bs-toggle");
+        button.removeAttribute("data-bs-placement");
+      }
+      button.setAttribute("title", currentTitle);
+      button.classList.remove('code-copy-button-checked');
+    }, 1000);
+    // clear code selection
+    e.clearSelection();
+  }
+  const getTextToCopy = function(trigger) {
+      const codeEl = trigger.previousElementSibling.cloneNode(true);
+      for (const childEl of codeEl.children) {
+        if (isCodeAnnotation(childEl)) {
+          childEl.remove();
+        }
+      }
+      return codeEl.innerText;
+  }
+  const clipboard = new window.ClipboardJS('.code-copy-button:not([data-in-quarto-modal])', {
+    text: getTextToCopy
+  });
+  clipboard.on('success', onCopySuccess);
+  if (window.document.getElementById('quarto-embedded-source-code-modal')) {
+    // For code content inside modals, clipBoardJS needs to be initialized with a container option
+    // TODO: Check when it could be a function (https://github.com/zenorocha/clipboard.js/issues/860)
+    const clipboardModal = new window.ClipboardJS('.code-copy-button[data-in-quarto-modal]', {
+      text: getTextToCopy,
+      container: window.document.getElementById('quarto-embedded-source-code-modal')
+    });
+    clipboardModal.on('success', onCopySuccess);
+  }
+  const viewSource = window.document.getElementById('quarto-view-source') ||
+                     window.document.getElementById('quarto-code-tools-source');
+  if (viewSource) {
+    const sourceUrl = viewSource.getAttribute("data-quarto-source-url");
+    viewSource.addEventListener("click", function(e) {
+      if (sourceUrl) {
+        // rstudio viewer pane
+        if (/\bcapabilities=\b/.test(window.location)) {
+          window.open(sourceUrl);
+        } else {
+          window.location.href = sourceUrl;
+        }
+      } else {
+        const modal = new bootstrap.Modal(document.getElementById('quarto-embedded-source-code-modal'));
+        modal.show();
+      }
+      return false;
+    });
+  }
+  function toggleCodeHandler(show) {
+    return function(e) {
+      const detailsSrc = window.document.querySelectorAll(".cell > details > .sourceCode");
+      for (let i=0; i<detailsSrc.length; i++) {
+        const details = detailsSrc[i].parentElement;
+        if (show) {
+          details.open = true;
+        } else {
+          details.removeAttribute("open");
+        }
+      }
+      const cellCodeDivs = window.document.querySelectorAll(".cell > .sourceCode");
+      const fromCls = show ? "hidden" : "unhidden";
+      const toCls = show ? "unhidden" : "hidden";
+      for (let i=0; i<cellCodeDivs.length; i++) {
+        const codeDiv = cellCodeDivs[i];
+        if (codeDiv.classList.contains(fromCls)) {
+          codeDiv.classList.remove(fromCls);
+          codeDiv.classList.add(toCls);
+        } 
+      }
+      return false;
+    }
+  }
+  const hideAllCode = window.document.getElementById("quarto-hide-all-code");
+  if (hideAllCode) {
+    hideAllCode.addEventListener("click", toggleCodeHandler(false));
+  }
+  const showAllCode = window.document.getElementById("quarto-show-all-code");
+  if (showAllCode) {
+    showAllCode.addEventListener("click", toggleCodeHandler(true));
+  }
+    var localhostRegex = new RegExp(/^(?:http|https):\/\/localhost\:?[0-9]*\//);
+    var mailtoRegex = new RegExp(/^mailto:/);
+      var filterRegex = new RegExp('/' + window.location.host + '/');
+    var isInternal = (href) => {
+        return filterRegex.test(href) || localhostRegex.test(href) || mailtoRegex.test(href);
+    }
+    // Inspect non-navigation links and adorn them if external
+ 	var links = window.document.querySelectorAll('a[href]:not(.nav-link):not(.navbar-brand):not(.toc-action):not(.sidebar-link):not(.sidebar-item-toggle):not(.pagination-link):not(.no-external):not([aria-hidden]):not(.dropdown-item):not(.quarto-navigation-tool):not(.about-link)');
+    for (var i=0; i<links.length; i++) {
+      const link = links[i];
+      if (!isInternal(link.href)) {
+        // undo the damage that might have been done by quarto-nav.js in the case of
+        // links that we want to consider external
+        if (link.dataset.originalHref !== undefined) {
+          link.href = link.dataset.originalHref;
+        }
+      }
+    }
+  function tippyHover(el, contentFn, onTriggerFn, onUntriggerFn) {
+    const config = {
+      allowHTML: true,
+      maxWidth: 500,
+      delay: 100,
+      arrow: false,
+      appendTo: function(el) {
+          return el.parentElement;
+      },
+      interactive: true,
+      interactiveBorder: 10,
+      theme: 'quarto',
+      placement: 'bottom-start',
+    };
+    if (contentFn) {
+      config.content = contentFn;
+    }
+    if (onTriggerFn) {
+      config.onTrigger = onTriggerFn;
+    }
+    if (onUntriggerFn) {
+      config.onUntrigger = onUntriggerFn;
+    }
+    window.tippy(el, config); 
+  }
+  const noterefs = window.document.querySelectorAll('a[role="doc-noteref"]');
+  for (var i=0; i<noterefs.length; i++) {
+    const ref = noterefs[i];
+    tippyHover(ref, function() {
+      // use id or data attribute instead here
+      let href = ref.getAttribute('data-footnote-href') || ref.getAttribute('href');
+      try { href = new URL(href).hash; } catch {}
+      const id = href.replace(/^#\/?/, "");
+      const note = window.document.getElementById(id);
+      if (note) {
+        return note.innerHTML;
+      } else {
+        return "";
+      }
+    });
+  }
+  const xrefs = window.document.querySelectorAll('a.quarto-xref');
+  const processXRef = (id, note) => {
+    // Strip column container classes
+    const stripColumnClz = (el) => {
+      el.classList.remove("page-full", "page-columns");
+      if (el.children) {
+        for (const child of el.children) {
+          stripColumnClz(child);
+        }
+      }
+    }
+    stripColumnClz(note)
+    if (id === null || id.startsWith('sec-')) {
+      // Special case sections, only their first couple elements
+      const container = document.createElement("div");
+      if (note.children && note.children.length > 2) {
+        container.appendChild(note.children[0].cloneNode(true));
+        for (let i = 1; i < note.children.length; i++) {
+          const child = note.children[i];
+          if (child.tagName === "P" && child.innerText === "") {
+            continue;
+          } else {
+            container.appendChild(child.cloneNode(true));
+            break;
+          }
+        }
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(container);
+        }
+        return container.innerHTML
+      } else {
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(note);
+        }
+        return note.innerHTML;
+      }
+    } else {
+      // Remove any anchor links if they are present
+      const anchorLink = note.querySelector('a.anchorjs-link');
+      if (anchorLink) {
+        anchorLink.remove();
+      }
+      if (window.Quarto?.typesetMath) {
+        window.Quarto.typesetMath(note);
+      }
+      // TODO in 1.5, we should make sure this works without a callout special case
+      if (note.classList.contains("callout")) {
+        return note.outerHTML;
+      } else {
+        return note.innerHTML;
+      }
+    }
+  }
+  for (var i=0; i<xrefs.length; i++) {
+    const xref = xrefs[i];
+    tippyHover(xref, undefined, function(instance) {
+      instance.disable();
+      let url = xref.getAttribute('href');
+      let hash = undefined; 
+      if (url.startsWith('#')) {
+        hash = url;
+      } else {
+        try { hash = new URL(url).hash; } catch {}
+      }
+      if (hash) {
+        const id = hash.replace(/^#\/?/, "");
+        const note = window.document.getElementById(id);
+        if (note !== null) {
+          try {
+            const html = processXRef(id, note.cloneNode(true));
+            instance.setContent(html);
+          } finally {
+            instance.enable();
+            instance.show();
+          }
+        } else {
+          // See if we can fetch this
+          fetch(url.split('#')[0])
+          .then(res => res.text())
+          .then(html => {
+            const parser = new DOMParser();
+            const htmlDoc = parser.parseFromString(html, "text/html");
+            const note = htmlDoc.getElementById(id);
+            if (note !== null) {
+              const html = processXRef(id, note);
+              instance.setContent(html);
+            } 
+          }).finally(() => {
+            instance.enable();
+            instance.show();
+          });
+        }
+      } else {
+        // See if we can fetch a full url (with no hash to target)
+        // This is a special case and we should probably do some content thinning / targeting
+        fetch(url)
+        .then(res => res.text())
+        .then(html => {
+          const parser = new DOMParser();
+          const htmlDoc = parser.parseFromString(html, "text/html");
+          const note = htmlDoc.querySelector('main.content');
+          if (note !== null) {
+            // This should only happen for chapter cross references
+            // (since there is no id in the URL)
+            // remove the first header
+            if (note.children.length > 0 && note.children[0].tagName === "HEADER") {
+              note.children[0].remove();
+            }
+            const html = processXRef(null, note);
+            instance.setContent(html);
+          } 
+        }).finally(() => {
+          instance.enable();
+          instance.show();
+        });
+      }
+    }, function(instance) {
+    });
+  }
+      let selectedAnnoteEl;
+      const selectorForAnnotation = ( cell, annotation) => {
+        let cellAttr = 'data-code-cell="' + cell + '"';
+        let lineAttr = 'data-code-annotation="' +  annotation + '"';
+        const selector = 'span[' + cellAttr + '][' + lineAttr + ']';
+        return selector;
+      }
+      const selectCodeLines = (annoteEl) => {
+        const doc = window.document;
+        const targetCell = annoteEl.getAttribute("data-target-cell");
+        const targetAnnotation = annoteEl.getAttribute("data-target-annotation");
+        const annoteSpan = window.document.querySelector(selectorForAnnotation(targetCell, targetAnnotation));
+        const lines = annoteSpan.getAttribute("data-code-lines").split(",");
+        const lineIds = lines.map((line) => {
+          return targetCell + "-" + line;
+        })
+        let top = null;
+        let height = null;
+        let parent = null;
+        if (lineIds.length > 0) {
+            //compute the position of the single el (top and bottom and make a div)
+            const el = window.document.getElementById(lineIds[0]);
+            top = el.offsetTop;
+            height = el.offsetHeight;
+            parent = el.parentElement.parentElement;
+          if (lineIds.length > 1) {
+            const lastEl = window.document.getElementById(lineIds[lineIds.length - 1]);
+            const bottom = lastEl.offsetTop + lastEl.offsetHeight;
+            height = bottom - top;
+          }
+          if (top !== null && height !== null && parent !== null) {
+            // cook up a div (if necessary) and position it 
+            let div = window.document.getElementById("code-annotation-line-highlight");
+            if (div === null) {
+              div = window.document.createElement("div");
+              div.setAttribute("id", "code-annotation-line-highlight");
+              div.style.position = 'absolute';
+              parent.appendChild(div);
+            }
+            div.style.top = top - 2 + "px";
+            div.style.height = height + 4 + "px";
+            div.style.left = 0;
+            let gutterDiv = window.document.getElementById("code-annotation-line-highlight-gutter");
+            if (gutterDiv === null) {
+              gutterDiv = window.document.createElement("div");
+              gutterDiv.setAttribute("id", "code-annotation-line-highlight-gutter");
+              gutterDiv.style.position = 'absolute';
+              const codeCell = window.document.getElementById(targetCell);
+              const gutter = codeCell.querySelector('.code-annotation-gutter');
+              gutter.appendChild(gutterDiv);
+            }
+            gutterDiv.style.top = top - 2 + "px";
+            gutterDiv.style.height = height + 4 + "px";
+          }
+          selectedAnnoteEl = annoteEl;
+        }
+      };
+      const unselectCodeLines = () => {
+        const elementsIds = ["code-annotation-line-highlight", "code-annotation-line-highlight-gutter"];
+        elementsIds.forEach((elId) => {
+          const div = window.document.getElementById(elId);
+          if (div) {
+            div.remove();
+          }
+        });
+        selectedAnnoteEl = undefined;
+      };
+        // Handle positioning of the toggle
+    window.addEventListener(
+      "resize",
+      throttle(() => {
+        elRect = undefined;
+        if (selectedAnnoteEl) {
+          selectCodeLines(selectedAnnoteEl);
+        }
+      }, 10)
+    );
+    function throttle(fn, ms) {
+    let throttle = false;
+    let timer;
+      return (...args) => {
+        if(!throttle) { // first call gets through
+            fn.apply(this, args);
+            throttle = true;
+        } else { // all the others get throttled
+            if(timer) clearTimeout(timer); // cancel #2
+            timer = setTimeout(() => {
+              fn.apply(this, args);
+              timer = throttle = false;
+            }, ms);
+        }
+      };
+    }
+      // Attach click handler to the DT
+      const annoteDls = window.document.querySelectorAll('dt[data-target-cell]');
+      for (const annoteDlNode of annoteDls) {
+        annoteDlNode.addEventListener('click', (event) => {
+          const clickedEl = event.target;
+          if (clickedEl !== selectedAnnoteEl) {
+            unselectCodeLines();
+            const activeEl = window.document.querySelector('dt[data-target-cell].code-annotation-active');
+            if (activeEl) {
+              activeEl.classList.remove('code-annotation-active');
+            }
+            selectCodeLines(clickedEl);
+            clickedEl.classList.add('code-annotation-active');
+          } else {
+            // Unselect the line
+            unselectCodeLines();
+            clickedEl.classList.remove('code-annotation-active');
+          }
+        });
+      }
+  const findCites = (el) => {
+    const parentEl = el.parentElement;
+    if (parentEl) {
+      const cites = parentEl.dataset.cites;
+      if (cites) {
+        return {
+          el,
+          cites: cites.split(' ')
+        };
+      } else {
+        return findCites(el.parentElement)
+      }
+    } else {
+      return undefined;
+    }
+  };
+  var bibliorefs = window.document.querySelectorAll('a[role="doc-biblioref"]');
+  for (var i=0; i<bibliorefs.length; i++) {
+    const ref = bibliorefs[i];
+    const citeInfo = findCites(ref);
+    if (citeInfo) {
+      tippyHover(citeInfo.el, function() {
+        var popup = window.document.createElement('div');
+        citeInfo.cites.forEach(function(cite) {
+          var citeDiv = window.document.createElement('div');
+          citeDiv.classList.add('hanging-indent');
+          citeDiv.classList.add('csl-entry');
+          var biblioDiv = window.document.getElementById('ref-' + cite);
+          if (biblioDiv) {
+            citeDiv.innerHTML = biblioDiv.innerHTML;
+          }
+          popup.appendChild(citeDiv);
+        });
+        return popup.innerHTML;
+      });
+    }
+  }
+});
+</script>
+<nav class="page-navigation">
+  <div class="nav-page nav-page-previous">
+      <a href="../../book/03-matmul/11-persistent-matmul.html" class="pagination-link" aria-label="Chapter 11: Persistent Matmul and Advanced Matmul Concepts">
+        <i class="bi bi-arrow-left-short"></i> <span class="nav-page-text"><span class="chapter-number">13</span>&nbsp; <span class="chapter-title">Chapter 11: Persistent Matmul and Advanced Matmul Concepts</span></span>
+      </a>          
+  </div>
+  <div class="nav-page nav-page-next">
+      <a href="../../book/04-attention/13-naive-attention.html" class="pagination-link" aria-label="Chapter 13: Naive Attention in PyTorch and Triton Pieces">
+        <span class="nav-page-text"><span class="chapter-number">15</span>&nbsp; <span class="chapter-title">Chapter 13: Naive Attention in PyTorch and Triton Pieces</span></span> <i class="bi bi-arrow-right-short"></i>
+      </a>
+  </div>
+</nav><div class="modal fade" id="quarto-embedded-source-code-modal" tabindex="-1" aria-labelledby="quarto-embedded-source-code-modal-label" aria-hidden="true"><div class="modal-dialog modal-dialog-scrollable"><div class="modal-content"><div class="modal-header"><h5 class="modal-title" id="quarto-embedded-source-code-modal-label">Source Code</h5><button class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><div class="">
+<div class="sourceCode" id="cb2" data-shortcodes="false"><pre class="sourceCode markdown code-with-copy"><code class="sourceCode markdown"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="co">---</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="an">title:</span><span class="co"> "Chapter 12: Attention Math Refresher for Kernel Writers"</span></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a><span class="co">---</span></span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a>You already know what attention computes. The textbooks treat it as a formula. Kernel writers treat it as a memory layout problem with a softmax in the middle. This chapter reframes the math from the second perspective. Every quantity is sized, every intermediate is accounted for in bytes, and every step is connected to where it lives — registers, SRAM, or HBM. By the end of the chapter you should be able to point at the line <span class="in">`scores = Q @ K^T`</span> and say, out loud, why that line is the entire reason FlashAttention exists.</span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a>There is no Triton in this chapter and no benchmarks. We are setting up the accounting that the next two chapters spend ferociously.</span>
+<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-9"><a href="#cb2-9" aria-hidden="true" tabindex="-1"></a><span class="fu">## Shapes and the layout debate</span></span>
+<span id="cb2-10"><a href="#cb2-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-11"><a href="#cb2-11" aria-hidden="true" tabindex="-1"></a>We use the four-dimensional layout <span class="in">`[B, H, S, D]`</span> throughout the book:</span>
+<span id="cb2-12"><a href="#cb2-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-13"><a href="#cb2-13" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span><span class="in">`B`</span> is batch size.</span>
+<span id="cb2-14"><a href="#cb2-14" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span><span class="in">`H`</span> is the number of attention heads.</span>
+<span id="cb2-15"><a href="#cb2-15" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span><span class="in">`S`</span> is the sequence length.</span>
+<span id="cb2-16"><a href="#cb2-16" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span><span class="in">`D`</span> is the head dimension (the per-head channel count).</span>
+<span id="cb2-17"><a href="#cb2-17" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-18"><a href="#cb2-18" aria-hidden="true" tabindex="-1"></a>So <span class="in">`Q`</span>, <span class="in">`K`</span>, <span class="in">`V`</span> all live as <span class="in">`[B, H, S, D]`</span> tensors.</span>
+<span id="cb2-19"><a href="#cb2-19" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-20"><a href="#cb2-20" aria-hidden="true" tabindex="-1"></a>You will see two layout camps in real code. The "head-major" camp puts <span class="in">`H`</span> before <span class="in">`S`</span>, which is what we do here, and which is also what PyTorch's <span class="in">`scaled_dot_product_attention`</span> expects. The "seq-major" camp puts <span class="in">`S`</span> before <span class="in">`H`</span>, which is what <span class="in">`nn.MultiheadAttention`</span> historically used and what some inference frameworks prefer because it keeps each token's full hidden state contiguous in memory.</span>
+<span id="cb2-21"><a href="#cb2-21" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-22"><a href="#cb2-22" aria-hidden="true" tabindex="-1"></a>For a kernel writer, the practical difference is:</span>
+<span id="cb2-23"><a href="#cb2-23" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-24"><a href="#cb2-24" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span><span class="in">`[B, H, S, D]`</span> makes per-head kernels trivial — the <span class="in">`(B, H)`</span> pair becomes the outer grid axis and each program owns one <span class="in">`[S, D]`</span> slice.</span>
+<span id="cb2-25"><a href="#cb2-25" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span><span class="in">`[B, S, H, D]`</span> is better when you fuse with token-wise ops (LayerNorm across the hidden dimension), because the per-token hidden state <span class="in">`[H * D]`</span> is contiguous.</span>
+<span id="cb2-26"><a href="#cb2-26" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-27"><a href="#cb2-27" aria-hidden="true" tabindex="-1"></a>For attention specifically <span class="in">`[B, H, S, D]`</span> is the friendlier choice and we commit to it. Treat <span class="in">`(B, H)`</span> as a flattened "batch" dimension of size <span class="in">`B * H`</span> for the inner kernel; it will simplify the launcher.</span>
+<span id="cb2-28"><a href="#cb2-28" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-29"><a href="#cb2-29" aria-hidden="true" tabindex="-1"></a><span class="fu">## The five-step recipe</span></span>
+<span id="cb2-30"><a href="#cb2-30" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-31"><a href="#cb2-31" aria-hidden="true" tabindex="-1"></a>Standard scaled dot-product attention with a causal mask:</span>
+<span id="cb2-32"><a href="#cb2-32" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-33"><a href="#cb2-33" aria-hidden="true" tabindex="-1"></a><span class="ss">1. </span><span class="in">`scores = Q @ K^T`</span>, shape <span class="in">`[B, H, S, S]`</span>.</span>
+<span id="cb2-34"><a href="#cb2-34" aria-hidden="true" tabindex="-1"></a><span class="ss">2. </span><span class="in">`scores = scores / sqrt(D)`</span> to keep variance bounded after the dot product.</span>
+<span id="cb2-35"><a href="#cb2-35" aria-hidden="true" tabindex="-1"></a><span class="ss">3. </span><span class="in">`scores = scores.masked_fill(future_positions, -inf)`</span> for causal attention.</span>
+<span id="cb2-36"><a href="#cb2-36" aria-hidden="true" tabindex="-1"></a><span class="ss">4. </span><span class="in">`probs = softmax(scores, dim=-1)`</span>, shape <span class="in">`[B, H, S, S]`</span>.</span>
+<span id="cb2-37"><a href="#cb2-37" aria-hidden="true" tabindex="-1"></a><span class="ss">5. </span><span class="in">`out = probs @ V`</span>, shape <span class="in">`[B, H, S, D]`</span>.</span>
+<span id="cb2-38"><a href="#cb2-38" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-39"><a href="#cb2-39" aria-hidden="true" tabindex="-1"></a>The output is the same shape as <span class="in">`Q`</span>. Everything in the middle is a <span class="in">`[B, H, S, S]`</span> tensor — quadratic in the sequence length. That tensor is the entire problem.</span>
+<span id="cb2-40"><a href="#cb2-40" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-41"><a href="#cb2-41" aria-hidden="true" tabindex="-1"></a><span class="fu">## Memory accounting: why naive attention dies</span></span>
+<span id="cb2-42"><a href="#cb2-42" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-43"><a href="#cb2-43" aria-hidden="true" tabindex="-1"></a>Take a moderately sized configuration: <span class="in">`B = 4`</span>, <span class="in">`H = 32`</span>, <span class="in">`S = 4096`</span>, <span class="in">`D = 64`</span>, fp16.</span>
+<span id="cb2-44"><a href="#cb2-44" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-45"><a href="#cb2-45" aria-hidden="true" tabindex="-1"></a>The activations:</span>
+<span id="cb2-46"><a href="#cb2-46" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-47"><a href="#cb2-47" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span><span class="in">`Q`</span>, <span class="in">`K`</span>, <span class="in">`V`</span>: each <span class="in">`4 * 32 * 4096 * 64 * 2 bytes = 64 MB`</span>. Total <span class="in">`192 MB`</span>.</span>
+<span id="cb2-48"><a href="#cb2-48" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span><span class="in">`scores`</span>: <span class="in">`4 * 32 * 4096 * 4096 * 2 bytes = 4 GB`</span>.</span>
+<span id="cb2-49"><a href="#cb2-49" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span><span class="in">`probs`</span>: another <span class="in">`4 GB`</span>.</span>
+<span id="cb2-50"><a href="#cb2-50" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span><span class="in">`out`</span>: <span class="in">`64 MB`</span>.</span>
+<span id="cb2-51"><a href="#cb2-51" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-52"><a href="#cb2-52" aria-hidden="true" tabindex="-1"></a>The two <span class="in">`[B, H, S, S]`</span> tensors dwarf everything else by a factor of roughly fifty. They will not all fit on the author's reference 2070 SUPER, which has 8 GB total VRAM and is hosting the model parameters too. Even on an A100 80 GB you would burn <span class="in">`10%`</span> of memory on a single layer's attention activations.</span>
+<span id="cb2-53"><a href="#cb2-53" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-54"><a href="#cb2-54" aria-hidden="true" tabindex="-1"></a>Double the sequence to <span class="in">`S = 8192`</span> and the <span class="in">`scores`</span> tensor becomes <span class="in">`16 GB`</span> per copy. The <span class="in">`2070 SUPER`</span> is well past out-of-memory; even the A100 starts to feel it.</span>
+<span id="cb2-55"><a href="#cb2-55" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-56"><a href="#cb2-56" aria-hidden="true" tabindex="-1"></a>This is not a theoretical concern. This is the reason FlashAttention exists.</span>
+<span id="cb2-57"><a href="#cb2-57" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-58"><a href="#cb2-58" aria-hidden="true" tabindex="-1"></a><span class="fu">## A worked example</span></span>
+<span id="cb2-59"><a href="#cb2-59" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-60"><a href="#cb2-60" aria-hidden="true" tabindex="-1"></a>Pick the smallest non-trivial shape: <span class="in">`B = 1`</span>, <span class="in">`H = 1`</span>, <span class="in">`S = 4`</span>, <span class="in">`D = 2`</span>, no batch flattening, fp32 for the arithmetic.</span>
+<span id="cb2-61"><a href="#cb2-61" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-62"><a href="#cb2-62" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb2-63"><a href="#cb2-63" aria-hidden="true" tabindex="-1"></a><span class="in">Q = [[1, 0], [0, 1], [1, 1], [0, 0]]    # shape (4, 2)</span></span>
+<span id="cb2-64"><a href="#cb2-64" aria-hidden="true" tabindex="-1"></a><span class="in">K = [[1, 0], [1, 1], [0, 1], [1, 0]]    # shape (4, 2)</span></span>
+<span id="cb2-65"><a href="#cb2-65" aria-hidden="true" tabindex="-1"></a><span class="in">V = [[2, 0], [0, 2], [1, 1], [0, 0]]    # shape (4, 2)</span></span>
+<span id="cb2-66"><a href="#cb2-66" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-67"><a href="#cb2-67" aria-hidden="true" tabindex="-1"></a><span class="in">scale = 1 / sqrt(2) ≈ 0.7071</span></span>
+<span id="cb2-68"><a href="#cb2-68" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-69"><a href="#cb2-69" aria-hidden="true" tabindex="-1"></a><span class="in">scores = Q @ K^T  =                      # shape (4, 4)</span></span>
+<span id="cb2-70"><a href="#cb2-70" aria-hidden="true" tabindex="-1"></a><span class="in">  [[1, 1, 0, 1],</span></span>
+<span id="cb2-71"><a href="#cb2-71" aria-hidden="true" tabindex="-1"></a><span class="in">   [0, 1, 1, 0],</span></span>
+<span id="cb2-72"><a href="#cb2-72" aria-hidden="true" tabindex="-1"></a><span class="in">   [1, 2, 1, 1],</span></span>
+<span id="cb2-73"><a href="#cb2-73" aria-hidden="true" tabindex="-1"></a><span class="in">   [0, 0, 0, 0]]</span></span>
+<span id="cb2-74"><a href="#cb2-74" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-75"><a href="#cb2-75" aria-hidden="true" tabindex="-1"></a><span class="in">scaled = scores * 0.7071 =</span></span>
+<span id="cb2-76"><a href="#cb2-76" aria-hidden="true" tabindex="-1"></a><span class="in">  [[0.707, 0.707, 0.000, 0.707],</span></span>
+<span id="cb2-77"><a href="#cb2-77" aria-hidden="true" tabindex="-1"></a><span class="in">   [0.000, 0.707, 0.707, 0.000],</span></span>
+<span id="cb2-78"><a href="#cb2-78" aria-hidden="true" tabindex="-1"></a><span class="in">   [0.707, 1.414, 0.707, 0.707],</span></span>
+<span id="cb2-79"><a href="#cb2-79" aria-hidden="true" tabindex="-1"></a><span class="in">   [0.000, 0.000, 0.000, 0.000]]</span></span>
+<span id="cb2-80"><a href="#cb2-80" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-81"><a href="#cb2-81" aria-hidden="true" tabindex="-1"></a><span class="in">causal mask (upper triangle to -inf):</span></span>
+<span id="cb2-82"><a href="#cb2-82" aria-hidden="true" tabindex="-1"></a><span class="in">  [[0.707, -inf,  -inf,  -inf ],</span></span>
+<span id="cb2-83"><a href="#cb2-83" aria-hidden="true" tabindex="-1"></a><span class="in">   [0.000, 0.707, -inf,  -inf ],</span></span>
+<span id="cb2-84"><a href="#cb2-84" aria-hidden="true" tabindex="-1"></a><span class="in">   [0.707, 1.414, 0.707, -inf ],</span></span>
+<span id="cb2-85"><a href="#cb2-85" aria-hidden="true" tabindex="-1"></a><span class="in">   [0.000, 0.000, 0.000, 0.000]]</span></span>
+<span id="cb2-86"><a href="#cb2-86" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-87"><a href="#cb2-87" aria-hidden="true" tabindex="-1"></a><span class="in">softmax(dim=-1):</span></span>
+<span id="cb2-88"><a href="#cb2-88" aria-hidden="true" tabindex="-1"></a><span class="in">  row 0: [1.000, 0.000, 0.000, 0.000]</span></span>
+<span id="cb2-89"><a href="#cb2-89" aria-hidden="true" tabindex="-1"></a><span class="in">  row 1: [0.330, 0.670, 0.000, 0.000]</span></span>
+<span id="cb2-90"><a href="#cb2-90" aria-hidden="true" tabindex="-1"></a><span class="in">  row 2: [0.211, 0.428, 0.211, ...]  # third entry shares the 0.211 mass; fourth is -inf</span></span>
+<span id="cb2-91"><a href="#cb2-91" aria-hidden="true" tabindex="-1"></a><span class="in">  row 3: [0.250, 0.250, 0.250, 0.250]</span></span>
+<span id="cb2-92"><a href="#cb2-92" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-93"><a href="#cb2-93" aria-hidden="true" tabindex="-1"></a><span class="in">out = probs @ V                          # shape (4, 2)</span></span>
+<span id="cb2-94"><a href="#cb2-94" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb2-95"><a href="#cb2-95" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-96"><a href="#cb2-96" aria-hidden="true" tabindex="-1"></a>The key observation: each output row is a convex combination of the value rows whose tokens the query is allowed to see. The softmax weights are derived from a per-row max and per-row sum. **A single output row only needs its own row of `scores`, not the whole matrix.** This is the seed of the idea.</span>
+<span id="cb2-97"><a href="#cb2-97" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-98"><a href="#cb2-98" aria-hidden="true" tabindex="-1"></a><span class="fu">## What FlashAttention does differently</span></span>
+<span id="cb2-99"><a href="#cb2-99" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-100"><a href="#cb2-100" aria-hidden="true" tabindex="-1"></a>FlashAttention rearranges the loop so the <span class="in">`[B, H, S, S]`</span> tensor is never materialized in HBM. The trick is to walk the K/V axis in blocks and update each output row incrementally:</span>
+<span id="cb2-101"><a href="#cb2-101" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-102"><a href="#cb2-102" aria-hidden="true" tabindex="-1"></a><span class="ss">1. </span>Pick a tile of <span class="in">`BLOCK_M`</span> rows of <span class="in">`Q`</span>. Load it into SRAM.</span>
+<span id="cb2-103"><a href="#cb2-103" aria-hidden="true" tabindex="-1"></a><span class="ss">2. </span>Loop over tiles of <span class="in">`BLOCK_N`</span> rows of <span class="in">`K`</span> and <span class="in">`V`</span>.</span>
+<span id="cb2-104"><a href="#cb2-104" aria-hidden="true" tabindex="-1"></a><span class="ss">3. </span>For each <span class="in">`K`</span> tile, compute the partial scores <span class="in">`[BLOCK_M, BLOCK_N]`</span> in registers, mask, take the running max, exponentiate, multiply by the <span class="in">`V`</span> tile, and add to a per-Q-row running accumulator.</span>
+<span id="cb2-105"><a href="#cb2-105" aria-hidden="true" tabindex="-1"></a><span class="ss">4. </span>After the loop, divide by the running sum to finish the softmax.</span>
+<span id="cb2-106"><a href="#cb2-106" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-107"><a href="#cb2-107" aria-hidden="true" tabindex="-1"></a>The "running max" plus "running sum" plus "running output accumulator" is the **online softmax** recurrence. Chapter 14 is where we implement it. The crucial point for this chapter is that the only quantities that ever leave SRAM and touch HBM are <span class="in">`Q`</span>, <span class="in">`K`</span>, <span class="in">`V`</span>, and <span class="in">`out`</span>. The <span class="in">`[B, H, S, S]`</span> score tensor never exists outside the inner loop's registers.</span>
+<span id="cb2-108"><a href="#cb2-108" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-109"><a href="#cb2-109" aria-hidden="true" tabindex="-1"></a><span class="fu">## IO complexity, briefly</span></span>
+<span id="cb2-110"><a href="#cb2-110" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-111"><a href="#cb2-111" aria-hidden="true" tabindex="-1"></a>The naive forward reads/writes the <span class="in">`[B, H, S, S]`</span> <span class="in">`scores`</span> tensor twice (once after the matmul, once after the softmax) and the <span class="in">`[B, H, S, D]`</span> output once. HBM traffic per <span class="in">`(B, H)`</span> slice is on the order of <span class="in">`S^2 + S * D`</span>. With <span class="in">`S = 4096`</span> and <span class="in">`D = 64`</span> that is <span class="in">`~16M`</span> elements of HBM traffic dominated by the <span class="in">`S^2`</span> term.</span>
+<span id="cb2-112"><a href="#cb2-112" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-113"><a href="#cb2-113" aria-hidden="true" tabindex="-1"></a>FlashAttention reads <span class="in">`Q`</span> once, reads <span class="in">`K`</span> and <span class="in">`V`</span> roughly <span class="in">`ceil(S / BLOCK_M)`</span> times each (because the same K/V tile is reused across multiple Q tiles), and writes <span class="in">`out`</span> once. HBM traffic per <span class="in">`(B, H)`</span> slice is on the order of <span class="in">`S * D + (S / BLOCK_M) * S * D = S * D * (1 + S / BLOCK_M)`</span>. With <span class="in">`S = 4096`</span>, <span class="in">`D = 64`</span>, <span class="in">`BLOCK_M = 64`</span>, that comes out to <span class="in">`~16M`</span> elements — comparable on the surface, but distributed very differently: there is no quadratic dependency on <span class="in">`S`</span> for any **single** tensor, and the working set per program is just three tiles plus an accumulator, which fits in SRAM. The bandwidth savings show up most when <span class="in">`BLOCK_M`</span> is large enough that each K/V tile gets reused many times before being evicted from SRAM.</span>
+<span id="cb2-114"><a href="#cb2-114" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-115"><a href="#cb2-115" aria-hidden="true" tabindex="-1"></a><span class="fu">## Side-by-side data flow</span></span>
+<span id="cb2-116"><a href="#cb2-116" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-119"><a href="#cb2-119" aria-hidden="true" tabindex="-1"></a><span class="in">```{mermaid}</span></span>
+<span id="cb2-120"><a href="#cb2-120" aria-hidden="true" tabindex="-1"></a><span class="in">sequenceDiagram</span></span>
+<span id="cb2-121"><a href="#cb2-121" aria-hidden="true" tabindex="-1"></a><span class="in">    participant HBM as HBM</span></span>
+<span id="cb2-122"><a href="#cb2-122" aria-hidden="true" tabindex="-1"></a><span class="in">    participant SRAM as SRAM / registers</span></span>
+<span id="cb2-123"><a href="#cb2-123" aria-hidden="true" tabindex="-1"></a><span class="in">    participant Out as Output (HBM)</span></span>
+<span id="cb2-124"><a href="#cb2-124" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-125"><a href="#cb2-125" aria-hidden="true" tabindex="-1"></a><span class="in">    Note over HBM,Out: Naive attention</span></span>
+<span id="cb2-126"><a href="#cb2-126" aria-hidden="true" tabindex="-1"></a><span class="in">    HBM-&gt;&gt;SRAM: load Q, K</span></span>
+<span id="cb2-127"><a href="#cb2-127" aria-hidden="true" tabindex="-1"></a><span class="in">    SRAM-&gt;&gt;HBM: store scores [B,H,S,S]</span></span>
+<span id="cb2-128"><a href="#cb2-128" aria-hidden="true" tabindex="-1"></a><span class="in">    HBM-&gt;&gt;SRAM: load scores</span></span>
+<span id="cb2-129"><a href="#cb2-129" aria-hidden="true" tabindex="-1"></a><span class="in">    SRAM-&gt;&gt;HBM: store probs [B,H,S,S]</span></span>
+<span id="cb2-130"><a href="#cb2-130" aria-hidden="true" tabindex="-1"></a><span class="in">    HBM-&gt;&gt;SRAM: load probs, V</span></span>
+<span id="cb2-131"><a href="#cb2-131" aria-hidden="true" tabindex="-1"></a><span class="in">    SRAM-&gt;&gt;Out: store out [B,H,S,D]</span></span>
+<span id="cb2-132"><a href="#cb2-132" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-133"><a href="#cb2-133" aria-hidden="true" tabindex="-1"></a><span class="in">    Note over HBM,Out: FlashAttention</span></span>
+<span id="cb2-134"><a href="#cb2-134" aria-hidden="true" tabindex="-1"></a><span class="in">    HBM-&gt;&gt;SRAM: load Q tile [BLOCK_M, D]</span></span>
+<span id="cb2-135"><a href="#cb2-135" aria-hidden="true" tabindex="-1"></a><span class="in">    loop over K/V tiles</span></span>
+<span id="cb2-136"><a href="#cb2-136" aria-hidden="true" tabindex="-1"></a><span class="in">        HBM-&gt;&gt;SRAM: load K_j, V_j tiles [BLOCK_N, D]</span></span>
+<span id="cb2-137"><a href="#cb2-137" aria-hidden="true" tabindex="-1"></a><span class="in">        SRAM-&gt;&gt;SRAM: compute s_ij, update (m, l, acc) in registers</span></span>
+<span id="cb2-138"><a href="#cb2-138" aria-hidden="true" tabindex="-1"></a><span class="in">    end</span></span>
+<span id="cb2-139"><a href="#cb2-139" aria-hidden="true" tabindex="-1"></a><span class="in">    SRAM-&gt;&gt;Out: store out tile [BLOCK_M, D]</span></span>
+<span id="cb2-140"><a href="#cb2-140" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb2-141"><a href="#cb2-141" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-142"><a href="#cb2-142" aria-hidden="true" tabindex="-1"></a>The naive path writes and reads the quadratic tensor in HBM twice. The Flash path never writes it at all. That is the whole story.</span>
+<span id="cb2-143"><a href="#cb2-143" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-144"><a href="#cb2-144" aria-hidden="true" tabindex="-1"></a><span class="fu">## Numerical stability checklist</span></span>
+<span id="cb2-145"><a href="#cb2-145" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-146"><a href="#cb2-146" aria-hidden="true" tabindex="-1"></a>Three numerical points carry over to every attention kernel in this book:</span>
+<span id="cb2-147"><a href="#cb2-147" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-148"><a href="#cb2-148" aria-hidden="true" tabindex="-1"></a><span class="ss">1. </span>**Max-subtraction in softmax.** Always subtract the row max before exponentiating. Without it, <span class="in">`exp(scores)`</span> overflows at <span class="in">`scores &gt; ~88`</span> in fp32 and <span class="in">`~16`</span> in fp16.</span>
+<span id="cb2-149"><a href="#cb2-149" aria-hidden="true" tabindex="-1"></a><span class="ss">2. </span>**fp32 accumulation.** Even when inputs are fp16, do the dot products and the softmax denominator in fp32. The score matmul has a reduction of length <span class="in">`D = 64`</span> or <span class="in">`128`</span>; the softmax denominator is a reduction of length <span class="in">`S`</span>. Both will lose precision in fp16.</span>
+<span id="cb2-150"><a href="#cb2-150" aria-hidden="true" tabindex="-1"></a><span class="ss">3. </span>**fp16 output store.** Cast the final result back to fp16 at the very end. The cast costs nothing once the value is in a register.</span>
+<span id="cb2-151"><a href="#cb2-151" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-152"><a href="#cb2-152" aria-hidden="true" tabindex="-1"></a>These three rules are not optional. They will reappear in every attention kernel.</span>
+<span id="cb2-153"><a href="#cb2-153" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-154"><a href="#cb2-154" aria-hidden="true" tabindex="-1"></a><span class="fu">### Exercises</span></span>
+<span id="cb2-155"><a href="#cb2-155" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-156"><a href="#cb2-156" aria-hidden="true" tabindex="-1"></a><span class="ss">1. </span>**Beginner.** Compute the memory cost of the <span class="in">`scores`</span> tensor for <span class="in">`B = 8`</span>, <span class="in">`H = 16`</span>, <span class="in">`S = 2048`</span>, <span class="in">`D = 128`</span>, in both fp16 and fp32. Compare to the size of <span class="in">`Q`</span>, <span class="in">`K`</span>, <span class="in">`V`</span>, <span class="in">`out`</span>. Which one dominates?</span>
+<span id="cb2-157"><a href="#cb2-157" aria-hidden="true" tabindex="-1"></a><span class="ss">2. </span>**Beginner.** A typical 70 B parameter model has <span class="in">`H = 64`</span> heads and <span class="in">`D = 128`</span> per head. Suppose you want to serve <span class="in">`B = 16`</span> requests at <span class="in">`S = 4096`</span>. How much memory does the per-layer <span class="in">`scores`</span> tensor take in fp16? How does that compare to the per-layer KV cache (which is <span class="in">`2 * B * H * S * D * 2 bytes`</span>)?</span>
+<span id="cb2-158"><a href="#cb2-158" aria-hidden="true" tabindex="-1"></a><span class="ss">3. </span>**Intermediate.** For <span class="in">`S = 4096`</span>, <span class="in">`D = 64`</span>, and <span class="in">`BLOCK_M = BLOCK_N = 64`</span>, compute the number of times each K tile is read by the FlashAttention forward. Compare to the naive case, where each K element is read exactly once per output row.</span>
+<span id="cb2-159"><a href="#cb2-159" aria-hidden="true" tabindex="-1"></a><span class="ss">4. </span>**Intermediate.** Show that for a causal mask, the average number of K/V tiles a Q tile must visit is <span class="in">`(num_kv_tiles + 1) / 2`</span>, not <span class="in">`num_kv_tiles`</span>. This is the basis for the "causal pruning" you will write in Chapter 14.</span>
+<span id="cb2-160"><a href="#cb2-160" aria-hidden="true" tabindex="-1"></a><span class="ss">5. </span>**Advanced.** Sketch the memory accounting for the **backward** pass of naive attention. Which tensors must be saved from the forward, and which can be recomputed? Argue why FlashAttention's backward only needs to save <span class="in">`Q`</span>, <span class="in">`K`</span>, <span class="in">`V`</span>, <span class="in">`out`</span>, and the per-row log-sum-exp.</span>
+<span id="cb2-161"><a href="#cb2-161" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-162"><a href="#cb2-162" aria-hidden="true" tabindex="-1"></a>The next chapter writes the naive forward in Triton. We will materialize the <span class="in">`[B, H, S, S]`</span> tensor on purpose. The chapter after that throws it away.</span>
+</code><button title="Copy to Clipboard" class="code-copy-button" data-in-quarto-modal=""><i class="bi"></i></button></pre></div>
+</div></div></div></div></div>
+</div> <!-- /content -->
+
+
+
+
+</body></html>

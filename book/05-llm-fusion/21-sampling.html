@@ -1,0 +1,1599 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"><head>
+
+<meta charset="utf-8">
+<meta name="generator" content="quarto-1.5.57">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+
+<title>23&nbsp; Chapter 21: Sampling Kernels for Inference – Learning Triton by Rebuilding Modern LLM Kernels</title>
+<style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+  width: 0.8em;
+  margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
+  vertical-align: middle;
+}
+/* CSS for syntax highlighting */
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { display: inline-block; text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+  { counter-reset: source-line 0; }
+pre.numberSource code > span
+  { position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+  { content: counter(source-line);
+    position: relative; left: -1em; text-align: right; vertical-align: baseline;
+    border: none; display: inline-block;
+    -webkit-touch-callout: none; -webkit-user-select: none;
+    -khtml-user-select: none; -moz-user-select: none;
+    -ms-user-select: none; user-select: none;
+    padding: 0 4px; width: 4em;
+  }
+pre.numberSource { margin-left: 3em;  padding-left: 4px; }
+div.sourceCode
+  {   }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+</style>
+
+
+<script src="../../site_libs/quarto-nav/quarto-nav.js"></script>
+<script src="../../site_libs/quarto-nav/headroom.min.js"></script>
+<script src="../../site_libs/clipboard/clipboard.min.js"></script>
+<script src="../../site_libs/quarto-search/autocomplete.umd.js"></script>
+<script src="../../site_libs/quarto-search/fuse.min.js"></script>
+<script src="../../site_libs/quarto-search/quarto-search.js"></script>
+<meta name="quarto:offset" content="../../">
+<link href="../../book/06-quantization/22-low-precision.html" rel="next">
+<link href="../../book/05-llm-fusion/20-cross-entropy.html" rel="prev">
+<script src="../../site_libs/quarto-html/quarto.js"></script>
+<script src="../../site_libs/quarto-html/popper.min.js"></script>
+<script src="../../site_libs/quarto-html/tippy.umd.min.js"></script>
+<script src="../../site_libs/quarto-html/anchor.min.js"></script>
+<link href="../../site_libs/quarto-html/tippy.css" rel="stylesheet">
+<link href="../../site_libs/quarto-html/quarto-syntax-highlighting.css" rel="stylesheet" id="quarto-text-highlighting-styles">
+<script src="../../site_libs/bootstrap/bootstrap.min.js"></script>
+<link href="../../site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
+<link href="../../site_libs/bootstrap/bootstrap.min.css" rel="stylesheet" id="quarto-bootstrap" data-mode="light">
+<script id="quarto-search-options" type="application/json">{
+  "location": "sidebar",
+  "copy-button": false,
+  "collapse-after": 3,
+  "panel-placement": "start",
+  "type": "textbox",
+  "limit": 50,
+  "keyboard-shortcut": [
+    "f",
+    "/",
+    "s"
+  ],
+  "show-item-context": false,
+  "language": {
+    "search-no-results-text": "No results",
+    "search-matching-documents-text": "matching documents",
+    "search-copy-link-title": "Copy link to search",
+    "search-hide-matches-text": "Hide additional matches",
+    "search-more-match-text": "more match in this document",
+    "search-more-matches-text": "more matches in this document",
+    "search-clear-button-title": "Clear",
+    "search-text-placeholder": "",
+    "search-detached-cancel-button-title": "Cancel",
+    "search-submit-button-title": "Submit",
+    "search-label": "Search"
+  }
+}</script>
+<script type="module" src="../../site_libs/quarto-ojs/quarto-ojs-runtime.js"></script>
+<link href="../../site_libs/quarto-ojs/quarto-ojs.css" rel="stylesheet">
+
+
+</head>
+
+<body class="nav-sidebar floating">
+
+<div id="quarto-search-results"></div>
+  <header id="quarto-header" class="headroom fixed-top">
+  <nav class="quarto-secondary-nav">
+    <div class="container-fluid d-flex">
+      <button type="button" class="quarto-btn-toggle btn" data-bs-toggle="collapse" role="button" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">
+        <i class="bi bi-layout-text-sidebar-reverse"></i>
+      </button>
+        <nav class="quarto-page-breadcrumbs" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="../../book/05-llm-fusion/18-residual-rmsnorm.html">Part 5: Modern LLM Layer Fusion</a></li><li class="breadcrumb-item"><a href="../../book/05-llm-fusion/21-sampling.html"><span class="chapter-number">23</span>&nbsp; <span class="chapter-title">Chapter 21: Sampling Kernels for Inference</span></a></li></ol></nav>
+        <a class="flex-grow-1" role="navigation" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">      
+        </a>
+      <button type="button" class="btn quarto-search-button" aria-label="Search" onclick="window.quartoOpenSearch();">
+        <i class="bi bi-search"></i>
+      </button>
+    </div>
+  </nav>
+</header>
+<!-- content -->
+<div id="quarto-content" class="quarto-container page-columns page-rows-contents page-layout-article">
+<!-- sidebar -->
+  <nav id="quarto-sidebar" class="sidebar collapse collapse-horizontal quarto-sidebar-collapse-item sidebar-navigation floating overflow-auto">
+    <div class="pt-lg-2 mt-2 text-left sidebar-header">
+    <div class="sidebar-title mb-0 py-0">
+      <a href="../../">Learning Triton by Rebuilding Modern LLM Kernels</a> 
+    </div>
+      </div>
+        <div class="mt-2 flex-shrink-0 align-items-center">
+        <div class="sidebar-search">
+        <div id="quarto-search" class="" title="Search"></div>
+        </div>
+        </div>
+    <div class="sidebar-menu-container"> 
+    <ul class="list-unstyled mt-1">
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../index.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">1</span>&nbsp; <span class="chapter-title">Learning Triton by Rebuilding Modern LLM Kernels</span></span></a>
+  </div>
+</li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-1" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 0: Orientation</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-1" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-1" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/00-orientation/00-why-triton.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">2</span>&nbsp; <span class="chapter-title">Chapter 00: Why Triton Exists</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/00-orientation/01-setup.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">3</span>&nbsp; <span class="chapter-title">Chapter 01: Environment Setup</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-2" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 1: Triton Fundamentals</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-2" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-2" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/01-fundamentals/02-mental-model.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">4</span>&nbsp; <span class="chapter-title">Chapter 2: The Triton Mental Model</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/01-fundamentals/03-memory-pointers-strides.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">5</span>&nbsp; <span class="chapter-title">Chapter 3: Memory, Pointers, Strides, and Masks</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/01-fundamentals/04-reductions.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">6</span>&nbsp; <span class="chapter-title">Chapter 4: Reductions</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-3" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 2: Basic Neural Network Kernels</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-3" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-3" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/02-basic-nn/05-fused-softmax.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">7</span>&nbsp; <span class="chapter-title">Chapter 5: Fused Softmax</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/02-basic-nn/06-layernorm.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">8</span>&nbsp; <span class="chapter-title">Chapter 6: LayerNorm</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/02-basic-nn/07-rmsnorm.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">9</span>&nbsp; <span class="chapter-title">Chapter 7: RMSNorm</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/02-basic-nn/08-activations-swiglu.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">10</span>&nbsp; <span class="chapter-title">Chapter 8: Activation Functions and Gated MLPs</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-4" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 3: Matrix Multiplication</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-4" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-4" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/03-matmul/09-matmul.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">11</span>&nbsp; <span class="chapter-title">Chapter 9: Matmul From Scratch</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/03-matmul/10-batched-matmul-linear.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">12</span>&nbsp; <span class="chapter-title">Chapter 10: Batched Matmul and Linear Layers</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/03-matmul/11-persistent-matmul.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">13</span>&nbsp; <span class="chapter-title">Chapter 11: Persistent Matmul and Advanced Matmul Concepts</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-5" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 4: Attention and Transformer Kernels</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-5" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-5" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/12-attention-math.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">14</span>&nbsp; <span class="chapter-title">Chapter 12: Attention Math Refresher for Kernel Writers</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/13-naive-attention.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">15</span>&nbsp; <span class="chapter-title">Chapter 13: Naive Attention in PyTorch and Triton Pieces</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/14-flashattention-fwd.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">16</span>&nbsp; <span class="chapter-title">Chapter 14: FlashAttention Forward in Triton</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/15-attention-backward.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">17</span>&nbsp; <span class="chapter-title">Chapter 15: Attention Backward — Conceptual and Optional Implementation</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/16-rope-alibi.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">18</span>&nbsp; <span class="chapter-title">Chapter 16: Rotary Positional Embeddings, ALiBi, and Position Kernels</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/17-kv-cache.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">19</span>&nbsp; <span class="chapter-title">Chapter 17: KV Cache Kernels for Inference</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-6" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 5: Modern LLM Layer Fusion</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-6" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-6" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/05-llm-fusion/18-residual-rmsnorm.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">20</span>&nbsp; <span class="chapter-title">Chapter 18: Residual Add + RMSNorm Fusion</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/05-llm-fusion/19-fused-bias-act-gate.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">21</span>&nbsp; <span class="chapter-title">Chapter 19: Fused Bias + Activation + Gate</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/05-llm-fusion/20-cross-entropy.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">22</span>&nbsp; <span class="chapter-title">Chapter 20: Cross Entropy and Logits Kernels</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/05-llm-fusion/21-sampling.html" class="sidebar-item-text sidebar-link active">
+ <span class="menu-text"><span class="chapter-number">23</span>&nbsp; <span class="chapter-title">Chapter 21: Sampling Kernels for Inference</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-7" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 6: Quantization-Oriented Kernels</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-7" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-7" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/06-quantization/22-low-precision.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">24</span>&nbsp; <span class="chapter-title">Chapter 22: Low Precision Basics</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/06-quantization/23-dequant-matmul.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">25</span>&nbsp; <span class="chapter-title">Chapter 23: Int8 / FP8 Style Dequant + Matmul Concepts</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-8" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 7: Debugging, Testing, Profiling, Optimization</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-8" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-8" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/07-debug-perf/24-debugging.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">26</span>&nbsp; <span class="chapter-title">Chapter 24: Debugging Triton Kernels</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/07-debug-perf/25-benchmarking.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">27</span>&nbsp; <span class="chapter-title">Chapter 25: Benchmarking Correctly</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/07-debug-perf/26-autotuning.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">28</span>&nbsp; <span class="chapter-title">Chapter 26: Autotuning</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/07-debug-perf/27-perf-tuning.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">29</span>&nbsp; <span class="chapter-title">Chapter 27: Performance Tuning Mental Model</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-9" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 8: Capstone Projects</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-9" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-9" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/08-capstone/28-mini-library.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">30</span>&nbsp; <span class="chapter-title">Chapter 28: Build a Mini Triton LLM Kernel Library</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/08-capstone/29-replace-transformer-pieces.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">31</span>&nbsp; <span class="chapter-title">Chapter 29: Replace Pieces of a Tiny Transformer</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/08-capstone/30-design-playbook.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">32</span>&nbsp; <span class="chapter-title">Chapter 30: Final Kernel Design Playbook</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/appendix-study-plan.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">33</span>&nbsp; <span class="chapter-title">Appendix: Study Plan, Memory Kernels, and the Capstone Challenge</span></span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../kernel_checklist.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">34</span>&nbsp; <span class="chapter-title">Triton Kernel Design Checklist</span></span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../llm_kernel_map.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">35</span>&nbsp; <span class="chapter-title">LLM Component → Triton Kernel Map</span></span></a>
+  </div>
+</li>
+    </ul>
+    </div>
+</nav>
+<div id="quarto-sidebar-glass" class="quarto-sidebar-collapse-item" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item"></div>
+<!-- margin-sidebar -->
+    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar">
+        <nav id="TOC" role="doc-toc" class="toc-active">
+    <h2 id="toc-title">Table of contents</h2>
+   
+  <ul>
+  <li><a href="#pytorch-reference" id="toc-pytorch-reference" class="nav-link active" data-scroll-target="#pytorch-reference"><span class="header-section-number">23.0.1</span> PyTorch reference</a></li>
+  <li><a href="#triton-implementation" id="toc-triton-implementation" class="nav-link" data-scroll-target="#triton-implementation"><span class="header-section-number">23.0.2</span> Triton implementation</a></li>
+  <li><a href="#shape-trace" id="toc-shape-trace" class="nav-link" data-scroll-target="#shape-trace"><span class="header-section-number">23.0.3</span> Shape trace</a></li>
+  <li><a href="#pointer-arithmetic-and-masks" id="toc-pointer-arithmetic-and-masks" class="nav-link" data-scroll-target="#pointer-arithmetic-and-masks"><span class="header-section-number">23.0.4</span> Pointer arithmetic and masks</a></li>
+  <li><a href="#correctness-test" id="toc-correctness-test" class="nav-link" data-scroll-target="#correctness-test"><span class="header-section-number">23.0.5</span> Correctness test</a></li>
+  <li><a href="#benchmark" id="toc-benchmark" class="nav-link" data-scroll-target="#benchmark"><span class="header-section-number">23.0.6</span> Benchmark</a></li>
+  <li><a href="#optimization-discussion" id="toc-optimization-discussion" class="nav-link" data-scroll-target="#optimization-discussion"><span class="header-section-number">23.0.7</span> Optimization discussion</a></li>
+  <li><a href="#common-bugs" id="toc-common-bugs" class="nav-link" data-scroll-target="#common-bugs"><span class="header-section-number">23.0.8</span> Common bugs</a></li>
+  <li><a href="#exercises" id="toc-exercises" class="nav-link" data-scroll-target="#exercises"><span class="header-section-number">23.0.9</span> Exercises</a></li>
+  <li><a href="#intermediate" id="toc-intermediate" class="nav-link" data-scroll-target="#intermediate"><span class="header-section-number">23.1</span> Intermediate</a></li>
+  <li><a href="#advanced" id="toc-advanced" class="nav-link" data-scroll-target="#advanced"><span class="header-section-number">23.2</span> Advanced</a></li>
+  </ul>
+</nav>
+    </div>
+<!-- main -->
+<main class="content" id="quarto-document-content">
+
+<header id="title-block-header" class="quarto-title-block default"><nav class="quarto-page-breadcrumbs quarto-title-breadcrumbs d-none d-lg-block" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="../../book/05-llm-fusion/18-residual-rmsnorm.html">Part 5: Modern LLM Layer Fusion</a></li><li class="breadcrumb-item"><a href="../../book/05-llm-fusion/21-sampling.html"><span class="chapter-number">23</span>&nbsp; <span class="chapter-title">Chapter 21: Sampling Kernels for Inference</span></a></li></ol></nav>
+<div class="quarto-title">
+<div class="quarto-title-block"><div><h1 class="title"><span class="chapter-number">23</span>&nbsp; <span class="chapter-title">Chapter 21: Sampling Kernels for Inference</span></h1><button type="button" class="btn code-tools-button" id="quarto-code-tools-source"><i class="bi"></i> Code</button></div></div>
+</div>
+
+
+
+<div class="quarto-title-meta">
+
+    
+  
+    
+  </div>
+  
+
+
+</header>
+
+
+<p>Decode-time sampling is the <strong>anti-training</strong> kernel suite. Training-time kernels chew through millions of tokens in parallel; decode-time sampling runs on <strong>one row at a time</strong> — one token, one vocab vector, one sampled id. The math is tiny. The challenge is dispatch overhead and the host-device sync that happens every time the CPU reads the sampled id to feed back into the model.</p>
+<p>This chapter walks through what is worth a custom Triton kernel and what is not. Spoiler: not everything is. Some of these problems are inherently CPU-shaped — sorting a 128k vector with a fancy parallel algorithm to save 50 microseconds doesn’t make sense when the next forward pass takes 30 ms.</p>
+<section id="pytorch-reference" class="level3" data-number="23.0.1">
+<h3 data-number="23.0.1" class="anchored" data-anchor-id="pytorch-reference"><span class="header-section-number">23.0.1</span> PyTorch reference</h3>
+<div id="23bcda55" class="cell">
+<div class="sourceCode cell-code" id="cb1"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch.nn.functional <span class="im">as</span> F</span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> sample_ref(logits, temperature<span class="op">=</span><span class="fl">1.0</span>, top_k<span class="op">=</span><span class="va">None</span>, top_p<span class="op">=</span><span class="va">None</span>):</span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a>    <span class="co">"""logits: [N, V] -&gt; sampled ids [N]."""</span></span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a>    logits <span class="op">=</span> logits <span class="op">/</span> temperature</span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> top_k <span class="kw">is</span> <span class="kw">not</span> <span class="va">None</span>:</span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a>        v, _ <span class="op">=</span> torch.topk(logits, top_k, dim<span class="op">=-</span><span class="dv">1</span>)</span>
+<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a>        threshold <span class="op">=</span> v[:, <span class="op">-</span><span class="dv">1</span>:]</span>
+<span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a>        logits <span class="op">=</span> torch.where(logits <span class="op">&lt;</span> threshold, torch.full_like(logits, <span class="op">-</span><span class="bu">float</span>(<span class="st">"inf"</span>)), logits)</span>
+<span id="cb1-11"><a href="#cb1-11" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> top_p <span class="kw">is</span> <span class="kw">not</span> <span class="va">None</span>:</span>
+<span id="cb1-12"><a href="#cb1-12" aria-hidden="true" tabindex="-1"></a>        sorted_logits, sorted_idx <span class="op">=</span> torch.sort(logits, descending<span class="op">=</span><span class="va">True</span>, dim<span class="op">=-</span><span class="dv">1</span>)</span>
+<span id="cb1-13"><a href="#cb1-13" aria-hidden="true" tabindex="-1"></a>        probs <span class="op">=</span> F.softmax(sorted_logits, dim<span class="op">=-</span><span class="dv">1</span>)</span>
+<span id="cb1-14"><a href="#cb1-14" aria-hidden="true" tabindex="-1"></a>        cum <span class="op">=</span> probs.cumsum(dim<span class="op">=-</span><span class="dv">1</span>)</span>
+<span id="cb1-15"><a href="#cb1-15" aria-hidden="true" tabindex="-1"></a>        <span class="co"># mask out entries with cumulative prob &gt; top_p (keeping the first one that crosses)</span></span>
+<span id="cb1-16"><a href="#cb1-16" aria-hidden="true" tabindex="-1"></a>        mask <span class="op">=</span> cum <span class="op">-</span> probs <span class="op">&gt;</span> top_p</span>
+<span id="cb1-17"><a href="#cb1-17" aria-hidden="true" tabindex="-1"></a>        sorted_logits <span class="op">=</span> sorted_logits.masked_fill(mask, <span class="op">-</span><span class="bu">float</span>(<span class="st">"inf"</span>))</span>
+<span id="cb1-18"><a href="#cb1-18" aria-hidden="true" tabindex="-1"></a>        logits <span class="op">=</span> torch.empty_like(logits).scatter_(<span class="op">-</span><span class="dv">1</span>, sorted_idx, sorted_logits)</span>
+<span id="cb1-19"><a href="#cb1-19" aria-hidden="true" tabindex="-1"></a>    probs <span class="op">=</span> F.softmax(logits, dim<span class="op">=-</span><span class="dv">1</span>)</span>
+<span id="cb1-20"><a href="#cb1-20" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> torch.multinomial(probs, <span class="dv">1</span>).squeeze(<span class="op">-</span><span class="dv">1</span>)</span>
+<span id="cb1-21"><a href="#cb1-21" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-22"><a href="#cb1-22" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> argmax_ref(logits):</span>
+<span id="cb1-23"><a href="#cb1-23" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> logits.argmax(dim<span class="op">=-</span><span class="dv">1</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+</section>
+<section id="triton-implementation" class="level3" data-number="23.0.2">
+<h3 data-number="23.0.2" class="anchored" data-anchor-id="triton-implementation"><span class="header-section-number">23.0.2</span> Triton implementation</h3>
+<p>Four kernels, listed in order of “obvious win” to “questionable value”:</p>
+<p><strong>Temperature scale</strong> — trivially elementwise.</p>
+<div id="c4cbc0bd" class="cell">
+<div class="sourceCode cell-code" id="cb2"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch, triton</span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> triton.language <span class="im">as</span> tl</span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.jit</span></span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> _temperature_kernel(</span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a>    x_ptr, y_ptr, inv_t,</span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a>    N, V, stride_row,</span>
+<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a>    BLOCK_SIZE: tl.constexpr,</span>
+<span id="cb2-9"><a href="#cb2-9" aria-hidden="true" tabindex="-1"></a>):</span>
+<span id="cb2-10"><a href="#cb2-10" aria-hidden="true" tabindex="-1"></a>    row <span class="op">=</span> tl.program_id(<span class="dv">0</span>)</span>
+<span id="cb2-11"><a href="#cb2-11" aria-hidden="true" tabindex="-1"></a>    cols <span class="op">=</span> tl.arange(<span class="dv">0</span>, BLOCK_SIZE)</span>
+<span id="cb2-12"><a href="#cb2-12" aria-hidden="true" tabindex="-1"></a>    mask <span class="op">=</span> cols <span class="op">&lt;</span> V</span>
+<span id="cb2-13"><a href="#cb2-13" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> tl.load(x_ptr <span class="op">+</span> row <span class="op">*</span> stride_row <span class="op">+</span> cols, mask<span class="op">=</span>mask, other<span class="op">=</span><span class="fl">0.0</span>)</span>
+<span id="cb2-14"><a href="#cb2-14" aria-hidden="true" tabindex="-1"></a>    tl.store(y_ptr <span class="op">+</span> row <span class="op">*</span> stride_row <span class="op">+</span> cols, x <span class="op">*</span> inv_t, mask<span class="op">=</span>mask)</span>
+<span id="cb2-15"><a href="#cb2-15" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-16"><a href="#cb2-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-17"><a href="#cb2-17" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> temperature_scale(logits, temperature):</span>
+<span id="cb2-18"><a href="#cb2-18" aria-hidden="true" tabindex="-1"></a>    N, V <span class="op">=</span> logits.shape</span>
+<span id="cb2-19"><a href="#cb2-19" aria-hidden="true" tabindex="-1"></a>    y <span class="op">=</span> torch.empty_like(logits)</span>
+<span id="cb2-20"><a href="#cb2-20" aria-hidden="true" tabindex="-1"></a>    inv_t <span class="op">=</span> <span class="fl">1.0</span> <span class="op">/</span> <span class="bu">float</span>(temperature)</span>
+<span id="cb2-21"><a href="#cb2-21" aria-hidden="true" tabindex="-1"></a>    BS <span class="op">=</span> triton.next_power_of_2(V)</span>
+<span id="cb2-22"><a href="#cb2-22" aria-hidden="true" tabindex="-1"></a>    _temperature_kernel[(N,)](logits, y, inv_t, N, V, logits.stride(<span class="dv">0</span>), BLOCK_SIZE<span class="op">=</span>BS)</span>
+<span id="cb2-23"><a href="#cb2-23" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> y</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+<p><strong>Argmax</strong> — one program per row, one <code>tl.argmax</code> reduction.</p>
+<div id="8b58173d" class="cell">
+<div class="sourceCode cell-code" id="cb3"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.jit</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> _argmax_kernel(</span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>    x_ptr, out_ptr,</span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>    N, V, stride_row,</span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a>    BLOCK_SIZE: tl.constexpr,</span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a>):</span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a>    row <span class="op">=</span> tl.program_id(<span class="dv">0</span>)</span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a>    cols <span class="op">=</span> tl.arange(<span class="dv">0</span>, BLOCK_SIZE)</span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a>    mask <span class="op">=</span> cols <span class="op">&lt;</span> V</span>
+<span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> tl.load(x_ptr <span class="op">+</span> row <span class="op">*</span> stride_row <span class="op">+</span> cols, mask<span class="op">=</span>mask, other<span class="op">=-</span><span class="bu">float</span>(<span class="st">"inf"</span>))</span>
+<span id="cb3-11"><a href="#cb3-11" aria-hidden="true" tabindex="-1"></a>    idx <span class="op">=</span> tl.argmax(x, axis<span class="op">=</span><span class="dv">0</span>)</span>
+<span id="cb3-12"><a href="#cb3-12" aria-hidden="true" tabindex="-1"></a>    tl.store(out_ptr <span class="op">+</span> row, idx.to(tl.int64))</span>
+<span id="cb3-13"><a href="#cb3-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-14"><a href="#cb3-14" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-15"><a href="#cb3-15" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> argmax_sample(logits):</span>
+<span id="cb3-16"><a href="#cb3-16" aria-hidden="true" tabindex="-1"></a>    N, V <span class="op">=</span> logits.shape</span>
+<span id="cb3-17"><a href="#cb3-17" aria-hidden="true" tabindex="-1"></a>    out <span class="op">=</span> torch.empty(N, device<span class="op">=</span>logits.device, dtype<span class="op">=</span>torch.int64)</span>
+<span id="cb3-18"><a href="#cb3-18" aria-hidden="true" tabindex="-1"></a>    BS <span class="op">=</span> triton.next_power_of_2(V)</span>
+<span id="cb3-19"><a href="#cb3-19" aria-hidden="true" tabindex="-1"></a>    _argmax_kernel[(N,)](logits, out, N, V, logits.stride(<span class="dv">0</span>), BLOCK_SIZE<span class="op">=</span>BS)</span>
+<span id="cb3-20"><a href="#cb3-20" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> out</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+<p>Note the explicit cast to <code>int64</code>: <code>tl.argmax</code> returns <code>int32</code>. Storing <code>int32</code> into an <code>int64</code> buffer without the cast produces silently truncated indices once <code>V &gt; 2^31</code> (never happens in practice, but the lint is worth keeping).</p>
+<p><strong>Top-k mask</strong> — find the k-th largest value per row, mask everything below it to <code>-inf</code>. For small <code>k</code> (say <code>k &lt;= 256</code>), keep a tile-resident “top-k buffer” and do a simple insertion sort. For <code>k &gt; 256</code>, defer to <code>torch.topk</code> and a one-pass masking kernel.</p>
+<div id="7014729c" class="cell">
+<div class="sourceCode cell-code" id="cb4"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.jit</span></span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> _topk_mask_kernel(</span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>    x_ptr, threshold_ptr, y_ptr,</span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a>    N, V, stride_row,</span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a>    BLOCK_SIZE: tl.constexpr,</span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a>):</span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a>    <span class="co">"""Mask everything strictly less than the per-row threshold to -inf."""</span></span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a>    row <span class="op">=</span> tl.program_id(<span class="dv">0</span>)</span>
+<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a>    cols <span class="op">=</span> tl.arange(<span class="dv">0</span>, BLOCK_SIZE)</span>
+<span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a>    mask <span class="op">=</span> cols <span class="op">&lt;</span> V</span>
+<span id="cb4-11"><a href="#cb4-11" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> tl.load(x_ptr <span class="op">+</span> row <span class="op">*</span> stride_row <span class="op">+</span> cols, mask<span class="op">=</span>mask, other<span class="op">=-</span><span class="bu">float</span>(<span class="st">"inf"</span>))</span>
+<span id="cb4-12"><a href="#cb4-12" aria-hidden="true" tabindex="-1"></a>    threshold <span class="op">=</span> tl.load(threshold_ptr <span class="op">+</span> row)</span>
+<span id="cb4-13"><a href="#cb4-13" aria-hidden="true" tabindex="-1"></a>    keep <span class="op">=</span> x <span class="op">&gt;=</span> threshold</span>
+<span id="cb4-14"><a href="#cb4-14" aria-hidden="true" tabindex="-1"></a>    y <span class="op">=</span> tl.where(keep, x, <span class="op">-</span><span class="bu">float</span>(<span class="st">"inf"</span>))</span>
+<span id="cb4-15"><a href="#cb4-15" aria-hidden="true" tabindex="-1"></a>    tl.store(y_ptr <span class="op">+</span> row <span class="op">*</span> stride_row <span class="op">+</span> cols, y, mask<span class="op">=</span>mask)</span>
+<span id="cb4-16"><a href="#cb4-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-17"><a href="#cb4-17" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-18"><a href="#cb4-18" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> top_k_mask(logits, k):</span>
+<span id="cb4-19"><a href="#cb4-19" aria-hidden="true" tabindex="-1"></a>    <span class="co">"""Hybrid: torch.topk for the threshold, Triton for the elementwise mask."""</span></span>
+<span id="cb4-20"><a href="#cb4-20" aria-hidden="true" tabindex="-1"></a>    N, V <span class="op">=</span> logits.shape</span>
+<span id="cb4-21"><a href="#cb4-21" aria-hidden="true" tabindex="-1"></a>    topk_vals, _ <span class="op">=</span> torch.topk(logits, k, dim<span class="op">=-</span><span class="dv">1</span>)</span>
+<span id="cb4-22"><a href="#cb4-22" aria-hidden="true" tabindex="-1"></a>    threshold <span class="op">=</span> topk_vals[:, <span class="op">-</span><span class="dv">1</span>].contiguous()</span>
+<span id="cb4-23"><a href="#cb4-23" aria-hidden="true" tabindex="-1"></a>    y <span class="op">=</span> torch.empty_like(logits)</span>
+<span id="cb4-24"><a href="#cb4-24" aria-hidden="true" tabindex="-1"></a>    BS <span class="op">=</span> triton.next_power_of_2(V)</span>
+<span id="cb4-25"><a href="#cb4-25" aria-hidden="true" tabindex="-1"></a>    _topk_mask_kernel[(N,)](logits, threshold, y, N, V, logits.stride(<span class="dv">0</span>), BLOCK_SIZE<span class="op">=</span>BS)</span>
+<span id="cb4-26"><a href="#cb4-26" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> y</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+<p>For decode (<code>N = 1</code>), <code>torch.topk</code> on a 128k vector takes ~30 us. A pure-Triton top-k would save maybe 10 us. Not worth the kernel complexity.</p>
+<p><strong>Top-p (nucleus)</strong> — sort, cumsum, mask. The sort is the awkward bit. Triton has no built-in <code>tl.sort</code> over arbitrary sizes; you’d implement bitonic or radix from scratch. The realistic answer is <strong>hybrid</strong>: <code>torch.sort</code> on the host side, Triton kernel for the cumsum-and-mask:</p>
+<div id="7161c7b3" class="cell">
+<div class="sourceCode cell-code" id="cb5"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> top_p_mask(logits, p):</span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a>    <span class="co">"""Hybrid top-p: torch.sort + Triton mask + unsort."""</span></span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>    sorted_logits, sorted_idx <span class="op">=</span> torch.sort(logits, descending<span class="op">=</span><span class="va">True</span>, dim<span class="op">=-</span><span class="dv">1</span>)</span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a>    probs <span class="op">=</span> torch.softmax(sorted_logits, dim<span class="op">=-</span><span class="dv">1</span>)</span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a>    cum <span class="op">=</span> probs.cumsum(dim<span class="op">=-</span><span class="dv">1</span>)</span>
+<span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Keep the smallest prefix whose cum-prev &gt;= p; that means mask where cum - probs &gt; p.</span></span>
+<span id="cb5-7"><a href="#cb5-7" aria-hidden="true" tabindex="-1"></a>    drop <span class="op">=</span> (cum <span class="op">-</span> probs) <span class="op">&gt;</span> p</span>
+<span id="cb5-8"><a href="#cb5-8" aria-hidden="true" tabindex="-1"></a>    sorted_logits <span class="op">=</span> sorted_logits.masked_fill(drop, <span class="op">-</span><span class="bu">float</span>(<span class="st">"inf"</span>))</span>
+<span id="cb5-9"><a href="#cb5-9" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> logits.scatter(<span class="op">-</span><span class="dv">1</span>, sorted_idx, sorted_logits)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+<p>A Triton kernel could do the <code>cumsum</code> + masking together once the sorted output is in HBM, saving one pass. The sort itself is best left to <code>torch.sort</code> (cuB-backed) for any realistic vocab.</p>
+</section>
+<section id="shape-trace" class="level3" data-number="23.0.3">
+<h3 data-number="23.0.3" class="anchored" data-anchor-id="shape-trace"><span class="header-section-number">23.0.3</span> Shape trace</h3>
+<p>For the argmax kernel (the cleanest of the bunch):</p>
+<pre><code>Inputs:                    logits : (N, V)     fp16
+Program owns:              one row of logits
+pid = tl.program_id(0)     scalar              int32
+cols = tl.arange(0, BS)    (BS,)               int32
+mask = cols &lt; V            (BS,)               bool
+x_ptrs = logits_ptr + pid*stride_row + cols    (BS,)  ptr
+x = tl.load(x_ptrs, mask, other=-inf)          (BS,)  fp16
+idx = tl.argmax(x, axis=0)                     scalar int32
+idx64 = idx.to(tl.int64)                       scalar int64
+tl.store(out_ptr + pid, idx64)</code></pre>
+<p>The <code>other=-inf</code> matters: an out-of-range lane loaded as <code>0.0</code> could win the argmax against legitimate negative logits.</p>
+</section>
+<section id="pointer-arithmetic-and-masks" class="level3" data-number="23.0.4">
+<h3 data-number="23.0.4" class="anchored" data-anchor-id="pointer-arithmetic-and-masks"><span class="header-section-number">23.0.4</span> Pointer arithmetic and masks</h3>
+<p>All four kernels are one-program-per-row with <code>cols = arange(0, BS)</code> and <code>mask = cols &lt; V</code>. The <code>other</code> value depends on what you do with the lane:</p>
+<table class="caption-top table">
+<colgroup>
+<col style="width: 20%">
+<col style="width: 12%">
+<col style="width: 66%">
+</colgroup>
+<thead>
+<tr class="header">
+<th>Kernel</th>
+<th><code>other</code></th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>temperature_scale</td>
+<td><code>0.0</code></td>
+<td>Lane is masked at store; load value is never used.</td>
+</tr>
+<tr class="even">
+<td>argmax</td>
+<td><code>-inf</code></td>
+<td>A <code>0.0</code> masked lane could beat real negative logits and win argmax.</td>
+</tr>
+<tr class="odd">
+<td>topk_mask</td>
+<td><code>-inf</code></td>
+<td>A <code>0.0</code> masked lane could survive the threshold and leak garbage.</td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="correctness-test" class="level3" data-number="23.0.5">
+<h3 data-number="23.0.5" class="anchored" data-anchor-id="correctness-test"><span class="header-section-number">23.0.5</span> Correctness test</h3>
+<div id="94f8ce00" class="cell">
+<div class="sourceCode cell-code" id="cb7"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pytest, torch</span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> ch21_sampling <span class="im">import</span> temperature_scale, argmax_sample, top_k_mask</span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a>pytestmark <span class="op">=</span> pytest.mark.skipif(<span class="kw">not</span> torch.cuda.is_available(), reason<span class="op">=</span><span class="st">"cuda only"</span>)</span>
+<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-6"><a href="#cb7-6" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> test_temperature():</span>
+<span id="cb7-7"><a href="#cb7-7" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> torch.randn(<span class="dv">4</span>, <span class="dv">1024</span>, device<span class="op">=</span><span class="st">"cuda"</span>)</span>
+<span id="cb7-8"><a href="#cb7-8" aria-hidden="true" tabindex="-1"></a>    y <span class="op">=</span> temperature_scale(x, <span class="fl">0.7</span>)</span>
+<span id="cb7-9"><a href="#cb7-9" aria-hidden="true" tabindex="-1"></a>    torch.testing.assert_close(y, x <span class="op">/</span> <span class="fl">0.7</span>)</span>
+<span id="cb7-10"><a href="#cb7-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-11"><a href="#cb7-11" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> test_argmax():</span>
+<span id="cb7-12"><a href="#cb7-12" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> torch.randn(<span class="dv">4</span>, <span class="dv">1025</span>, device<span class="op">=</span><span class="st">"cuda"</span>)</span>
+<span id="cb7-13"><a href="#cb7-13" aria-hidden="true" tabindex="-1"></a>    idx <span class="op">=</span> argmax_sample(x)</span>
+<span id="cb7-14"><a href="#cb7-14" aria-hidden="true" tabindex="-1"></a>    torch.testing.assert_close(idx, x.argmax(dim<span class="op">=-</span><span class="dv">1</span>))</span>
+<span id="cb7-15"><a href="#cb7-15" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-16"><a href="#cb7-16" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> test_topk_mask():</span>
+<span id="cb7-17"><a href="#cb7-17" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> torch.randn(<span class="dv">4</span>, <span class="dv">1025</span>, device<span class="op">=</span><span class="st">"cuda"</span>)</span>
+<span id="cb7-18"><a href="#cb7-18" aria-hidden="true" tabindex="-1"></a>    y <span class="op">=</span> top_k_mask(x, k<span class="op">=</span><span class="dv">10</span>)</span>
+<span id="cb7-19"><a href="#cb7-19" aria-hidden="true" tabindex="-1"></a>    <span class="co"># exactly k finite entries per row</span></span>
+<span id="cb7-20"><a href="#cb7-20" aria-hidden="true" tabindex="-1"></a>    <span class="cf">assert</span> (y <span class="op">!=</span> <span class="op">-</span><span class="bu">float</span>(<span class="st">"inf"</span>)).<span class="bu">sum</span>(dim<span class="op">=-</span><span class="dv">1</span>).eq(<span class="dv">10</span>).<span class="bu">all</span>()</span>
+<span id="cb7-21"><a href="#cb7-21" aria-hidden="true" tabindex="-1"></a>    <span class="co"># the kept entries are the top-k of x</span></span>
+<span id="cb7-22"><a href="#cb7-22" aria-hidden="true" tabindex="-1"></a>    expected, _ <span class="op">=</span> x.topk(<span class="dv">10</span>, dim<span class="op">=-</span><span class="dv">1</span>)</span>
+<span id="cb7-23"><a href="#cb7-23" aria-hidden="true" tabindex="-1"></a>    kept <span class="op">=</span> torch.where(y <span class="op">!=</span> <span class="op">-</span><span class="bu">float</span>(<span class="st">"inf"</span>), y, torch.full_like(y, <span class="op">-</span><span class="bu">float</span>(<span class="st">"inf"</span>)))</span>
+<span id="cb7-24"><a href="#cb7-24" aria-hidden="true" tabindex="-1"></a>    torch.testing.assert_close(kept.topk(<span class="dv">10</span>, dim<span class="op">=-</span><span class="dv">1</span>).values, expected)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+</section>
+<section id="benchmark" class="level3" data-number="23.0.6">
+<h3 data-number="23.0.6" class="anchored" data-anchor-id="benchmark"><span class="header-section-number">23.0.6</span> Benchmark</h3>
+<div id="e7600082" class="cell">
+<div class="sourceCode cell-code" id="cb8"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch, triton</span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> ch21_sampling <span class="im">import</span> temperature_scale, argmax_sample, top_k_mask</span>
+<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a>N <span class="op">=</span> <span class="dv">1</span>  <span class="co"># decode: one token at a time</span></span>
+<span id="cb8-5"><a href="#cb8-5" aria-hidden="true" tabindex="-1"></a><span class="cf">for</span> V <span class="kw">in</span> [<span class="dv">32000</span>, <span class="dv">50272</span>, <span class="dv">128000</span>]:</span>
+<span id="cb8-6"><a href="#cb8-6" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> torch.randn(N, V, device<span class="op">=</span><span class="st">"cuda"</span>, dtype<span class="op">=</span>torch.float16)</span>
+<span id="cb8-7"><a href="#cb8-7" aria-hidden="true" tabindex="-1"></a>    t_temp <span class="op">=</span> triton.testing.do_bench(<span class="kw">lambda</span>: temperature_scale(x, <span class="fl">0.8</span>))</span>
+<span id="cb8-8"><a href="#cb8-8" aria-hidden="true" tabindex="-1"></a>    t_arg  <span class="op">=</span> triton.testing.do_bench(<span class="kw">lambda</span>: argmax_sample(x))</span>
+<span id="cb8-9"><a href="#cb8-9" aria-hidden="true" tabindex="-1"></a>    t_topk <span class="op">=</span> triton.testing.do_bench(<span class="kw">lambda</span>: top_k_mask(x, k<span class="op">=</span><span class="dv">50</span>))</span>
+<span id="cb8-10"><a href="#cb8-10" aria-hidden="true" tabindex="-1"></a>    p_temp <span class="op">=</span> triton.testing.do_bench(<span class="kw">lambda</span>: x <span class="op">/</span> <span class="fl">0.8</span>)</span>
+<span id="cb8-11"><a href="#cb8-11" aria-hidden="true" tabindex="-1"></a>    p_arg  <span class="op">=</span> triton.testing.do_bench(<span class="kw">lambda</span>: x.argmax(dim<span class="op">=-</span><span class="dv">1</span>))</span>
+<span id="cb8-12"><a href="#cb8-12" aria-hidden="true" tabindex="-1"></a>    <span class="bu">print</span>(<span class="ss">f"V=</span><span class="sc">{</span>V<span class="sc">}</span><span class="ss">: temp triton=</span><span class="sc">{</span>t_temp<span class="sc">:.4f}</span><span class="ss"> torch=</span><span class="sc">{</span>p_temp<span class="sc">:.4f}</span><span class="ss"> | argmax triton=</span><span class="sc">{</span>t_arg<span class="sc">:.4f}</span><span class="ss"> torch=</span><span class="sc">{</span>p_arg<span class="sc">:.4f}</span><span class="ss"> | topk=</span><span class="sc">{</span>t_topk<span class="sc">:.4f}</span><span class="ss">"</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+<div class="callout callout-style-simple callout-warning">
+<div class="callout-body d-flex">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-body-container">
+<p><strong>Placeholder data.</strong> The numbers below are hardcoded illustrative values, not measurements. Replace with output from your own <code>triton.testing.do_bench</code> run before drawing conclusions.</p>
+</div>
+</div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code hidden" id="cb9" data-startfrom="234" data-source-offset="0"><pre class="sourceCode js code-with-copy"><code class="sourceCode javascript" style="counter-reset: source-line 233;"><span id="cb9-234"><a href="#cb9-234" aria-hidden="true" tabindex="-1"></a>{</span>
+<span id="cb9-235"><a href="#cb9-235" aria-hidden="true" tabindex="-1"></a>  <span class="kw">const</span> data <span class="op">=</span> [</span>
+<span id="cb9-236"><a href="#cb9-236" aria-hidden="true" tabindex="-1"></a>    {<span class="dt">V</span><span class="op">:</span> <span class="dv">32000</span><span class="op">,</span>  <span class="dt">argmax_triton</span><span class="op">:</span> <span class="fl">0.012</span><span class="op">,</span> <span class="dt">argmax_torch</span><span class="op">:</span> <span class="fl">0.025</span>}<span class="op">,</span></span>
+<span id="cb9-237"><a href="#cb9-237" aria-hidden="true" tabindex="-1"></a>    {<span class="dt">V</span><span class="op">:</span> <span class="dv">50272</span><span class="op">,</span>  <span class="dt">argmax_triton</span><span class="op">:</span> <span class="fl">0.018</span><span class="op">,</span> <span class="dt">argmax_torch</span><span class="op">:</span> <span class="fl">0.038</span>}<span class="op">,</span></span>
+<span id="cb9-238"><a href="#cb9-238" aria-hidden="true" tabindex="-1"></a>    {<span class="dt">V</span><span class="op">:</span> <span class="dv">128000</span><span class="op">,</span> <span class="dt">argmax_triton</span><span class="op">:</span> <span class="fl">0.045</span><span class="op">,</span> <span class="dt">argmax_torch</span><span class="op">:</span> <span class="fl">0.090</span>}<span class="op">,</span></span>
+<span id="cb9-239"><a href="#cb9-239" aria-hidden="true" tabindex="-1"></a>  ]<span class="op">;</span></span>
+<span id="cb9-240"><a href="#cb9-240" aria-hidden="true" tabindex="-1"></a>  <span class="kw">const</span> long <span class="op">=</span> data<span class="op">.</span><span class="fu">flatMap</span>(d <span class="kw">=&gt;</span> [</span>
+<span id="cb9-241"><a href="#cb9-241" aria-hidden="true" tabindex="-1"></a>    {<span class="dt">V</span><span class="op">:</span> d<span class="op">.</span><span class="at">V</span><span class="op">,</span> <span class="dt">impl</span><span class="op">:</span> <span class="st">"triton"</span><span class="op">,</span> <span class="dt">ms</span><span class="op">:</span> d<span class="op">.</span><span class="at">argmax_triton</span>}<span class="op">,</span></span>
+<span id="cb9-242"><a href="#cb9-242" aria-hidden="true" tabindex="-1"></a>    {<span class="dt">V</span><span class="op">:</span> d<span class="op">.</span><span class="at">V</span><span class="op">,</span> <span class="dt">impl</span><span class="op">:</span> <span class="st">"torch"</span><span class="op">,</span>  <span class="dt">ms</span><span class="op">:</span> d<span class="op">.</span><span class="at">argmax_torch</span>}</span>
+<span id="cb9-243"><a href="#cb9-243" aria-hidden="true" tabindex="-1"></a>  ])<span class="op">;</span></span>
+<span id="cb9-244"><a href="#cb9-244" aria-hidden="true" tabindex="-1"></a>  <span class="cf">return</span> Plot<span class="op">.</span><span class="fu">plot</span>({</span>
+<span id="cb9-245"><a href="#cb9-245" aria-hidden="true" tabindex="-1"></a>    <span class="dt">color</span><span class="op">:</span> {<span class="dt">legend</span><span class="op">:</span> <span class="kw">true</span><span class="op">,</span> <span class="dt">domain</span><span class="op">:</span> [<span class="st">"triton"</span><span class="op">,</span> <span class="st">"torch"</span>]<span class="op">,</span> <span class="dt">range</span><span class="op">:</span> [<span class="st">"steelblue"</span><span class="op">,</span> <span class="st">"orange"</span>]}<span class="op">,</span></span>
+<span id="cb9-246"><a href="#cb9-246" aria-hidden="true" tabindex="-1"></a>    <span class="dt">x</span><span class="op">:</span> {<span class="dt">label</span><span class="op">:</span> <span class="st">"V (vocabulary size)"</span>}<span class="op">,</span></span>
+<span id="cb9-247"><a href="#cb9-247" aria-hidden="true" tabindex="-1"></a>    <span class="dt">y</span><span class="op">:</span> {<span class="dt">label</span><span class="op">:</span> <span class="st">"median latency (ms, N=1) — lower is better"</span>}<span class="op">,</span></span>
+<span id="cb9-248"><a href="#cb9-248" aria-hidden="true" tabindex="-1"></a>    <span class="dt">marks</span><span class="op">:</span> [</span>
+<span id="cb9-249"><a href="#cb9-249" aria-hidden="true" tabindex="-1"></a>      Plot<span class="op">.</span><span class="fu">line</span>(long<span class="op">,</span> {<span class="dt">x</span><span class="op">:</span> <span class="st">"V"</span><span class="op">,</span> <span class="dt">y</span><span class="op">:</span> <span class="st">"ms"</span><span class="op">,</span> <span class="dt">stroke</span><span class="op">:</span> <span class="st">"impl"</span>})<span class="op">,</span></span>
+<span id="cb9-250"><a href="#cb9-250" aria-hidden="true" tabindex="-1"></a>      Plot<span class="op">.</span><span class="fu">dot</span>(long<span class="op">,</span>  {<span class="dt">x</span><span class="op">:</span> <span class="st">"V"</span><span class="op">,</span> <span class="dt">y</span><span class="op">:</span> <span class="st">"ms"</span><span class="op">,</span> <span class="dt">fill</span><span class="op">:</span> <span class="st">"impl"</span>})</span>
+<span id="cb9-251"><a href="#cb9-251" aria-hidden="true" tabindex="-1"></a>    ]</span>
+<span id="cb9-252"><a href="#cb9-252" aria-hidden="true" tabindex="-1"></a>  })<span class="op">;</span></span>
+<span id="cb9-253"><a href="#cb9-253" aria-hidden="true" tabindex="-1"></a>}</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div id="fig-argmax-bench" class="cell-output cell-output-display quarto-float quarto-figure quarto-figure-center anchored">
+<figure class="quarto-float quarto-float-fig figure">
+<div aria-describedby="fig-argmax-bench-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+<div id="ojs-cell-1" data-nodetype="expression">
+
+</div>
+</div>
+<figcaption class="quarto-float-caption-bottom quarto-float-caption quarto-float-fig" id="fig-argmax-bench-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+Figure&nbsp;23.1: Single-row (N=1) greedy argmax median latency vs vocabulary size V, fp16 logits. Lower is better. Triton argmax kernel vs eager torch.argmax.
+</figcaption>
+</figure>
+</div>
+</div>
+</section>
+<section id="optimization-discussion" class="level3" data-number="23.0.7">
+<h3 data-number="23.0.7" class="anchored" data-anchor-id="optimization-discussion"><span class="header-section-number">23.0.7</span> Optimization discussion</h3>
+<p>The actual bottleneck of autoregressive decode is <strong>the sync, not the math</strong>. Every sampled token id must be read back to the host to embed it for the next step. That sync stalls the GPU for the round-trip latency, often 5–20 us. Your 2 us sampling kernel does not move the needle; the 15 us sync dominates.</p>
+<p>Two real wins exist:</p>
+<ul>
+<li><strong>Speculative decoding</strong>: sample many candidate tokens in parallel and verify with a smaller draft model, amortising the sync cost. Out of scope for a kernel chapter.</li>
+<li><strong>Persistent CUDA graphs for decode</strong>: capture the entire forward + sample as one graph, dispatch with one call. Removes per-op kernel-launch overhead.</li>
+</ul>
+<p>For the sampling math itself, the only kernel worth obsessing over is <strong>argmax</strong> for greedy decode, because it ships in every chatbot and runs in the hottest loop. The custom kernel is a clean ~2x over <code>torch.argmax</code> thanks to skipping the dispatcher overhead and not building an intermediate <code>(values, indices)</code> pair.</p>
+</section>
+<section id="common-bugs" class="level3" data-number="23.0.8">
+<h3 data-number="23.0.8" class="anchored" data-anchor-id="common-bugs"><span class="header-section-number">23.0.8</span> Common bugs</h3>
+<ul>
+<li><strong>Temperature applied after softmax.</strong> <code>softmax(logits) / T</code> is wrong — the resulting distribution does not sum to 1. Always divide logits first, then softmax.</li>
+<li><strong>Top-k off-by-one.</strong> <code>&gt;=</code> vs <code>&gt;</code> on the threshold matters when multiple logits tie at the k-th value. PyTorch’s <code>torch.topk</code> returns one specific tie-break; if you want bit-for-bit compatibility you must match it.</li>
+<li><strong><code>tl.argmax</code> dtype.</strong> Returns <code>int32</code>. Cast to <code>int64</code> before storing into the standard PyTorch indices buffer.</li>
+<li><strong><code>other=0.0</code> on the argmax load.</strong> A masked-off lane of zero will beat any negative logit and become the sampled token. Use <code>other=-inf</code>.</li>
+</ul>
+</section>
+<section id="exercises" class="level3" data-number="23.0.9">
+<h3 data-number="23.0.9" class="anchored" data-anchor-id="exercises"><span class="header-section-number">23.0.9</span> Exercises</h3>
+<p><strong>Beginner 1 — temperature scale.</strong> Implement and verify. Confirm temperature=1.0 is an identity.</p>
+<p><strong>Beginner 2 — greedy argmax.</strong> Implement <code>argmax_sample</code>. Test for <code>k=1</code> (single-row) and <code>k=B*T</code> (batch). Confirm dtype is <code>int64</code>.</p>
+<p><strong>Beginner 3 — top-k mask for several k.</strong> Test <code>top_k_mask</code> for <code>k=1, 10, 50, 256</code>. Confirm exactly <code>k</code> finite entries per row.</p>
+</section>
+<section id="intermediate" class="level2" data-number="23.1">
+<h2 data-number="23.1" class="anchored" data-anchor-id="intermediate"><span class="header-section-number">23.1</span> Intermediate</h2>
+<p><strong>Intermediate 1 — fused temperature + top-k + softmax + multinomial.</strong> Combine all four into one kernel for <code>V &lt;= 4096</code>. Use <code>tl.rand(seed, row)</code> for the uniform draw. Compare distribution against the unfused reference over a histogram of many samples.</p>
+<p><strong>Intermediate 2 — top-p with Triton scan.</strong> After sorting on the CPU side with <code>torch.sort</code>, write a Triton kernel that does the cumsum (<code>tl.cumsum</code>) and the masking in one pass. Then scatter back.</p>
+</section>
+<section id="advanced" class="level2" data-number="23.2">
+<h2 data-number="23.2" class="anchored" data-anchor-id="advanced"><span class="header-section-number">23.2</span> Advanced</h2>
+<p><strong>Advanced — min-p sampler (Triton-only).</strong> Min-p keeps tokens whose probability is at least <code>min_p * max_prob</code>. This is row-local: no sort required. Write a one-row kernel that computes the row max, computes softmax in one pass, masks below the min-p threshold, and returns the re-normalised probabilities. Then sample via <code>tl.rand</code>.</p>
+
+
+<!-- -->
+
+</section>
+
+</main> <!-- /main -->
+<script type="ojs-module-contents">
+eyJjb250ZW50cyI6W3sibWV0aG9kTmFtZSI6ImludGVycHJldCIsImNlbGxOYW1lIjoib2pzLWNlbGwtMSIsImlubGluZSI6ZmFsc2UsInNvdXJjZSI6IntcbiAgY29uc3QgZGF0YSA9IFtcbiAgICB7VjogMzIwMDAsICBhcmdtYXhfdHJpdG9uOiAwLjAxMiwgYXJnbWF4X3RvcmNoOiAwLjAyNX0sXG4gICAge1Y6IDUwMjcyLCAgYXJnbWF4X3RyaXRvbjogMC4wMTgsIGFyZ21heF90b3JjaDogMC4wMzh9LFxuICAgIHtWOiAxMjgwMDAsIGFyZ21heF90cml0b246IDAuMDQ1LCBhcmdtYXhfdG9yY2g6IDAuMDkwfSxcbiAgXTtcbiAgY29uc3QgbG9uZyA9IGRhdGEuZmxhdE1hcChkID0+IFtcbiAgICB7VjogZC5WLCBpbXBsOiBcInRyaXRvblwiLCBtczogZC5hcmdtYXhfdHJpdG9ufSxcbiAgICB7VjogZC5WLCBpbXBsOiBcInRvcmNoXCIsICBtczogZC5hcmdtYXhfdG9yY2h9XG4gIF0pO1xuICByZXR1cm4gUGxvdC5wbG90KHtcbiAgICBjb2xvcjoge2xlZ2VuZDogdHJ1ZSwgZG9tYWluOiBbXCJ0cml0b25cIiwgXCJ0b3JjaFwiXSwgcmFuZ2U6IFtcInN0ZWVsYmx1ZVwiLCBcIm9yYW5nZVwiXX0sXG4gICAgeDoge2xhYmVsOiBcIlYgKHZvY2FidWxhcnkgc2l6ZSlcIn0sXG4gICAgeToge2xhYmVsOiBcIm1lZGlhbiBsYXRlbmN5IChtcywgTj0xKSDigJQgbG93ZXIgaXMgYmV0dGVyXCJ9LFxuICAgIG1hcmtzOiBbXG4gICAgICBQbG90LmxpbmUobG9uZywge3g6IFwiVlwiLCB5OiBcIm1zXCIsIHN0cm9rZTogXCJpbXBsXCJ9KSxcbiAgICAgIFBsb3QuZG90KGxvbmcsICB7eDogXCJWXCIsIHk6IFwibXNcIiwgZmlsbDogXCJpbXBsXCJ9KVxuICAgIF1cbiAgfSk7XG59XG4ifV19
+</script>
+<script type="module">
+if (window.location.protocol === "file:") { alert("The OJS runtime does not work with file:// URLs. Please use a web server to view this document."); }
+window._ojs.paths.runtimeToDoc = "../../book/05-llm-fusion";
+window._ojs.paths.runtimeToRoot = "../..";
+window._ojs.paths.docToRoot = "../..";
+window._ojs.selfContained = false;
+window._ojs.runtime.interpretFromScriptTags();
+</script>
+<script id="quarto-html-after-body" type="application/javascript">
+window.document.addEventListener("DOMContentLoaded", function (event) {
+  const toggleBodyColorMode = (bsSheetEl) => {
+    const mode = bsSheetEl.getAttribute("data-mode");
+    const bodyEl = window.document.querySelector("body");
+    if (mode === "dark") {
+      bodyEl.classList.add("quarto-dark");
+      bodyEl.classList.remove("quarto-light");
+    } else {
+      bodyEl.classList.add("quarto-light");
+      bodyEl.classList.remove("quarto-dark");
+    }
+  }
+  const toggleBodyColorPrimary = () => {
+    const bsSheetEl = window.document.querySelector("link#quarto-bootstrap");
+    if (bsSheetEl) {
+      toggleBodyColorMode(bsSheetEl);
+    }
+  }
+  toggleBodyColorPrimary();  
+  const icon = "";
+  const anchorJS = new window.AnchorJS();
+  anchorJS.options = {
+    placement: 'right',
+    icon: icon
+  };
+  anchorJS.add('.anchored');
+  const isCodeAnnotation = (el) => {
+    for (const clz of el.classList) {
+      if (clz.startsWith('code-annotation-')) {                     
+        return true;
+      }
+    }
+    return false;
+  }
+  const onCopySuccess = function(e) {
+    // button target
+    const button = e.trigger;
+    // don't keep focus
+    button.blur();
+    // flash "checked"
+    button.classList.add('code-copy-button-checked');
+    var currentTitle = button.getAttribute("title");
+    button.setAttribute("title", "Copied!");
+    let tooltip;
+    if (window.bootstrap) {
+      button.setAttribute("data-bs-toggle", "tooltip");
+      button.setAttribute("data-bs-placement", "left");
+      button.setAttribute("data-bs-title", "Copied!");
+      tooltip = new bootstrap.Tooltip(button, 
+        { trigger: "manual", 
+          customClass: "code-copy-button-tooltip",
+          offset: [0, -8]});
+      tooltip.show();    
+    }
+    setTimeout(function() {
+      if (tooltip) {
+        tooltip.hide();
+        button.removeAttribute("data-bs-title");
+        button.removeAttribute("data-bs-toggle");
+        button.removeAttribute("data-bs-placement");
+      }
+      button.setAttribute("title", currentTitle);
+      button.classList.remove('code-copy-button-checked');
+    }, 1000);
+    // clear code selection
+    e.clearSelection();
+  }
+  const getTextToCopy = function(trigger) {
+      const codeEl = trigger.previousElementSibling.cloneNode(true);
+      for (const childEl of codeEl.children) {
+        if (isCodeAnnotation(childEl)) {
+          childEl.remove();
+        }
+      }
+      return codeEl.innerText;
+  }
+  const clipboard = new window.ClipboardJS('.code-copy-button:not([data-in-quarto-modal])', {
+    text: getTextToCopy
+  });
+  clipboard.on('success', onCopySuccess);
+  if (window.document.getElementById('quarto-embedded-source-code-modal')) {
+    // For code content inside modals, clipBoardJS needs to be initialized with a container option
+    // TODO: Check when it could be a function (https://github.com/zenorocha/clipboard.js/issues/860)
+    const clipboardModal = new window.ClipboardJS('.code-copy-button[data-in-quarto-modal]', {
+      text: getTextToCopy,
+      container: window.document.getElementById('quarto-embedded-source-code-modal')
+    });
+    clipboardModal.on('success', onCopySuccess);
+  }
+  const viewSource = window.document.getElementById('quarto-view-source') ||
+                     window.document.getElementById('quarto-code-tools-source');
+  if (viewSource) {
+    const sourceUrl = viewSource.getAttribute("data-quarto-source-url");
+    viewSource.addEventListener("click", function(e) {
+      if (sourceUrl) {
+        // rstudio viewer pane
+        if (/\bcapabilities=\b/.test(window.location)) {
+          window.open(sourceUrl);
+        } else {
+          window.location.href = sourceUrl;
+        }
+      } else {
+        const modal = new bootstrap.Modal(document.getElementById('quarto-embedded-source-code-modal'));
+        modal.show();
+      }
+      return false;
+    });
+  }
+  function toggleCodeHandler(show) {
+    return function(e) {
+      const detailsSrc = window.document.querySelectorAll(".cell > details > .sourceCode");
+      for (let i=0; i<detailsSrc.length; i++) {
+        const details = detailsSrc[i].parentElement;
+        if (show) {
+          details.open = true;
+        } else {
+          details.removeAttribute("open");
+        }
+      }
+      const cellCodeDivs = window.document.querySelectorAll(".cell > .sourceCode");
+      const fromCls = show ? "hidden" : "unhidden";
+      const toCls = show ? "unhidden" : "hidden";
+      for (let i=0; i<cellCodeDivs.length; i++) {
+        const codeDiv = cellCodeDivs[i];
+        if (codeDiv.classList.contains(fromCls)) {
+          codeDiv.classList.remove(fromCls);
+          codeDiv.classList.add(toCls);
+        } 
+      }
+      return false;
+    }
+  }
+  const hideAllCode = window.document.getElementById("quarto-hide-all-code");
+  if (hideAllCode) {
+    hideAllCode.addEventListener("click", toggleCodeHandler(false));
+  }
+  const showAllCode = window.document.getElementById("quarto-show-all-code");
+  if (showAllCode) {
+    showAllCode.addEventListener("click", toggleCodeHandler(true));
+  }
+    var localhostRegex = new RegExp(/^(?:http|https):\/\/localhost\:?[0-9]*\//);
+    var mailtoRegex = new RegExp(/^mailto:/);
+      var filterRegex = new RegExp('/' + window.location.host + '/');
+    var isInternal = (href) => {
+        return filterRegex.test(href) || localhostRegex.test(href) || mailtoRegex.test(href);
+    }
+    // Inspect non-navigation links and adorn them if external
+ 	var links = window.document.querySelectorAll('a[href]:not(.nav-link):not(.navbar-brand):not(.toc-action):not(.sidebar-link):not(.sidebar-item-toggle):not(.pagination-link):not(.no-external):not([aria-hidden]):not(.dropdown-item):not(.quarto-navigation-tool):not(.about-link)');
+    for (var i=0; i<links.length; i++) {
+      const link = links[i];
+      if (!isInternal(link.href)) {
+        // undo the damage that might have been done by quarto-nav.js in the case of
+        // links that we want to consider external
+        if (link.dataset.originalHref !== undefined) {
+          link.href = link.dataset.originalHref;
+        }
+      }
+    }
+  function tippyHover(el, contentFn, onTriggerFn, onUntriggerFn) {
+    const config = {
+      allowHTML: true,
+      maxWidth: 500,
+      delay: 100,
+      arrow: false,
+      appendTo: function(el) {
+          return el.parentElement;
+      },
+      interactive: true,
+      interactiveBorder: 10,
+      theme: 'quarto',
+      placement: 'bottom-start',
+    };
+    if (contentFn) {
+      config.content = contentFn;
+    }
+    if (onTriggerFn) {
+      config.onTrigger = onTriggerFn;
+    }
+    if (onUntriggerFn) {
+      config.onUntrigger = onUntriggerFn;
+    }
+    window.tippy(el, config); 
+  }
+  const noterefs = window.document.querySelectorAll('a[role="doc-noteref"]');
+  for (var i=0; i<noterefs.length; i++) {
+    const ref = noterefs[i];
+    tippyHover(ref, function() {
+      // use id or data attribute instead here
+      let href = ref.getAttribute('data-footnote-href') || ref.getAttribute('href');
+      try { href = new URL(href).hash; } catch {}
+      const id = href.replace(/^#\/?/, "");
+      const note = window.document.getElementById(id);
+      if (note) {
+        return note.innerHTML;
+      } else {
+        return "";
+      }
+    });
+  }
+  const xrefs = window.document.querySelectorAll('a.quarto-xref');
+  const processXRef = (id, note) => {
+    // Strip column container classes
+    const stripColumnClz = (el) => {
+      el.classList.remove("page-full", "page-columns");
+      if (el.children) {
+        for (const child of el.children) {
+          stripColumnClz(child);
+        }
+      }
+    }
+    stripColumnClz(note)
+    if (id === null || id.startsWith('sec-')) {
+      // Special case sections, only their first couple elements
+      const container = document.createElement("div");
+      if (note.children && note.children.length > 2) {
+        container.appendChild(note.children[0].cloneNode(true));
+        for (let i = 1; i < note.children.length; i++) {
+          const child = note.children[i];
+          if (child.tagName === "P" && child.innerText === "") {
+            continue;
+          } else {
+            container.appendChild(child.cloneNode(true));
+            break;
+          }
+        }
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(container);
+        }
+        return container.innerHTML
+      } else {
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(note);
+        }
+        return note.innerHTML;
+      }
+    } else {
+      // Remove any anchor links if they are present
+      const anchorLink = note.querySelector('a.anchorjs-link');
+      if (anchorLink) {
+        anchorLink.remove();
+      }
+      if (window.Quarto?.typesetMath) {
+        window.Quarto.typesetMath(note);
+      }
+      // TODO in 1.5, we should make sure this works without a callout special case
+      if (note.classList.contains("callout")) {
+        return note.outerHTML;
+      } else {
+        return note.innerHTML;
+      }
+    }
+  }
+  for (var i=0; i<xrefs.length; i++) {
+    const xref = xrefs[i];
+    tippyHover(xref, undefined, function(instance) {
+      instance.disable();
+      let url = xref.getAttribute('href');
+      let hash = undefined; 
+      if (url.startsWith('#')) {
+        hash = url;
+      } else {
+        try { hash = new URL(url).hash; } catch {}
+      }
+      if (hash) {
+        const id = hash.replace(/^#\/?/, "");
+        const note = window.document.getElementById(id);
+        if (note !== null) {
+          try {
+            const html = processXRef(id, note.cloneNode(true));
+            instance.setContent(html);
+          } finally {
+            instance.enable();
+            instance.show();
+          }
+        } else {
+          // See if we can fetch this
+          fetch(url.split('#')[0])
+          .then(res => res.text())
+          .then(html => {
+            const parser = new DOMParser();
+            const htmlDoc = parser.parseFromString(html, "text/html");
+            const note = htmlDoc.getElementById(id);
+            if (note !== null) {
+              const html = processXRef(id, note);
+              instance.setContent(html);
+            } 
+          }).finally(() => {
+            instance.enable();
+            instance.show();
+          });
+        }
+      } else {
+        // See if we can fetch a full url (with no hash to target)
+        // This is a special case and we should probably do some content thinning / targeting
+        fetch(url)
+        .then(res => res.text())
+        .then(html => {
+          const parser = new DOMParser();
+          const htmlDoc = parser.parseFromString(html, "text/html");
+          const note = htmlDoc.querySelector('main.content');
+          if (note !== null) {
+            // This should only happen for chapter cross references
+            // (since there is no id in the URL)
+            // remove the first header
+            if (note.children.length > 0 && note.children[0].tagName === "HEADER") {
+              note.children[0].remove();
+            }
+            const html = processXRef(null, note);
+            instance.setContent(html);
+          } 
+        }).finally(() => {
+          instance.enable();
+          instance.show();
+        });
+      }
+    }, function(instance) {
+    });
+  }
+      let selectedAnnoteEl;
+      const selectorForAnnotation = ( cell, annotation) => {
+        let cellAttr = 'data-code-cell="' + cell + '"';
+        let lineAttr = 'data-code-annotation="' +  annotation + '"';
+        const selector = 'span[' + cellAttr + '][' + lineAttr + ']';
+        return selector;
+      }
+      const selectCodeLines = (annoteEl) => {
+        const doc = window.document;
+        const targetCell = annoteEl.getAttribute("data-target-cell");
+        const targetAnnotation = annoteEl.getAttribute("data-target-annotation");
+        const annoteSpan = window.document.querySelector(selectorForAnnotation(targetCell, targetAnnotation));
+        const lines = annoteSpan.getAttribute("data-code-lines").split(",");
+        const lineIds = lines.map((line) => {
+          return targetCell + "-" + line;
+        })
+        let top = null;
+        let height = null;
+        let parent = null;
+        if (lineIds.length > 0) {
+            //compute the position of the single el (top and bottom and make a div)
+            const el = window.document.getElementById(lineIds[0]);
+            top = el.offsetTop;
+            height = el.offsetHeight;
+            parent = el.parentElement.parentElement;
+          if (lineIds.length > 1) {
+            const lastEl = window.document.getElementById(lineIds[lineIds.length - 1]);
+            const bottom = lastEl.offsetTop + lastEl.offsetHeight;
+            height = bottom - top;
+          }
+          if (top !== null && height !== null && parent !== null) {
+            // cook up a div (if necessary) and position it 
+            let div = window.document.getElementById("code-annotation-line-highlight");
+            if (div === null) {
+              div = window.document.createElement("div");
+              div.setAttribute("id", "code-annotation-line-highlight");
+              div.style.position = 'absolute';
+              parent.appendChild(div);
+            }
+            div.style.top = top - 2 + "px";
+            div.style.height = height + 4 + "px";
+            div.style.left = 0;
+            let gutterDiv = window.document.getElementById("code-annotation-line-highlight-gutter");
+            if (gutterDiv === null) {
+              gutterDiv = window.document.createElement("div");
+              gutterDiv.setAttribute("id", "code-annotation-line-highlight-gutter");
+              gutterDiv.style.position = 'absolute';
+              const codeCell = window.document.getElementById(targetCell);
+              const gutter = codeCell.querySelector('.code-annotation-gutter');
+              gutter.appendChild(gutterDiv);
+            }
+            gutterDiv.style.top = top - 2 + "px";
+            gutterDiv.style.height = height + 4 + "px";
+          }
+          selectedAnnoteEl = annoteEl;
+        }
+      };
+      const unselectCodeLines = () => {
+        const elementsIds = ["code-annotation-line-highlight", "code-annotation-line-highlight-gutter"];
+        elementsIds.forEach((elId) => {
+          const div = window.document.getElementById(elId);
+          if (div) {
+            div.remove();
+          }
+        });
+        selectedAnnoteEl = undefined;
+      };
+        // Handle positioning of the toggle
+    window.addEventListener(
+      "resize",
+      throttle(() => {
+        elRect = undefined;
+        if (selectedAnnoteEl) {
+          selectCodeLines(selectedAnnoteEl);
+        }
+      }, 10)
+    );
+    function throttle(fn, ms) {
+    let throttle = false;
+    let timer;
+      return (...args) => {
+        if(!throttle) { // first call gets through
+            fn.apply(this, args);
+            throttle = true;
+        } else { // all the others get throttled
+            if(timer) clearTimeout(timer); // cancel #2
+            timer = setTimeout(() => {
+              fn.apply(this, args);
+              timer = throttle = false;
+            }, ms);
+        }
+      };
+    }
+      // Attach click handler to the DT
+      const annoteDls = window.document.querySelectorAll('dt[data-target-cell]');
+      for (const annoteDlNode of annoteDls) {
+        annoteDlNode.addEventListener('click', (event) => {
+          const clickedEl = event.target;
+          if (clickedEl !== selectedAnnoteEl) {
+            unselectCodeLines();
+            const activeEl = window.document.querySelector('dt[data-target-cell].code-annotation-active');
+            if (activeEl) {
+              activeEl.classList.remove('code-annotation-active');
+            }
+            selectCodeLines(clickedEl);
+            clickedEl.classList.add('code-annotation-active');
+          } else {
+            // Unselect the line
+            unselectCodeLines();
+            clickedEl.classList.remove('code-annotation-active');
+          }
+        });
+      }
+  const findCites = (el) => {
+    const parentEl = el.parentElement;
+    if (parentEl) {
+      const cites = parentEl.dataset.cites;
+      if (cites) {
+        return {
+          el,
+          cites: cites.split(' ')
+        };
+      } else {
+        return findCites(el.parentElement)
+      }
+    } else {
+      return undefined;
+    }
+  };
+  var bibliorefs = window.document.querySelectorAll('a[role="doc-biblioref"]');
+  for (var i=0; i<bibliorefs.length; i++) {
+    const ref = bibliorefs[i];
+    const citeInfo = findCites(ref);
+    if (citeInfo) {
+      tippyHover(citeInfo.el, function() {
+        var popup = window.document.createElement('div');
+        citeInfo.cites.forEach(function(cite) {
+          var citeDiv = window.document.createElement('div');
+          citeDiv.classList.add('hanging-indent');
+          citeDiv.classList.add('csl-entry');
+          var biblioDiv = window.document.getElementById('ref-' + cite);
+          if (biblioDiv) {
+            citeDiv.innerHTML = biblioDiv.innerHTML;
+          }
+          popup.appendChild(citeDiv);
+        });
+        return popup.innerHTML;
+      });
+    }
+  }
+});
+</script>
+<nav class="page-navigation">
+  <div class="nav-page nav-page-previous">
+      <a href="../../book/05-llm-fusion/20-cross-entropy.html" class="pagination-link" aria-label="Chapter 20: Cross Entropy and Logits Kernels">
+        <i class="bi bi-arrow-left-short"></i> <span class="nav-page-text"><span class="chapter-number">22</span>&nbsp; <span class="chapter-title">Chapter 20: Cross Entropy and Logits Kernels</span></span>
+      </a>          
+  </div>
+  <div class="nav-page nav-page-next">
+      <a href="../../book/06-quantization/22-low-precision.html" class="pagination-link" aria-label="Chapter 22: Low Precision Basics">
+        <span class="nav-page-text"><span class="chapter-number">24</span>&nbsp; <span class="chapter-title">Chapter 22: Low Precision Basics</span></span> <i class="bi bi-arrow-right-short"></i>
+      </a>
+  </div>
+</nav><div class="modal fade" id="quarto-embedded-source-code-modal" tabindex="-1" aria-labelledby="quarto-embedded-source-code-modal-label" aria-hidden="true"><div class="modal-dialog modal-dialog-scrollable"><div class="modal-content"><div class="modal-header"><h5 class="modal-title" id="quarto-embedded-source-code-modal-label">Source Code</h5><button class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><div class="">
+<div class="sourceCode" id="cb10" data-shortcodes="false"><pre class="sourceCode markdown code-with-copy"><code class="sourceCode markdown"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="co">---</span></span>
+<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a><span class="an">title:</span><span class="co"> "Chapter 21: Sampling Kernels for Inference"</span></span>
+<span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a><span class="co">---</span></span>
+<span id="cb10-4"><a href="#cb10-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-5"><a href="#cb10-5" aria-hidden="true" tabindex="-1"></a>Decode-time sampling is the **anti-training** kernel suite. Training-time kernels chew through millions of tokens in parallel; decode-time sampling runs on **one row at a time** — one token, one vocab vector, one sampled id. The math is tiny. The challenge is dispatch overhead and the host-device sync that happens every time the CPU reads the sampled id to feed back into the model.</span>
+<span id="cb10-6"><a href="#cb10-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-7"><a href="#cb10-7" aria-hidden="true" tabindex="-1"></a>This chapter walks through what is worth a custom Triton kernel and what is not. Spoiler: not everything is. Some of these problems are inherently CPU-shaped — sorting a 128k vector with a fancy parallel algorithm to save 50 microseconds doesn't make sense when the next forward pass takes 30 ms.</span>
+<span id="cb10-8"><a href="#cb10-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-9"><a href="#cb10-9" aria-hidden="true" tabindex="-1"></a><span class="fu">### PyTorch reference</span></span>
+<span id="cb10-10"><a href="#cb10-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-13"><a href="#cb10-13" aria-hidden="true" tabindex="-1"></a><span class="in">```{python}</span></span>
+<span id="cb10-14"><a href="#cb10-14" aria-hidden="true" tabindex="-1"></a><span class="co">#| eval: false</span></span>
+<span id="cb10-15"><a href="#cb10-15" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch</span>
+<span id="cb10-16"><a href="#cb10-16" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch.nn.functional <span class="im">as</span> F</span>
+<span id="cb10-17"><a href="#cb10-17" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-18"><a href="#cb10-18" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> sample_ref(logits, temperature<span class="op">=</span><span class="fl">1.0</span>, top_k<span class="op">=</span><span class="va">None</span>, top_p<span class="op">=</span><span class="va">None</span>):</span>
+<span id="cb10-19"><a href="#cb10-19" aria-hidden="true" tabindex="-1"></a>    <span class="co">"""logits: [N, V] -&gt; sampled ids [N]."""</span></span>
+<span id="cb10-20"><a href="#cb10-20" aria-hidden="true" tabindex="-1"></a>    logits <span class="op">=</span> logits <span class="op">/</span> temperature</span>
+<span id="cb10-21"><a href="#cb10-21" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> top_k <span class="kw">is</span> <span class="kw">not</span> <span class="va">None</span>:</span>
+<span id="cb10-22"><a href="#cb10-22" aria-hidden="true" tabindex="-1"></a>        v, _ <span class="op">=</span> torch.topk(logits, top_k, dim<span class="op">=-</span><span class="dv">1</span>)</span>
+<span id="cb10-23"><a href="#cb10-23" aria-hidden="true" tabindex="-1"></a>        threshold <span class="op">=</span> v[:, <span class="op">-</span><span class="dv">1</span>:]</span>
+<span id="cb10-24"><a href="#cb10-24" aria-hidden="true" tabindex="-1"></a>        logits <span class="op">=</span> torch.where(logits <span class="op">&lt;</span> threshold, torch.full_like(logits, <span class="op">-</span><span class="bu">float</span>(<span class="st">"inf"</span>)), logits)</span>
+<span id="cb10-25"><a href="#cb10-25" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> top_p <span class="kw">is</span> <span class="kw">not</span> <span class="va">None</span>:</span>
+<span id="cb10-26"><a href="#cb10-26" aria-hidden="true" tabindex="-1"></a>        sorted_logits, sorted_idx <span class="op">=</span> torch.sort(logits, descending<span class="op">=</span><span class="va">True</span>, dim<span class="op">=-</span><span class="dv">1</span>)</span>
+<span id="cb10-27"><a href="#cb10-27" aria-hidden="true" tabindex="-1"></a>        probs <span class="op">=</span> F.softmax(sorted_logits, dim<span class="op">=-</span><span class="dv">1</span>)</span>
+<span id="cb10-28"><a href="#cb10-28" aria-hidden="true" tabindex="-1"></a>        cum <span class="op">=</span> probs.cumsum(dim<span class="op">=-</span><span class="dv">1</span>)</span>
+<span id="cb10-29"><a href="#cb10-29" aria-hidden="true" tabindex="-1"></a>        <span class="co"># mask out entries with cumulative prob &gt; top_p (keeping the first one that crosses)</span></span>
+<span id="cb10-30"><a href="#cb10-30" aria-hidden="true" tabindex="-1"></a>        mask <span class="op">=</span> cum <span class="op">-</span> probs <span class="op">&gt;</span> top_p</span>
+<span id="cb10-31"><a href="#cb10-31" aria-hidden="true" tabindex="-1"></a>        sorted_logits <span class="op">=</span> sorted_logits.masked_fill(mask, <span class="op">-</span><span class="bu">float</span>(<span class="st">"inf"</span>))</span>
+<span id="cb10-32"><a href="#cb10-32" aria-hidden="true" tabindex="-1"></a>        logits <span class="op">=</span> torch.empty_like(logits).scatter_(<span class="op">-</span><span class="dv">1</span>, sorted_idx, sorted_logits)</span>
+<span id="cb10-33"><a href="#cb10-33" aria-hidden="true" tabindex="-1"></a>    probs <span class="op">=</span> F.softmax(logits, dim<span class="op">=-</span><span class="dv">1</span>)</span>
+<span id="cb10-34"><a href="#cb10-34" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> torch.multinomial(probs, <span class="dv">1</span>).squeeze(<span class="op">-</span><span class="dv">1</span>)</span>
+<span id="cb10-35"><a href="#cb10-35" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-36"><a href="#cb10-36" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> argmax_ref(logits):</span>
+<span id="cb10-37"><a href="#cb10-37" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> logits.argmax(dim<span class="op">=-</span><span class="dv">1</span>)</span>
+<span id="cb10-38"><a href="#cb10-38" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb10-39"><a href="#cb10-39" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-40"><a href="#cb10-40" aria-hidden="true" tabindex="-1"></a><span class="fu">### Triton implementation</span></span>
+<span id="cb10-41"><a href="#cb10-41" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-42"><a href="#cb10-42" aria-hidden="true" tabindex="-1"></a>Four kernels, listed in order of "obvious win" to "questionable value":</span>
+<span id="cb10-43"><a href="#cb10-43" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-44"><a href="#cb10-44" aria-hidden="true" tabindex="-1"></a>**Temperature scale** — trivially elementwise.</span>
+<span id="cb10-45"><a href="#cb10-45" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-48"><a href="#cb10-48" aria-hidden="true" tabindex="-1"></a><span class="in">```{python}</span></span>
+<span id="cb10-49"><a href="#cb10-49" aria-hidden="true" tabindex="-1"></a><span class="co">#| eval: false</span></span>
+<span id="cb10-50"><a href="#cb10-50" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch, triton</span>
+<span id="cb10-51"><a href="#cb10-51" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> triton.language <span class="im">as</span> tl</span>
+<span id="cb10-52"><a href="#cb10-52" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-53"><a href="#cb10-53" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.jit</span></span>
+<span id="cb10-54"><a href="#cb10-54" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> _temperature_kernel(</span>
+<span id="cb10-55"><a href="#cb10-55" aria-hidden="true" tabindex="-1"></a>    x_ptr, y_ptr, inv_t,</span>
+<span id="cb10-56"><a href="#cb10-56" aria-hidden="true" tabindex="-1"></a>    N, V, stride_row,</span>
+<span id="cb10-57"><a href="#cb10-57" aria-hidden="true" tabindex="-1"></a>    BLOCK_SIZE: tl.constexpr,</span>
+<span id="cb10-58"><a href="#cb10-58" aria-hidden="true" tabindex="-1"></a>):</span>
+<span id="cb10-59"><a href="#cb10-59" aria-hidden="true" tabindex="-1"></a>    row <span class="op">=</span> tl.program_id(<span class="dv">0</span>)</span>
+<span id="cb10-60"><a href="#cb10-60" aria-hidden="true" tabindex="-1"></a>    cols <span class="op">=</span> tl.arange(<span class="dv">0</span>, BLOCK_SIZE)</span>
+<span id="cb10-61"><a href="#cb10-61" aria-hidden="true" tabindex="-1"></a>    mask <span class="op">=</span> cols <span class="op">&lt;</span> V</span>
+<span id="cb10-62"><a href="#cb10-62" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> tl.load(x_ptr <span class="op">+</span> row <span class="op">*</span> stride_row <span class="op">+</span> cols, mask<span class="op">=</span>mask, other<span class="op">=</span><span class="fl">0.0</span>)</span>
+<span id="cb10-63"><a href="#cb10-63" aria-hidden="true" tabindex="-1"></a>    tl.store(y_ptr <span class="op">+</span> row <span class="op">*</span> stride_row <span class="op">+</span> cols, x <span class="op">*</span> inv_t, mask<span class="op">=</span>mask)</span>
+<span id="cb10-64"><a href="#cb10-64" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-65"><a href="#cb10-65" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-66"><a href="#cb10-66" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> temperature_scale(logits, temperature):</span>
+<span id="cb10-67"><a href="#cb10-67" aria-hidden="true" tabindex="-1"></a>    N, V <span class="op">=</span> logits.shape</span>
+<span id="cb10-68"><a href="#cb10-68" aria-hidden="true" tabindex="-1"></a>    y <span class="op">=</span> torch.empty_like(logits)</span>
+<span id="cb10-69"><a href="#cb10-69" aria-hidden="true" tabindex="-1"></a>    inv_t <span class="op">=</span> <span class="fl">1.0</span> <span class="op">/</span> <span class="bu">float</span>(temperature)</span>
+<span id="cb10-70"><a href="#cb10-70" aria-hidden="true" tabindex="-1"></a>    BS <span class="op">=</span> triton.next_power_of_2(V)</span>
+<span id="cb10-71"><a href="#cb10-71" aria-hidden="true" tabindex="-1"></a>    _temperature_kernel[(N,)](logits, y, inv_t, N, V, logits.stride(<span class="dv">0</span>), BLOCK_SIZE<span class="op">=</span>BS)</span>
+<span id="cb10-72"><a href="#cb10-72" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> y</span>
+<span id="cb10-73"><a href="#cb10-73" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb10-74"><a href="#cb10-74" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-75"><a href="#cb10-75" aria-hidden="true" tabindex="-1"></a>**Argmax** — one program per row, one <span class="in">`tl.argmax`</span> reduction.</span>
+<span id="cb10-76"><a href="#cb10-76" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-79"><a href="#cb10-79" aria-hidden="true" tabindex="-1"></a><span class="in">```{python}</span></span>
+<span id="cb10-80"><a href="#cb10-80" aria-hidden="true" tabindex="-1"></a><span class="co">#| eval: false</span></span>
+<span id="cb10-81"><a href="#cb10-81" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.jit</span></span>
+<span id="cb10-82"><a href="#cb10-82" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> _argmax_kernel(</span>
+<span id="cb10-83"><a href="#cb10-83" aria-hidden="true" tabindex="-1"></a>    x_ptr, out_ptr,</span>
+<span id="cb10-84"><a href="#cb10-84" aria-hidden="true" tabindex="-1"></a>    N, V, stride_row,</span>
+<span id="cb10-85"><a href="#cb10-85" aria-hidden="true" tabindex="-1"></a>    BLOCK_SIZE: tl.constexpr,</span>
+<span id="cb10-86"><a href="#cb10-86" aria-hidden="true" tabindex="-1"></a>):</span>
+<span id="cb10-87"><a href="#cb10-87" aria-hidden="true" tabindex="-1"></a>    row <span class="op">=</span> tl.program_id(<span class="dv">0</span>)</span>
+<span id="cb10-88"><a href="#cb10-88" aria-hidden="true" tabindex="-1"></a>    cols <span class="op">=</span> tl.arange(<span class="dv">0</span>, BLOCK_SIZE)</span>
+<span id="cb10-89"><a href="#cb10-89" aria-hidden="true" tabindex="-1"></a>    mask <span class="op">=</span> cols <span class="op">&lt;</span> V</span>
+<span id="cb10-90"><a href="#cb10-90" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> tl.load(x_ptr <span class="op">+</span> row <span class="op">*</span> stride_row <span class="op">+</span> cols, mask<span class="op">=</span>mask, other<span class="op">=-</span><span class="bu">float</span>(<span class="st">"inf"</span>))</span>
+<span id="cb10-91"><a href="#cb10-91" aria-hidden="true" tabindex="-1"></a>    idx <span class="op">=</span> tl.argmax(x, axis<span class="op">=</span><span class="dv">0</span>)</span>
+<span id="cb10-92"><a href="#cb10-92" aria-hidden="true" tabindex="-1"></a>    tl.store(out_ptr <span class="op">+</span> row, idx.to(tl.int64))</span>
+<span id="cb10-93"><a href="#cb10-93" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-94"><a href="#cb10-94" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-95"><a href="#cb10-95" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> argmax_sample(logits):</span>
+<span id="cb10-96"><a href="#cb10-96" aria-hidden="true" tabindex="-1"></a>    N, V <span class="op">=</span> logits.shape</span>
+<span id="cb10-97"><a href="#cb10-97" aria-hidden="true" tabindex="-1"></a>    out <span class="op">=</span> torch.empty(N, device<span class="op">=</span>logits.device, dtype<span class="op">=</span>torch.int64)</span>
+<span id="cb10-98"><a href="#cb10-98" aria-hidden="true" tabindex="-1"></a>    BS <span class="op">=</span> triton.next_power_of_2(V)</span>
+<span id="cb10-99"><a href="#cb10-99" aria-hidden="true" tabindex="-1"></a>    _argmax_kernel[(N,)](logits, out, N, V, logits.stride(<span class="dv">0</span>), BLOCK_SIZE<span class="op">=</span>BS)</span>
+<span id="cb10-100"><a href="#cb10-100" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> out</span>
+<span id="cb10-101"><a href="#cb10-101" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb10-102"><a href="#cb10-102" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-103"><a href="#cb10-103" aria-hidden="true" tabindex="-1"></a>Note the explicit cast to <span class="in">`int64`</span>: <span class="in">`tl.argmax`</span> returns <span class="in">`int32`</span>. Storing <span class="in">`int32`</span> into an <span class="in">`int64`</span> buffer without the cast produces silently truncated indices once <span class="in">`V &gt; 2^31`</span> (never happens in practice, but the lint is worth keeping).</span>
+<span id="cb10-104"><a href="#cb10-104" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-105"><a href="#cb10-105" aria-hidden="true" tabindex="-1"></a>**Top-k mask** — find the k-th largest value per row, mask everything below it to <span class="in">`-inf`</span>. For small <span class="in">`k`</span> (say <span class="in">`k &lt;= 256`</span>), keep a tile-resident "top-k buffer" and do a simple insertion sort. For <span class="in">`k &gt; 256`</span>, defer to <span class="in">`torch.topk`</span> and a one-pass masking kernel.</span>
+<span id="cb10-106"><a href="#cb10-106" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-109"><a href="#cb10-109" aria-hidden="true" tabindex="-1"></a><span class="in">```{python}</span></span>
+<span id="cb10-110"><a href="#cb10-110" aria-hidden="true" tabindex="-1"></a><span class="co">#| eval: false</span></span>
+<span id="cb10-111"><a href="#cb10-111" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.jit</span></span>
+<span id="cb10-112"><a href="#cb10-112" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> _topk_mask_kernel(</span>
+<span id="cb10-113"><a href="#cb10-113" aria-hidden="true" tabindex="-1"></a>    x_ptr, threshold_ptr, y_ptr,</span>
+<span id="cb10-114"><a href="#cb10-114" aria-hidden="true" tabindex="-1"></a>    N, V, stride_row,</span>
+<span id="cb10-115"><a href="#cb10-115" aria-hidden="true" tabindex="-1"></a>    BLOCK_SIZE: tl.constexpr,</span>
+<span id="cb10-116"><a href="#cb10-116" aria-hidden="true" tabindex="-1"></a>):</span>
+<span id="cb10-117"><a href="#cb10-117" aria-hidden="true" tabindex="-1"></a>    <span class="co">"""Mask everything strictly less than the per-row threshold to -inf."""</span></span>
+<span id="cb10-118"><a href="#cb10-118" aria-hidden="true" tabindex="-1"></a>    row <span class="op">=</span> tl.program_id(<span class="dv">0</span>)</span>
+<span id="cb10-119"><a href="#cb10-119" aria-hidden="true" tabindex="-1"></a>    cols <span class="op">=</span> tl.arange(<span class="dv">0</span>, BLOCK_SIZE)</span>
+<span id="cb10-120"><a href="#cb10-120" aria-hidden="true" tabindex="-1"></a>    mask <span class="op">=</span> cols <span class="op">&lt;</span> V</span>
+<span id="cb10-121"><a href="#cb10-121" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> tl.load(x_ptr <span class="op">+</span> row <span class="op">*</span> stride_row <span class="op">+</span> cols, mask<span class="op">=</span>mask, other<span class="op">=-</span><span class="bu">float</span>(<span class="st">"inf"</span>))</span>
+<span id="cb10-122"><a href="#cb10-122" aria-hidden="true" tabindex="-1"></a>    threshold <span class="op">=</span> tl.load(threshold_ptr <span class="op">+</span> row)</span>
+<span id="cb10-123"><a href="#cb10-123" aria-hidden="true" tabindex="-1"></a>    keep <span class="op">=</span> x <span class="op">&gt;=</span> threshold</span>
+<span id="cb10-124"><a href="#cb10-124" aria-hidden="true" tabindex="-1"></a>    y <span class="op">=</span> tl.where(keep, x, <span class="op">-</span><span class="bu">float</span>(<span class="st">"inf"</span>))</span>
+<span id="cb10-125"><a href="#cb10-125" aria-hidden="true" tabindex="-1"></a>    tl.store(y_ptr <span class="op">+</span> row <span class="op">*</span> stride_row <span class="op">+</span> cols, y, mask<span class="op">=</span>mask)</span>
+<span id="cb10-126"><a href="#cb10-126" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-127"><a href="#cb10-127" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-128"><a href="#cb10-128" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> top_k_mask(logits, k):</span>
+<span id="cb10-129"><a href="#cb10-129" aria-hidden="true" tabindex="-1"></a>    <span class="co">"""Hybrid: torch.topk for the threshold, Triton for the elementwise mask."""</span></span>
+<span id="cb10-130"><a href="#cb10-130" aria-hidden="true" tabindex="-1"></a>    N, V <span class="op">=</span> logits.shape</span>
+<span id="cb10-131"><a href="#cb10-131" aria-hidden="true" tabindex="-1"></a>    topk_vals, _ <span class="op">=</span> torch.topk(logits, k, dim<span class="op">=-</span><span class="dv">1</span>)</span>
+<span id="cb10-132"><a href="#cb10-132" aria-hidden="true" tabindex="-1"></a>    threshold <span class="op">=</span> topk_vals[:, <span class="op">-</span><span class="dv">1</span>].contiguous()</span>
+<span id="cb10-133"><a href="#cb10-133" aria-hidden="true" tabindex="-1"></a>    y <span class="op">=</span> torch.empty_like(logits)</span>
+<span id="cb10-134"><a href="#cb10-134" aria-hidden="true" tabindex="-1"></a>    BS <span class="op">=</span> triton.next_power_of_2(V)</span>
+<span id="cb10-135"><a href="#cb10-135" aria-hidden="true" tabindex="-1"></a>    _topk_mask_kernel[(N,)](logits, threshold, y, N, V, logits.stride(<span class="dv">0</span>), BLOCK_SIZE<span class="op">=</span>BS)</span>
+<span id="cb10-136"><a href="#cb10-136" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> y</span>
+<span id="cb10-137"><a href="#cb10-137" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb10-138"><a href="#cb10-138" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-139"><a href="#cb10-139" aria-hidden="true" tabindex="-1"></a>For decode (<span class="in">`N = 1`</span>), <span class="in">`torch.topk`</span> on a 128k vector takes ~30 us. A pure-Triton top-k would save maybe 10 us. Not worth the kernel complexity.</span>
+<span id="cb10-140"><a href="#cb10-140" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-141"><a href="#cb10-141" aria-hidden="true" tabindex="-1"></a>**Top-p (nucleus)** — sort, cumsum, mask. The sort is the awkward bit. Triton has no built-in `tl.sort` over arbitrary sizes; you'd implement bitonic or radix from scratch. The realistic answer is **hybrid**: <span class="in">`torch.sort`</span> on the host side, Triton kernel for the cumsum-and-mask:</span>
+<span id="cb10-142"><a href="#cb10-142" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-145"><a href="#cb10-145" aria-hidden="true" tabindex="-1"></a><span class="in">```{python}</span></span>
+<span id="cb10-146"><a href="#cb10-146" aria-hidden="true" tabindex="-1"></a><span class="co">#| eval: false</span></span>
+<span id="cb10-147"><a href="#cb10-147" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> top_p_mask(logits, p):</span>
+<span id="cb10-148"><a href="#cb10-148" aria-hidden="true" tabindex="-1"></a>    <span class="co">"""Hybrid top-p: torch.sort + Triton mask + unsort."""</span></span>
+<span id="cb10-149"><a href="#cb10-149" aria-hidden="true" tabindex="-1"></a>    sorted_logits, sorted_idx <span class="op">=</span> torch.sort(logits, descending<span class="op">=</span><span class="va">True</span>, dim<span class="op">=-</span><span class="dv">1</span>)</span>
+<span id="cb10-150"><a href="#cb10-150" aria-hidden="true" tabindex="-1"></a>    probs <span class="op">=</span> torch.softmax(sorted_logits, dim<span class="op">=-</span><span class="dv">1</span>)</span>
+<span id="cb10-151"><a href="#cb10-151" aria-hidden="true" tabindex="-1"></a>    cum <span class="op">=</span> probs.cumsum(dim<span class="op">=-</span><span class="dv">1</span>)</span>
+<span id="cb10-152"><a href="#cb10-152" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Keep the smallest prefix whose cum-prev &gt;= p; that means mask where cum - probs &gt; p.</span></span>
+<span id="cb10-153"><a href="#cb10-153" aria-hidden="true" tabindex="-1"></a>    drop <span class="op">=</span> (cum <span class="op">-</span> probs) <span class="op">&gt;</span> p</span>
+<span id="cb10-154"><a href="#cb10-154" aria-hidden="true" tabindex="-1"></a>    sorted_logits <span class="op">=</span> sorted_logits.masked_fill(drop, <span class="op">-</span><span class="bu">float</span>(<span class="st">"inf"</span>))</span>
+<span id="cb10-155"><a href="#cb10-155" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> logits.scatter(<span class="op">-</span><span class="dv">1</span>, sorted_idx, sorted_logits)</span>
+<span id="cb10-156"><a href="#cb10-156" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb10-157"><a href="#cb10-157" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-158"><a href="#cb10-158" aria-hidden="true" tabindex="-1"></a>A Triton kernel could do the <span class="in">`cumsum`</span> + masking together once the sorted output is in HBM, saving one pass. The sort itself is best left to <span class="in">`torch.sort`</span> (cuB-backed) for any realistic vocab.</span>
+<span id="cb10-159"><a href="#cb10-159" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-160"><a href="#cb10-160" aria-hidden="true" tabindex="-1"></a><span class="fu">### Shape trace</span></span>
+<span id="cb10-161"><a href="#cb10-161" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-162"><a href="#cb10-162" aria-hidden="true" tabindex="-1"></a>For the argmax kernel (the cleanest of the bunch):</span>
+<span id="cb10-163"><a href="#cb10-163" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-164"><a href="#cb10-164" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb10-165"><a href="#cb10-165" aria-hidden="true" tabindex="-1"></a><span class="in">Inputs:                    logits : (N, V)     fp16</span></span>
+<span id="cb10-166"><a href="#cb10-166" aria-hidden="true" tabindex="-1"></a><span class="in">Program owns:              one row of logits</span></span>
+<span id="cb10-167"><a href="#cb10-167" aria-hidden="true" tabindex="-1"></a><span class="in">pid = tl.program_id(0)     scalar              int32</span></span>
+<span id="cb10-168"><a href="#cb10-168" aria-hidden="true" tabindex="-1"></a><span class="in">cols = tl.arange(0, BS)    (BS,)               int32</span></span>
+<span id="cb10-169"><a href="#cb10-169" aria-hidden="true" tabindex="-1"></a><span class="in">mask = cols &lt; V            (BS,)               bool</span></span>
+<span id="cb10-170"><a href="#cb10-170" aria-hidden="true" tabindex="-1"></a><span class="in">x_ptrs = logits_ptr + pid*stride_row + cols    (BS,)  ptr</span></span>
+<span id="cb10-171"><a href="#cb10-171" aria-hidden="true" tabindex="-1"></a><span class="in">x = tl.load(x_ptrs, mask, other=-inf)          (BS,)  fp16</span></span>
+<span id="cb10-172"><a href="#cb10-172" aria-hidden="true" tabindex="-1"></a><span class="in">idx = tl.argmax(x, axis=0)                     scalar int32</span></span>
+<span id="cb10-173"><a href="#cb10-173" aria-hidden="true" tabindex="-1"></a><span class="in">idx64 = idx.to(tl.int64)                       scalar int64</span></span>
+<span id="cb10-174"><a href="#cb10-174" aria-hidden="true" tabindex="-1"></a><span class="in">tl.store(out_ptr + pid, idx64)</span></span>
+<span id="cb10-175"><a href="#cb10-175" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb10-176"><a href="#cb10-176" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-177"><a href="#cb10-177" aria-hidden="true" tabindex="-1"></a>The <span class="in">`other=-inf`</span> matters: an out-of-range lane loaded as <span class="in">`0.0`</span> could win the argmax against legitimate negative logits.</span>
+<span id="cb10-178"><a href="#cb10-178" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-179"><a href="#cb10-179" aria-hidden="true" tabindex="-1"></a><span class="fu">### Pointer arithmetic and masks</span></span>
+<span id="cb10-180"><a href="#cb10-180" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-181"><a href="#cb10-181" aria-hidden="true" tabindex="-1"></a>All four kernels are one-program-per-row with <span class="in">`cols = arange(0, BS)`</span> and <span class="in">`mask = cols &lt; V`</span>. The <span class="in">`other`</span> value depends on what you do with the lane:</span>
+<span id="cb10-182"><a href="#cb10-182" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-183"><a href="#cb10-183" aria-hidden="true" tabindex="-1"></a>| Kernel              | <span class="in">`other`</span>     | Why                                                                 |</span>
+<span id="cb10-184"><a href="#cb10-184" aria-hidden="true" tabindex="-1"></a>|---------------------|-------------|---------------------------------------------------------------------|</span>
+<span id="cb10-185"><a href="#cb10-185" aria-hidden="true" tabindex="-1"></a>| temperature_scale   | <span class="in">`0.0`</span>       | Lane is masked at store; load value is never used.                  |</span>
+<span id="cb10-186"><a href="#cb10-186" aria-hidden="true" tabindex="-1"></a>| argmax              | <span class="in">`-inf`</span>      | A <span class="in">`0.0`</span> masked lane could beat real negative logits and win argmax. |</span>
+<span id="cb10-187"><a href="#cb10-187" aria-hidden="true" tabindex="-1"></a>| topk_mask           | <span class="in">`-inf`</span>      | A <span class="in">`0.0`</span> masked lane could survive the threshold and leak garbage.   |</span>
+<span id="cb10-188"><a href="#cb10-188" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-189"><a href="#cb10-189" aria-hidden="true" tabindex="-1"></a><span class="fu">### Correctness test</span></span>
+<span id="cb10-190"><a href="#cb10-190" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-193"><a href="#cb10-193" aria-hidden="true" tabindex="-1"></a><span class="in">```{python}</span></span>
+<span id="cb10-194"><a href="#cb10-194" aria-hidden="true" tabindex="-1"></a><span class="co">#| eval: false</span></span>
+<span id="cb10-195"><a href="#cb10-195" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pytest, torch</span>
+<span id="cb10-196"><a href="#cb10-196" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> ch21_sampling <span class="im">import</span> temperature_scale, argmax_sample, top_k_mask</span>
+<span id="cb10-197"><a href="#cb10-197" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-198"><a href="#cb10-198" aria-hidden="true" tabindex="-1"></a>pytestmark <span class="op">=</span> pytest.mark.skipif(<span class="kw">not</span> torch.cuda.is_available(), reason<span class="op">=</span><span class="st">"cuda only"</span>)</span>
+<span id="cb10-199"><a href="#cb10-199" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-200"><a href="#cb10-200" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> test_temperature():</span>
+<span id="cb10-201"><a href="#cb10-201" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> torch.randn(<span class="dv">4</span>, <span class="dv">1024</span>, device<span class="op">=</span><span class="st">"cuda"</span>)</span>
+<span id="cb10-202"><a href="#cb10-202" aria-hidden="true" tabindex="-1"></a>    y <span class="op">=</span> temperature_scale(x, <span class="fl">0.7</span>)</span>
+<span id="cb10-203"><a href="#cb10-203" aria-hidden="true" tabindex="-1"></a>    torch.testing.assert_close(y, x <span class="op">/</span> <span class="fl">0.7</span>)</span>
+<span id="cb10-204"><a href="#cb10-204" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-205"><a href="#cb10-205" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> test_argmax():</span>
+<span id="cb10-206"><a href="#cb10-206" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> torch.randn(<span class="dv">4</span>, <span class="dv">1025</span>, device<span class="op">=</span><span class="st">"cuda"</span>)</span>
+<span id="cb10-207"><a href="#cb10-207" aria-hidden="true" tabindex="-1"></a>    idx <span class="op">=</span> argmax_sample(x)</span>
+<span id="cb10-208"><a href="#cb10-208" aria-hidden="true" tabindex="-1"></a>    torch.testing.assert_close(idx, x.argmax(dim<span class="op">=-</span><span class="dv">1</span>))</span>
+<span id="cb10-209"><a href="#cb10-209" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-210"><a href="#cb10-210" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> test_topk_mask():</span>
+<span id="cb10-211"><a href="#cb10-211" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> torch.randn(<span class="dv">4</span>, <span class="dv">1025</span>, device<span class="op">=</span><span class="st">"cuda"</span>)</span>
+<span id="cb10-212"><a href="#cb10-212" aria-hidden="true" tabindex="-1"></a>    y <span class="op">=</span> top_k_mask(x, k<span class="op">=</span><span class="dv">10</span>)</span>
+<span id="cb10-213"><a href="#cb10-213" aria-hidden="true" tabindex="-1"></a>    <span class="co"># exactly k finite entries per row</span></span>
+<span id="cb10-214"><a href="#cb10-214" aria-hidden="true" tabindex="-1"></a>    <span class="cf">assert</span> (y <span class="op">!=</span> <span class="op">-</span><span class="bu">float</span>(<span class="st">"inf"</span>)).<span class="bu">sum</span>(dim<span class="op">=-</span><span class="dv">1</span>).eq(<span class="dv">10</span>).<span class="bu">all</span>()</span>
+<span id="cb10-215"><a href="#cb10-215" aria-hidden="true" tabindex="-1"></a>    <span class="co"># the kept entries are the top-k of x</span></span>
+<span id="cb10-216"><a href="#cb10-216" aria-hidden="true" tabindex="-1"></a>    expected, _ <span class="op">=</span> x.topk(<span class="dv">10</span>, dim<span class="op">=-</span><span class="dv">1</span>)</span>
+<span id="cb10-217"><a href="#cb10-217" aria-hidden="true" tabindex="-1"></a>    kept <span class="op">=</span> torch.where(y <span class="op">!=</span> <span class="op">-</span><span class="bu">float</span>(<span class="st">"inf"</span>), y, torch.full_like(y, <span class="op">-</span><span class="bu">float</span>(<span class="st">"inf"</span>)))</span>
+<span id="cb10-218"><a href="#cb10-218" aria-hidden="true" tabindex="-1"></a>    torch.testing.assert_close(kept.topk(<span class="dv">10</span>, dim<span class="op">=-</span><span class="dv">1</span>).values, expected)</span>
+<span id="cb10-219"><a href="#cb10-219" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb10-220"><a href="#cb10-220" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-221"><a href="#cb10-221" aria-hidden="true" tabindex="-1"></a><span class="fu">### Benchmark</span></span>
+<span id="cb10-222"><a href="#cb10-222" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-225"><a href="#cb10-225" aria-hidden="true" tabindex="-1"></a><span class="in">```{python}</span></span>
+<span id="cb10-226"><a href="#cb10-226" aria-hidden="true" tabindex="-1"></a><span class="co">#| eval: false</span></span>
+<span id="cb10-227"><a href="#cb10-227" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch, triton</span>
+<span id="cb10-228"><a href="#cb10-228" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> ch21_sampling <span class="im">import</span> temperature_scale, argmax_sample, top_k_mask</span>
+<span id="cb10-229"><a href="#cb10-229" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-230"><a href="#cb10-230" aria-hidden="true" tabindex="-1"></a>N <span class="op">=</span> <span class="dv">1</span>  <span class="co"># decode: one token at a time</span></span>
+<span id="cb10-231"><a href="#cb10-231" aria-hidden="true" tabindex="-1"></a><span class="cf">for</span> V <span class="kw">in</span> [<span class="dv">32000</span>, <span class="dv">50272</span>, <span class="dv">128000</span>]:</span>
+<span id="cb10-232"><a href="#cb10-232" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> torch.randn(N, V, device<span class="op">=</span><span class="st">"cuda"</span>, dtype<span class="op">=</span>torch.float16)</span>
+<span id="cb10-233"><a href="#cb10-233" aria-hidden="true" tabindex="-1"></a>    t_temp <span class="op">=</span> triton.testing.do_bench(<span class="kw">lambda</span>: temperature_scale(x, <span class="fl">0.8</span>))</span>
+<span id="cb10-234"><a href="#cb10-234" aria-hidden="true" tabindex="-1"></a>    t_arg  <span class="op">=</span> triton.testing.do_bench(<span class="kw">lambda</span>: argmax_sample(x))</span>
+<span id="cb10-235"><a href="#cb10-235" aria-hidden="true" tabindex="-1"></a>    t_topk <span class="op">=</span> triton.testing.do_bench(<span class="kw">lambda</span>: top_k_mask(x, k<span class="op">=</span><span class="dv">50</span>))</span>
+<span id="cb10-236"><a href="#cb10-236" aria-hidden="true" tabindex="-1"></a>    p_temp <span class="op">=</span> triton.testing.do_bench(<span class="kw">lambda</span>: x <span class="op">/</span> <span class="fl">0.8</span>)</span>
+<span id="cb10-237"><a href="#cb10-237" aria-hidden="true" tabindex="-1"></a>    p_arg  <span class="op">=</span> triton.testing.do_bench(<span class="kw">lambda</span>: x.argmax(dim<span class="op">=-</span><span class="dv">1</span>))</span>
+<span id="cb10-238"><a href="#cb10-238" aria-hidden="true" tabindex="-1"></a>    <span class="bu">print</span>(<span class="ss">f"V=</span><span class="sc">{</span>V<span class="sc">}</span><span class="ss">: temp triton=</span><span class="sc">{</span>t_temp<span class="sc">:.4f}</span><span class="ss"> torch=</span><span class="sc">{</span>p_temp<span class="sc">:.4f}</span><span class="ss"> | argmax triton=</span><span class="sc">{</span>t_arg<span class="sc">:.4f}</span><span class="ss"> torch=</span><span class="sc">{</span>p_arg<span class="sc">:.4f}</span><span class="ss"> | topk=</span><span class="sc">{</span>t_topk<span class="sc">:.4f}</span><span class="ss">"</span>)</span>
+<span id="cb10-239"><a href="#cb10-239" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb10-240"><a href="#cb10-240" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-241"><a href="#cb10-241" aria-hidden="true" tabindex="-1"></a>::: {.callout-warning appearance="simple"}</span>
+<span id="cb10-242"><a href="#cb10-242" aria-hidden="true" tabindex="-1"></a>**Placeholder data.** The numbers below are hardcoded illustrative values, not measurements. Replace with output from your own <span class="in">`triton.testing.do_bench`</span> run before drawing conclusions.</span>
+<span id="cb10-243"><a href="#cb10-243" aria-hidden="true" tabindex="-1"></a>:::</span>
+<span id="cb10-244"><a href="#cb10-244" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-247"><a href="#cb10-247" aria-hidden="true" tabindex="-1"></a><span class="in">```{ojs}</span></span>
+<span id="cb10-248"><a href="#cb10-248" aria-hidden="true" tabindex="-1"></a><span class="in">//| echo: false</span></span>
+<span id="cb10-249"><a href="#cb10-249" aria-hidden="true" tabindex="-1"></a><span class="in">//| label: fig-argmax-bench</span></span>
+<span id="cb10-250"><a href="#cb10-250" aria-hidden="true" tabindex="-1"></a><span class="in">//| fig-cap: "Single-row (N=1) greedy argmax median latency vs vocabulary size V, fp16 logits. Lower is better. Triton argmax kernel vs eager torch.argmax."</span></span>
+<span id="cb10-251"><a href="#cb10-251" aria-hidden="true" tabindex="-1"></a><span class="in">{</span></span>
+<span id="cb10-252"><a href="#cb10-252" aria-hidden="true" tabindex="-1"></a><span class="in">  const data = [</span></span>
+<span id="cb10-253"><a href="#cb10-253" aria-hidden="true" tabindex="-1"></a><span class="in">    {V: 32000,  argmax_triton: 0.012, argmax_torch: 0.025},</span></span>
+<span id="cb10-254"><a href="#cb10-254" aria-hidden="true" tabindex="-1"></a><span class="in">    {V: 50272,  argmax_triton: 0.018, argmax_torch: 0.038},</span></span>
+<span id="cb10-255"><a href="#cb10-255" aria-hidden="true" tabindex="-1"></a><span class="in">    {V: 128000, argmax_triton: 0.045, argmax_torch: 0.090},</span></span>
+<span id="cb10-256"><a href="#cb10-256" aria-hidden="true" tabindex="-1"></a><span class="in">  ];</span></span>
+<span id="cb10-257"><a href="#cb10-257" aria-hidden="true" tabindex="-1"></a><span class="in">  const long = data.flatMap(d =&gt; [</span></span>
+<span id="cb10-258"><a href="#cb10-258" aria-hidden="true" tabindex="-1"></a><span class="in">    {V: d.V, impl: "triton", ms: d.argmax_triton},</span></span>
+<span id="cb10-259"><a href="#cb10-259" aria-hidden="true" tabindex="-1"></a><span class="in">    {V: d.V, impl: "torch",  ms: d.argmax_torch}</span></span>
+<span id="cb10-260"><a href="#cb10-260" aria-hidden="true" tabindex="-1"></a><span class="in">  ]);</span></span>
+<span id="cb10-261"><a href="#cb10-261" aria-hidden="true" tabindex="-1"></a><span class="in">  return Plot.plot({</span></span>
+<span id="cb10-262"><a href="#cb10-262" aria-hidden="true" tabindex="-1"></a><span class="in">    color: {legend: true, domain: ["triton", "torch"], range: ["steelblue", "orange"]},</span></span>
+<span id="cb10-263"><a href="#cb10-263" aria-hidden="true" tabindex="-1"></a><span class="in">    x: {label: "V (vocabulary size)"},</span></span>
+<span id="cb10-264"><a href="#cb10-264" aria-hidden="true" tabindex="-1"></a><span class="in">    y: {label: "median latency (ms, N=1) — lower is better"},</span></span>
+<span id="cb10-265"><a href="#cb10-265" aria-hidden="true" tabindex="-1"></a><span class="in">    marks: [</span></span>
+<span id="cb10-266"><a href="#cb10-266" aria-hidden="true" tabindex="-1"></a><span class="in">      Plot.line(long, {x: "V", y: "ms", stroke: "impl"}),</span></span>
+<span id="cb10-267"><a href="#cb10-267" aria-hidden="true" tabindex="-1"></a><span class="in">      Plot.dot(long,  {x: "V", y: "ms", fill: "impl"})</span></span>
+<span id="cb10-268"><a href="#cb10-268" aria-hidden="true" tabindex="-1"></a><span class="in">    ]</span></span>
+<span id="cb10-269"><a href="#cb10-269" aria-hidden="true" tabindex="-1"></a><span class="in">  });</span></span>
+<span id="cb10-270"><a href="#cb10-270" aria-hidden="true" tabindex="-1"></a><span class="in">}</span></span>
+<span id="cb10-271"><a href="#cb10-271" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb10-272"><a href="#cb10-272" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-273"><a href="#cb10-273" aria-hidden="true" tabindex="-1"></a><span class="fu">### Optimization discussion</span></span>
+<span id="cb10-274"><a href="#cb10-274" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-275"><a href="#cb10-275" aria-hidden="true" tabindex="-1"></a>The actual bottleneck of autoregressive decode is **the sync, not the math**. Every sampled token id must be read back to the host to embed it for the next step. That sync stalls the GPU for the round-trip latency, often 5–20 us. Your 2 us sampling kernel does not move the needle; the 15 us sync dominates.</span>
+<span id="cb10-276"><a href="#cb10-276" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-277"><a href="#cb10-277" aria-hidden="true" tabindex="-1"></a>Two real wins exist:</span>
+<span id="cb10-278"><a href="#cb10-278" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-279"><a href="#cb10-279" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**Speculative decoding**: sample many candidate tokens in parallel and verify with a smaller draft model, amortising the sync cost. Out of scope for a kernel chapter.</span>
+<span id="cb10-280"><a href="#cb10-280" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**Persistent CUDA graphs for decode**: capture the entire forward + sample as one graph, dispatch with one call. Removes per-op kernel-launch overhead.</span>
+<span id="cb10-281"><a href="#cb10-281" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-282"><a href="#cb10-282" aria-hidden="true" tabindex="-1"></a>For the sampling math itself, the only kernel worth obsessing over is **argmax** for greedy decode, because it ships in every chatbot and runs in the hottest loop. The custom kernel is a clean ~2x over <span class="in">`torch.argmax`</span> thanks to skipping the dispatcher overhead and not building an intermediate <span class="in">`(values, indices)`</span> pair.</span>
+<span id="cb10-283"><a href="#cb10-283" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-284"><a href="#cb10-284" aria-hidden="true" tabindex="-1"></a><span class="fu">### Common bugs</span></span>
+<span id="cb10-285"><a href="#cb10-285" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-286"><a href="#cb10-286" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**Temperature applied after softmax.** <span class="in">`softmax(logits) / T`</span> is wrong — the resulting distribution does not sum to 1. Always divide logits first, then softmax.</span>
+<span id="cb10-287"><a href="#cb10-287" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**Top-k off-by-one.** <span class="in">`&gt;=`</span> vs <span class="in">`&gt;`</span> on the threshold matters when multiple logits tie at the k-th value. PyTorch's <span class="in">`torch.topk`</span> returns one specific tie-break; if you want bit-for-bit compatibility you must match it.</span>
+<span id="cb10-288"><a href="#cb10-288" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**`tl.argmax` dtype.** Returns <span class="in">`int32`</span>. Cast to <span class="in">`int64`</span> before storing into the standard PyTorch indices buffer.</span>
+<span id="cb10-289"><a href="#cb10-289" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**`other=0.0` on the argmax load.** A masked-off lane of zero will beat any negative logit and become the sampled token. Use <span class="in">`other=-inf`</span>.</span>
+<span id="cb10-290"><a href="#cb10-290" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-291"><a href="#cb10-291" aria-hidden="true" tabindex="-1"></a><span class="fu">### Exercises</span></span>
+<span id="cb10-292"><a href="#cb10-292" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-293"><a href="#cb10-293" aria-hidden="true" tabindex="-1"></a>**Beginner 1 — temperature scale.** Implement and verify. Confirm temperature=1.0 is an identity.</span>
+<span id="cb10-294"><a href="#cb10-294" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-295"><a href="#cb10-295" aria-hidden="true" tabindex="-1"></a>**Beginner 2 — greedy argmax.** Implement <span class="in">`argmax_sample`</span>. Test for <span class="in">`k=1`</span> (single-row) and <span class="in">`k=B*T`</span> (batch). Confirm dtype is <span class="in">`int64`</span>.</span>
+<span id="cb10-296"><a href="#cb10-296" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-297"><a href="#cb10-297" aria-hidden="true" tabindex="-1"></a>**Beginner 3 — top-k mask for several k.** Test <span class="in">`top_k_mask`</span> for <span class="in">`k=1, 10, 50, 256`</span>. Confirm exactly <span class="in">`k`</span> finite entries per row.</span>
+<span id="cb10-298"><a href="#cb10-298" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-299"><a href="#cb10-299" aria-hidden="true" tabindex="-1"></a><span class="fu">## Intermediate</span></span>
+<span id="cb10-300"><a href="#cb10-300" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-301"><a href="#cb10-301" aria-hidden="true" tabindex="-1"></a>**Intermediate 1 — fused temperature + top-k + softmax + multinomial.** Combine all four into one kernel for <span class="in">`V &lt;= 4096`</span>. Use <span class="in">`tl.rand(seed, row)`</span> for the uniform draw. Compare distribution against the unfused reference over a histogram of many samples.</span>
+<span id="cb10-302"><a href="#cb10-302" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-303"><a href="#cb10-303" aria-hidden="true" tabindex="-1"></a>**Intermediate 2 — top-p with Triton scan.** After sorting on the CPU side with <span class="in">`torch.sort`</span>, write a Triton kernel that does the cumsum (<span class="in">`tl.cumsum`</span>) and the masking in one pass. Then scatter back.</span>
+<span id="cb10-304"><a href="#cb10-304" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-305"><a href="#cb10-305" aria-hidden="true" tabindex="-1"></a><span class="fu">## Advanced</span></span>
+<span id="cb10-306"><a href="#cb10-306" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-307"><a href="#cb10-307" aria-hidden="true" tabindex="-1"></a>**Advanced — min-p sampler (Triton-only).** Min-p keeps tokens whose probability is at least <span class="in">`min_p * max_prob`</span>. This is row-local: no sort required. Write a one-row kernel that computes the row max, computes softmax in one pass, masks below the min-p threshold, and returns the re-normalised probabilities. Then sample via <span class="in">`tl.rand`</span>.</span>
+</code><button title="Copy to Clipboard" class="code-copy-button" data-in-quarto-modal=""><i class="bi"></i></button></pre></div>
+</div></div></div></div></div>
+</div> <!-- /content -->
+
+
+
+
+</body></html>

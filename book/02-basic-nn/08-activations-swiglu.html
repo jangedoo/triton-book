@@ -1,0 +1,1523 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"><head>
+
+<meta charset="utf-8">
+<meta name="generator" content="quarto-1.5.57">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+
+<title>10&nbsp; Chapter 8: Activation Functions and Gated MLPs – Learning Triton by Rebuilding Modern LLM Kernels</title>
+<style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+  width: 0.8em;
+  margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
+  vertical-align: middle;
+}
+/* CSS for syntax highlighting */
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { display: inline-block; text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+  { counter-reset: source-line 0; }
+pre.numberSource code > span
+  { position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+  { content: counter(source-line);
+    position: relative; left: -1em; text-align: right; vertical-align: baseline;
+    border: none; display: inline-block;
+    -webkit-touch-callout: none; -webkit-user-select: none;
+    -khtml-user-select: none; -moz-user-select: none;
+    -ms-user-select: none; user-select: none;
+    padding: 0 4px; width: 4em;
+  }
+pre.numberSource { margin-left: 3em;  padding-left: 4px; }
+div.sourceCode
+  {   }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+</style>
+
+
+<script src="../../site_libs/quarto-nav/quarto-nav.js"></script>
+<script src="../../site_libs/quarto-nav/headroom.min.js"></script>
+<script src="../../site_libs/clipboard/clipboard.min.js"></script>
+<script src="../../site_libs/quarto-search/autocomplete.umd.js"></script>
+<script src="../../site_libs/quarto-search/fuse.min.js"></script>
+<script src="../../site_libs/quarto-search/quarto-search.js"></script>
+<meta name="quarto:offset" content="../../">
+<link href="../../book/03-matmul/09-matmul.html" rel="next">
+<link href="../../book/02-basic-nn/07-rmsnorm.html" rel="prev">
+<script src="../../site_libs/quarto-html/quarto.js"></script>
+<script src="../../site_libs/quarto-html/popper.min.js"></script>
+<script src="../../site_libs/quarto-html/tippy.umd.min.js"></script>
+<script src="../../site_libs/quarto-html/anchor.min.js"></script>
+<link href="../../site_libs/quarto-html/tippy.css" rel="stylesheet">
+<link href="../../site_libs/quarto-html/quarto-syntax-highlighting.css" rel="stylesheet" id="quarto-text-highlighting-styles">
+<script src="../../site_libs/bootstrap/bootstrap.min.js"></script>
+<link href="../../site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
+<link href="../../site_libs/bootstrap/bootstrap.min.css" rel="stylesheet" id="quarto-bootstrap" data-mode="light">
+<script id="quarto-search-options" type="application/json">{
+  "location": "sidebar",
+  "copy-button": false,
+  "collapse-after": 3,
+  "panel-placement": "start",
+  "type": "textbox",
+  "limit": 50,
+  "keyboard-shortcut": [
+    "f",
+    "/",
+    "s"
+  ],
+  "show-item-context": false,
+  "language": {
+    "search-no-results-text": "No results",
+    "search-matching-documents-text": "matching documents",
+    "search-copy-link-title": "Copy link to search",
+    "search-hide-matches-text": "Hide additional matches",
+    "search-more-match-text": "more match in this document",
+    "search-more-matches-text": "more matches in this document",
+    "search-clear-button-title": "Clear",
+    "search-text-placeholder": "",
+    "search-detached-cancel-button-title": "Cancel",
+    "search-submit-button-title": "Submit",
+    "search-label": "Search"
+  }
+}</script>
+<script type="module" src="../../site_libs/quarto-ojs/quarto-ojs-runtime.js"></script>
+<link href="../../site_libs/quarto-ojs/quarto-ojs.css" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/polyfill/v3/polyfill.min.js?features=es6"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml-full.js" type="text/javascript"></script>
+
+<script type="text/javascript">
+const typesetMath = (el) => {
+  if (window.MathJax) {
+    // MathJax Typeset
+    window.MathJax.typeset([el]);
+  } else if (window.katex) {
+    // KaTeX Render
+    var mathElements = el.getElementsByClassName("math");
+    var macros = [];
+    for (var i = 0; i < mathElements.length; i++) {
+      var texText = mathElements[i].firstChild;
+      if (mathElements[i].tagName == "SPAN") {
+        window.katex.render(texText.data, mathElements[i], {
+          displayMode: mathElements[i].classList.contains('display'),
+          throwOnError: false,
+          macros: macros,
+          fleqn: false
+        });
+      }
+    }
+  }
+}
+window.Quarto = {
+  typesetMath
+};
+</script>
+
+</head>
+
+<body class="nav-sidebar floating">
+
+<div id="quarto-search-results"></div>
+  <header id="quarto-header" class="headroom fixed-top">
+  <nav class="quarto-secondary-nav">
+    <div class="container-fluid d-flex">
+      <button type="button" class="quarto-btn-toggle btn" data-bs-toggle="collapse" role="button" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">
+        <i class="bi bi-layout-text-sidebar-reverse"></i>
+      </button>
+        <nav class="quarto-page-breadcrumbs" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="../../book/02-basic-nn/05-fused-softmax.html">Part 2: Basic Neural Network Kernels</a></li><li class="breadcrumb-item"><a href="../../book/02-basic-nn/08-activations-swiglu.html"><span class="chapter-number">10</span>&nbsp; <span class="chapter-title">Chapter 8: Activation Functions and Gated MLPs</span></a></li></ol></nav>
+        <a class="flex-grow-1" role="navigation" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">      
+        </a>
+      <button type="button" class="btn quarto-search-button" aria-label="Search" onclick="window.quartoOpenSearch();">
+        <i class="bi bi-search"></i>
+      </button>
+    </div>
+  </nav>
+</header>
+<!-- content -->
+<div id="quarto-content" class="quarto-container page-columns page-rows-contents page-layout-article">
+<!-- sidebar -->
+  <nav id="quarto-sidebar" class="sidebar collapse collapse-horizontal quarto-sidebar-collapse-item sidebar-navigation floating overflow-auto">
+    <div class="pt-lg-2 mt-2 text-left sidebar-header">
+    <div class="sidebar-title mb-0 py-0">
+      <a href="../../">Learning Triton by Rebuilding Modern LLM Kernels</a> 
+    </div>
+      </div>
+        <div class="mt-2 flex-shrink-0 align-items-center">
+        <div class="sidebar-search">
+        <div id="quarto-search" class="" title="Search"></div>
+        </div>
+        </div>
+    <div class="sidebar-menu-container"> 
+    <ul class="list-unstyled mt-1">
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../index.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">1</span>&nbsp; <span class="chapter-title">Learning Triton by Rebuilding Modern LLM Kernels</span></span></a>
+  </div>
+</li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-1" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 0: Orientation</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-1" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-1" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/00-orientation/00-why-triton.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">2</span>&nbsp; <span class="chapter-title">Chapter 00: Why Triton Exists</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/00-orientation/01-setup.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">3</span>&nbsp; <span class="chapter-title">Chapter 01: Environment Setup</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-2" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 1: Triton Fundamentals</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-2" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-2" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/01-fundamentals/02-mental-model.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">4</span>&nbsp; <span class="chapter-title">Chapter 2: The Triton Mental Model</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/01-fundamentals/03-memory-pointers-strides.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">5</span>&nbsp; <span class="chapter-title">Chapter 3: Memory, Pointers, Strides, and Masks</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/01-fundamentals/04-reductions.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">6</span>&nbsp; <span class="chapter-title">Chapter 4: Reductions</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-3" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 2: Basic Neural Network Kernels</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-3" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-3" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/02-basic-nn/05-fused-softmax.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">7</span>&nbsp; <span class="chapter-title">Chapter 5: Fused Softmax</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/02-basic-nn/06-layernorm.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">8</span>&nbsp; <span class="chapter-title">Chapter 6: LayerNorm</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/02-basic-nn/07-rmsnorm.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">9</span>&nbsp; <span class="chapter-title">Chapter 7: RMSNorm</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/02-basic-nn/08-activations-swiglu.html" class="sidebar-item-text sidebar-link active">
+ <span class="menu-text"><span class="chapter-number">10</span>&nbsp; <span class="chapter-title">Chapter 8: Activation Functions and Gated MLPs</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-4" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 3: Matrix Multiplication</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-4" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-4" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/03-matmul/09-matmul.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">11</span>&nbsp; <span class="chapter-title">Chapter 9: Matmul From Scratch</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/03-matmul/10-batched-matmul-linear.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">12</span>&nbsp; <span class="chapter-title">Chapter 10: Batched Matmul and Linear Layers</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/03-matmul/11-persistent-matmul.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">13</span>&nbsp; <span class="chapter-title">Chapter 11: Persistent Matmul and Advanced Matmul Concepts</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-5" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 4: Attention and Transformer Kernels</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-5" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-5" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/12-attention-math.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">14</span>&nbsp; <span class="chapter-title">Chapter 12: Attention Math Refresher for Kernel Writers</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/13-naive-attention.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">15</span>&nbsp; <span class="chapter-title">Chapter 13: Naive Attention in PyTorch and Triton Pieces</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/14-flashattention-fwd.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">16</span>&nbsp; <span class="chapter-title">Chapter 14: FlashAttention Forward in Triton</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/15-attention-backward.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">17</span>&nbsp; <span class="chapter-title">Chapter 15: Attention Backward — Conceptual and Optional Implementation</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/16-rope-alibi.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">18</span>&nbsp; <span class="chapter-title">Chapter 16: Rotary Positional Embeddings, ALiBi, and Position Kernels</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/17-kv-cache.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">19</span>&nbsp; <span class="chapter-title">Chapter 17: KV Cache Kernels for Inference</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-6" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 5: Modern LLM Layer Fusion</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-6" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-6" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/05-llm-fusion/18-residual-rmsnorm.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">20</span>&nbsp; <span class="chapter-title">Chapter 18: Residual Add + RMSNorm Fusion</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/05-llm-fusion/19-fused-bias-act-gate.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">21</span>&nbsp; <span class="chapter-title">Chapter 19: Fused Bias + Activation + Gate</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/05-llm-fusion/20-cross-entropy.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">22</span>&nbsp; <span class="chapter-title">Chapter 20: Cross Entropy and Logits Kernels</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/05-llm-fusion/21-sampling.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">23</span>&nbsp; <span class="chapter-title">Chapter 21: Sampling Kernels for Inference</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-7" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 6: Quantization-Oriented Kernels</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-7" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-7" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/06-quantization/22-low-precision.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">24</span>&nbsp; <span class="chapter-title">Chapter 22: Low Precision Basics</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/06-quantization/23-dequant-matmul.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">25</span>&nbsp; <span class="chapter-title">Chapter 23: Int8 / FP8 Style Dequant + Matmul Concepts</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-8" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 7: Debugging, Testing, Profiling, Optimization</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-8" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-8" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/07-debug-perf/24-debugging.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">26</span>&nbsp; <span class="chapter-title">Chapter 24: Debugging Triton Kernels</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/07-debug-perf/25-benchmarking.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">27</span>&nbsp; <span class="chapter-title">Chapter 25: Benchmarking Correctly</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/07-debug-perf/26-autotuning.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">28</span>&nbsp; <span class="chapter-title">Chapter 26: Autotuning</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/07-debug-perf/27-perf-tuning.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">29</span>&nbsp; <span class="chapter-title">Chapter 27: Performance Tuning Mental Model</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-9" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 8: Capstone Projects</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-9" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-9" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/08-capstone/28-mini-library.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">30</span>&nbsp; <span class="chapter-title">Chapter 28: Build a Mini Triton LLM Kernel Library</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/08-capstone/29-replace-transformer-pieces.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">31</span>&nbsp; <span class="chapter-title">Chapter 29: Replace Pieces of a Tiny Transformer</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/08-capstone/30-design-playbook.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">32</span>&nbsp; <span class="chapter-title">Chapter 30: Final Kernel Design Playbook</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/appendix-study-plan.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">33</span>&nbsp; <span class="chapter-title">Appendix: Study Plan, Memory Kernels, and the Capstone Challenge</span></span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../kernel_checklist.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">34</span>&nbsp; <span class="chapter-title">Triton Kernel Design Checklist</span></span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../llm_kernel_map.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">35</span>&nbsp; <span class="chapter-title">LLM Component → Triton Kernel Map</span></span></a>
+  </div>
+</li>
+    </ul>
+    </div>
+</nav>
+<div id="quarto-sidebar-glass" class="quarto-sidebar-collapse-item" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item"></div>
+<!-- margin-sidebar -->
+    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar">
+        <nav id="TOC" role="doc-toc" class="toc-active">
+    <h2 id="toc-title">Table of contents</h2>
+   
+  <ul>
+  <li><a href="#what-we-are-building" id="toc-what-we-are-building" class="nav-link active" data-scroll-target="#what-we-are-building"><span class="header-section-number">10.1</span> What we are building</a></li>
+  <li><a href="#where-these-kernels-actually-live" id="toc-where-these-kernels-actually-live" class="nav-link" data-scroll-target="#where-these-kernels-actually-live"><span class="header-section-number">10.2</span> Where these kernels actually live</a>
+  <ul class="collapse">
+  <li><a href="#pytorch-reference" id="toc-pytorch-reference" class="nav-link" data-scroll-target="#pytorch-reference"><span class="header-section-number">10.2.1</span> PyTorch reference</a></li>
+  <li><a href="#triton-implementation" id="toc-triton-implementation" class="nav-link" data-scroll-target="#triton-implementation"><span class="header-section-number">10.2.2</span> Triton implementation</a></li>
+  <li><a href="#shape-trace" id="toc-shape-trace" class="nav-link" data-scroll-target="#shape-trace"><span class="header-section-number">10.2.3</span> Shape trace</a></li>
+  <li><a href="#pointer-arithmetic-and-masks" id="toc-pointer-arithmetic-and-masks" class="nav-link" data-scroll-target="#pointer-arithmetic-and-masks"><span class="header-section-number">10.2.4</span> Pointer arithmetic and masks</a></li>
+  <li><a href="#correctness-test" id="toc-correctness-test" class="nav-link" data-scroll-target="#correctness-test"><span class="header-section-number">10.2.5</span> Correctness test</a></li>
+  <li><a href="#benchmark" id="toc-benchmark" class="nav-link" data-scroll-target="#benchmark"><span class="header-section-number">10.2.6</span> Benchmark</a></li>
+  <li><a href="#optimization-discussion" id="toc-optimization-discussion" class="nav-link" data-scroll-target="#optimization-discussion"><span class="header-section-number">10.2.7</span> Optimization discussion</a></li>
+  <li><a href="#common-bugs" id="toc-common-bugs" class="nav-link" data-scroll-target="#common-bugs"><span class="header-section-number">10.2.8</span> Common bugs</a></li>
+  <li><a href="#exercises" id="toc-exercises" class="nav-link" data-scroll-target="#exercises"><span class="header-section-number">10.2.9</span> Exercises</a></li>
+  </ul></li>
+  </ul>
+</nav>
+    </div>
+<!-- main -->
+<main class="content" id="quarto-document-content">
+
+<header id="title-block-header" class="quarto-title-block default"><nav class="quarto-page-breadcrumbs quarto-title-breadcrumbs d-none d-lg-block" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="../../book/02-basic-nn/05-fused-softmax.html">Part 2: Basic Neural Network Kernels</a></li><li class="breadcrumb-item"><a href="../../book/02-basic-nn/08-activations-swiglu.html"><span class="chapter-number">10</span>&nbsp; <span class="chapter-title">Chapter 8: Activation Functions and Gated MLPs</span></a></li></ol></nav>
+<div class="quarto-title">
+<div class="quarto-title-block"><div><h1 class="title"><span class="chapter-number">10</span>&nbsp; <span class="chapter-title">Chapter 8: Activation Functions and Gated MLPs</span></h1><button type="button" class="btn code-tools-button" id="quarto-code-tools-source"><i class="bi"></i> Code</button></div></div>
+</div>
+
+
+
+<div class="quarto-title-meta">
+
+    
+  
+    
+  </div>
+  
+
+
+</header>
+
+
+<p>Activation kernels are the simplest possible Triton kernels — pure elementwise, one read, one write, no reduction, no inter-program coordination. That is also why this chapter exists: they are the right place to internalize the basic launcher template before we start building anything stateful.</p>
+<p>The honest framing for this chapter: activations are memory-bound, <code>torch.compile</code> is excellent at memory-bound elementwise ops, and you should expect to <em>tie</em> the compiled baseline, not beat it. The reason to write these kernels yourself is not standalone speed; it is so you can fuse them into the matmul epilogue (Chapter 10) and the gated MLP (Chapter 19), where <code>torch.compile</code> cannot reach.</p>
+<section id="what-we-are-building" class="level2" data-number="10.1">
+<h2 data-number="10.1" class="anchored" data-anchor-id="what-we-are-building"><span class="header-section-number">10.1</span> What we are building</h2>
+<ul>
+<li><strong>GELU</strong>: exact (via <code>erf</code>) and tanh approximation.</li>
+<li><strong>SiLU / Swish</strong>: <code>x * sigmoid(x)</code>.</li>
+<li><strong>ReLU</strong>: as a one-line exercise.</li>
+<li><strong>SwiGLU</strong>: <code>silu(x_gate) * x_up</code>.</li>
+<li><strong>GEGLU</strong>: <code>gelu(x_gate) * x_up</code>.</li>
+</ul>
+<p>LLaMA, Mistral, Gemma, Qwen all use SwiGLU. GEGLU shows up in T5-v1.1, Gemini’s MLPs, and a few others. The pattern is: the MLP’s first linear projects to <code>2 * d_ff</code>, you split into halves, gate one with an activation, multiply, project back to <code>d_model</code>.</p>
+</section>
+<section id="where-these-kernels-actually-live" class="level2" data-number="10.2">
+<h2 data-number="10.2" class="anchored" data-anchor-id="where-these-kernels-actually-live"><span class="header-section-number">10.2</span> Where these kernels actually live</h2>
+<p>Most production setups fuse activations into the producer matmul’s epilogue — the elementwise op happens in registers right after the dot product, before the C tile is stored. That gives you the activation for free in terms of memory traffic. We cover epilogue fusion in Chapter 10. But there are still cases where a standalone activation kernel is the right thing: pre-norm inputs, attention output projections, anywhere the activation is between two ops you do not own.</p>
+<section id="pytorch-reference" class="level3" data-number="10.2.1">
+<h3 data-number="10.2.1" class="anchored" data-anchor-id="pytorch-reference"><span class="header-section-number">10.2.1</span> PyTorch reference</h3>
+<div class="sourceCode" id="cb1"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch.nn.functional <span class="im">as</span> F</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> pytorch_gelu(x, approximate<span class="op">=</span><span class="st">"none"</span>):</span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> F.gelu(x, approximate<span class="op">=</span>approximate)</span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> pytorch_silu(x):</span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> F.silu(x)</span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> pytorch_swiglu(x_gate, x_up):</span>
+<span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> F.silu(x_gate) <span class="op">*</span> x_up</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<p><code>F.gelu</code>’s <code>approximate</code> argument toggles between the exact form (<span class="math inline">\(0.5 x (1 + \text{erf}(x/\sqrt{2}))\)</span>) and the tanh approximation Hendrycks and Gimpel proposed (<span class="math inline">\(0.5 x (1 + \tanh(\sqrt{2/\pi}(x + 0.044715 x^3)))\)</span>). Most pretrained checkpoints use the tanh form because it was the only one available when they were trained; new code should match the checkpoint.</p>
+</section>
+<section id="triton-implementation" class="level3" data-number="10.2.2">
+<h3 data-number="10.2.2" class="anchored" data-anchor-id="triton-implementation"><span class="header-section-number">10.2.2</span> Triton implementation</h3>
+<section id="gelu" class="level4" data-number="10.2.2.1">
+<h4 data-number="10.2.2.1" class="anchored" data-anchor-id="gelu"><span class="header-section-number">10.2.2.1</span> GELU</h4>
+<div class="sourceCode" id="cb2"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> math</span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> triton</span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> triton.language <span class="im">as</span> tl</span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a>_INV_SQRT2 <span class="op">=</span> <span class="fl">1.0</span> <span class="op">/</span> math.sqrt(<span class="fl">2.0</span>)</span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a>_SQRT_2_OVER_PI <span class="op">=</span> math.sqrt(<span class="fl">2.0</span> <span class="op">/</span> math.pi)</span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a>_COEFF <span class="op">=</span> <span class="fl">0.044715</span></span>
+<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-9"><a href="#cb2-9" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.jit</span></span>
+<span id="cb2-10"><a href="#cb2-10" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> _gelu_kernel(</span>
+<span id="cb2-11"><a href="#cb2-11" aria-hidden="true" tabindex="-1"></a>    x_ptr, y_ptr, N,</span>
+<span id="cb2-12"><a href="#cb2-12" aria-hidden="true" tabindex="-1"></a>    BLOCK_SIZE: tl.constexpr,</span>
+<span id="cb2-13"><a href="#cb2-13" aria-hidden="true" tabindex="-1"></a>    APPROX: tl.constexpr,</span>
+<span id="cb2-14"><a href="#cb2-14" aria-hidden="true" tabindex="-1"></a>    INV_SQRT2: tl.constexpr,</span>
+<span id="cb2-15"><a href="#cb2-15" aria-hidden="true" tabindex="-1"></a>    SQRT_2_OVER_PI: tl.constexpr,</span>
+<span id="cb2-16"><a href="#cb2-16" aria-hidden="true" tabindex="-1"></a>    COEFF: tl.constexpr,</span>
+<span id="cb2-17"><a href="#cb2-17" aria-hidden="true" tabindex="-1"></a>):</span>
+<span id="cb2-18"><a href="#cb2-18" aria-hidden="true" tabindex="-1"></a>    pid <span class="op">=</span> tl.program_id(<span class="dv">0</span>)</span>
+<span id="cb2-19"><a href="#cb2-19" aria-hidden="true" tabindex="-1"></a>    offs <span class="op">=</span> pid <span class="op">*</span> BLOCK_SIZE <span class="op">+</span> tl.arange(<span class="dv">0</span>, BLOCK_SIZE)</span>
+<span id="cb2-20"><a href="#cb2-20" aria-hidden="true" tabindex="-1"></a>    mask <span class="op">=</span> offs <span class="op">&lt;</span> N</span>
+<span id="cb2-21"><a href="#cb2-21" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> tl.load(x_ptr <span class="op">+</span> offs, mask<span class="op">=</span>mask, other<span class="op">=</span><span class="fl">0.0</span>).to(tl.float32)</span>
+<span id="cb2-22"><a href="#cb2-22" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> APPROX <span class="op">==</span> <span class="dv">0</span>:</span>
+<span id="cb2-23"><a href="#cb2-23" aria-hidden="true" tabindex="-1"></a>        y <span class="op">=</span> <span class="fl">0.5</span> <span class="op">*</span> x <span class="op">*</span> (<span class="fl">1.0</span> <span class="op">+</span> tl.erf(x <span class="op">*</span> INV_SQRT2))</span>
+<span id="cb2-24"><a href="#cb2-24" aria-hidden="true" tabindex="-1"></a>    <span class="cf">else</span>:</span>
+<span id="cb2-25"><a href="#cb2-25" aria-hidden="true" tabindex="-1"></a>        inner <span class="op">=</span> SQRT_2_OVER_PI <span class="op">*</span> (x <span class="op">+</span> COEFF <span class="op">*</span> x <span class="op">*</span> x <span class="op">*</span> x)</span>
+<span id="cb2-26"><a href="#cb2-26" aria-hidden="true" tabindex="-1"></a>        <span class="co"># tanh(z) = 2 sigmoid(2z) - 1, written out so it compiles on older</span></span>
+<span id="cb2-27"><a href="#cb2-27" aria-hidden="true" tabindex="-1"></a>        <span class="co"># Triton versions that lack tl.tanh.</span></span>
+<span id="cb2-28"><a href="#cb2-28" aria-hidden="true" tabindex="-1"></a>        y <span class="op">=</span> <span class="fl">0.5</span> <span class="op">*</span> x <span class="op">*</span> (<span class="fl">1.0</span> <span class="op">+</span> <span class="fl">2.0</span> <span class="op">/</span> (<span class="fl">1.0</span> <span class="op">+</span> tl.exp(<span class="op">-</span><span class="fl">2.0</span> <span class="op">*</span> inner)) <span class="op">-</span> <span class="fl">1.0</span>)</span>
+<span id="cb2-29"><a href="#cb2-29" aria-hidden="true" tabindex="-1"></a>    in_dtype <span class="op">=</span> tl.load(x_ptr <span class="op">+</span> offs, mask<span class="op">=</span>mask, other<span class="op">=</span><span class="fl">0.0</span>).dtype</span>
+<span id="cb2-30"><a href="#cb2-30" aria-hidden="true" tabindex="-1"></a>    tl.store(y_ptr <span class="op">+</span> offs, y.to(in_dtype), mask<span class="op">=</span>mask)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<p><code>APPROX</code> is a <code>tl.constexpr</code> so the <code>if</code> resolves at compile time — there is no branch in the generated code, you get the right code path baked in. The same trick will appear in matmul epilogues (Chapter 10) and FlashAttention (Chapter 14) for things like causal-mask toggles.</p>
+<p><code>INV_SQRT2</code> and friends are also <code>tl.constexpr</code>; we hand them in as kernel arguments rather than importing <code>math</code> inside the kernel, because Triton kernels run in their own narrow Python-like environment that does not have full Python imports.</p>
+</section>
+<section id="silu" class="level4" data-number="10.2.2.2">
+<h4 data-number="10.2.2.2" class="anchored" data-anchor-id="silu"><span class="header-section-number">10.2.2.2</span> SiLU</h4>
+<div class="sourceCode" id="cb3"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.jit</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> _silu_kernel(x_ptr, y_ptr, N, BLOCK_SIZE: tl.constexpr):</span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>    pid <span class="op">=</span> tl.program_id(<span class="dv">0</span>)</span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>    offs <span class="op">=</span> pid <span class="op">*</span> BLOCK_SIZE <span class="op">+</span> tl.arange(<span class="dv">0</span>, BLOCK_SIZE)</span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a>    mask <span class="op">=</span> offs <span class="op">&lt;</span> N</span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> tl.load(x_ptr <span class="op">+</span> offs, mask<span class="op">=</span>mask, other<span class="op">=</span><span class="fl">0.0</span>).to(tl.float32)</span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a>    y <span class="op">=</span> x <span class="op">*</span> (<span class="fl">1.0</span> <span class="op">/</span> (<span class="fl">1.0</span> <span class="op">+</span> tl.exp(<span class="op">-</span>x)))</span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a>    in_dtype <span class="op">=</span> tl.load(x_ptr <span class="op">+</span> offs, mask<span class="op">=</span>mask, other<span class="op">=</span><span class="fl">0.0</span>).dtype</span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a>    tl.store(y_ptr <span class="op">+</span> offs, y.to(in_dtype), mask<span class="op">=</span>mask)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<p>Pure elementwise. The fp32 cast guards against the edge case where <code>exp(-x)</code> for very negative <code>x</code> underflows to zero in fp16 — fine here (you just get <code>x * 1 = x</code>), but the habit is correct.</p>
+</section>
+<section id="swiglu" class="level4" data-number="10.2.2.3">
+<h4 data-number="10.2.2.3" class="anchored" data-anchor-id="swiglu"><span class="header-section-number">10.2.2.3</span> SwiGLU</h4>
+<div class="sourceCode" id="cb4"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.jit</span></span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> _swiglu_kernel(g_ptr, u_ptr, y_ptr, N, BLOCK_SIZE: tl.constexpr):</span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>    pid <span class="op">=</span> tl.program_id(<span class="dv">0</span>)</span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a>    offs <span class="op">=</span> pid <span class="op">*</span> BLOCK_SIZE <span class="op">+</span> tl.arange(<span class="dv">0</span>, BLOCK_SIZE)</span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a>    mask <span class="op">=</span> offs <span class="op">&lt;</span> N</span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a>    g <span class="op">=</span> tl.load(g_ptr <span class="op">+</span> offs, mask<span class="op">=</span>mask, other<span class="op">=</span><span class="fl">0.0</span>).to(tl.float32)</span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a>    u <span class="op">=</span> tl.load(u_ptr <span class="op">+</span> offs, mask<span class="op">=</span>mask, other<span class="op">=</span><span class="fl">0.0</span>).to(tl.float32)</span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a>    silu_g <span class="op">=</span> g <span class="op">*</span> (<span class="fl">1.0</span> <span class="op">/</span> (<span class="fl">1.0</span> <span class="op">+</span> tl.exp(<span class="op">-</span>g)))</span>
+<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a>    y <span class="op">=</span> silu_g <span class="op">*</span> u</span>
+<span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a>    in_dtype <span class="op">=</span> tl.load(g_ptr <span class="op">+</span> offs, mask<span class="op">=</span>mask, other<span class="op">=</span><span class="fl">0.0</span>).dtype</span>
+<span id="cb4-11"><a href="#cb4-11" aria-hidden="true" tabindex="-1"></a>    tl.store(y_ptr <span class="op">+</span> offs, y.to(in_dtype), mask<span class="op">=</span>mask)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<p>Two reads, one write. The kernel structure is identical to SiLU; the only difference is that we load a second tensor and multiply at the end. GEGLU swaps in GELU; same structure.</p>
+</section>
+</section>
+<section id="shape-trace" class="level3" data-number="10.2.3">
+<h3 data-number="10.2.3" class="anchored" data-anchor-id="shape-trace"><span class="header-section-number">10.2.3</span> Shape trace</h3>
+<p>Elementwise. Pick <code>x: (N,)</code> flat for simplicity; the launcher reshapes any-rank inputs to 1D and the kernel does not care about shape past the total element count.</p>
+<pre><code>Input:                       x   : (N,)           fp16
+Program owns:                BLOCK_SIZE elements  (axis=0 grid, size ceil(N / BLOCK_SIZE))
+pid = tl.program_id(0)       scalar               int32
+offs = pid * BS + range(0,BS) (BS,)               int32
+mask = offs &lt; N              (BS,)                bool
+x = tl.load(x_ptr + offs)    (BS,)                fp16
+x = x.to(tl.float32)         (BS,)                fp32
+y = activation(x)            (BS,)                fp32
+y_fp16 = y.to(fp16)          (BS,)                fp16
+tl.store(y_ptr + offs, y_fp16, mask)</code></pre>
+<p>For SwiGLU, the trace is the same but with two loads — <code>g</code> and <code>u</code> of the same shape.</p>
+</section>
+<section id="pointer-arithmetic-and-masks" class="level3" data-number="10.2.4">
+<h3 data-number="10.2.4" class="anchored" data-anchor-id="pointer-arithmetic-and-masks"><span class="header-section-number">10.2.4</span> Pointer arithmetic and masks</h3>
+<p>Trivial 1D mapping. <code>offs = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)</code>. Mask <code>offs &lt; N</code>. <code>other=0.0</code> is fine on the load because the masked lanes are never written to the output.</p>
+<p>For the fused bias variant (exercise 3), the bias is broadcast along the last dim: <code>bias_idx = offs % D</code> where <code>D = x.shape[-1]</code>. The modulo is cheap; the load pattern is small-vector broadcast, which the compiler handles well.</p>
+</section>
+<section id="correctness-test" class="level3" data-number="10.2.5">
+<h3 data-number="10.2.5" class="anchored" data-anchor-id="correctness-test"><span class="header-section-number">10.2.5</span> Correctness test</h3>
+<div class="sourceCode" id="cb6"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pytest, torch</span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch.nn.functional <span class="im">as</span> F</span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> src.ch08_activations <span class="im">import</span> gelu, silu, swiglu, geglu</span>
+<span id="cb6-4"><a href="#cb6-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-5"><a href="#cb6-5" aria-hidden="true" tabindex="-1"></a>pytestmark <span class="op">=</span> pytest.mark.skipif(<span class="kw">not</span> torch.cuda.is_available(), reason<span class="op">=</span><span class="st">"cuda only"</span>)</span>
+<span id="cb6-6"><a href="#cb6-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-7"><a href="#cb6-7" aria-hidden="true" tabindex="-1"></a><span class="at">@pytest.mark.parametrize</span>(<span class="st">"approximate"</span>, [<span class="st">"none"</span>, <span class="st">"tanh"</span>])</span>
+<span id="cb6-8"><a href="#cb6-8" aria-hidden="true" tabindex="-1"></a><span class="at">@pytest.mark.parametrize</span>(<span class="st">"dtype"</span>, [torch.float32, torch.float16])</span>
+<span id="cb6-9"><a href="#cb6-9" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> test_gelu(approximate, dtype):</span>
+<span id="cb6-10"><a href="#cb6-10" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> torch.randn(<span class="dv">4</span>, <span class="dv">1024</span> <span class="op">+</span> <span class="dv">1</span>, device<span class="op">=</span><span class="st">"cuda"</span>, dtype<span class="op">=</span>dtype)</span>
+<span id="cb6-11"><a href="#cb6-11" aria-hidden="true" tabindex="-1"></a>    out <span class="op">=</span> gelu(x, approximate<span class="op">=</span>approximate)</span>
+<span id="cb6-12"><a href="#cb6-12" aria-hidden="true" tabindex="-1"></a>    ref <span class="op">=</span> F.gelu(x, approximate<span class="op">=</span>approximate)</span>
+<span id="cb6-13"><a href="#cb6-13" aria-hidden="true" tabindex="-1"></a>    rtol, atol <span class="op">=</span> (<span class="fl">1e-5</span>, <span class="fl">1e-5</span>) <span class="cf">if</span> dtype <span class="op">==</span> torch.float32 <span class="cf">else</span> (<span class="fl">1e-2</span>, <span class="fl">1e-2</span>)</span>
+<span id="cb6-14"><a href="#cb6-14" aria-hidden="true" tabindex="-1"></a>    torch.testing.assert_close(out, ref, rtol<span class="op">=</span>rtol, atol<span class="op">=</span>atol)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<p>The <code>1024 + 1</code> shape forces the last tile to be partial; that exercises the mask. Both <code>approximate</code> values must pass.</p>
+</section>
+<section id="benchmark" class="level3" data-number="10.2.6">
+<h3 data-number="10.2.6" class="anchored" data-anchor-id="benchmark"><span class="header-section-number">10.2.6</span> Benchmark</h3>
+<div class="sourceCode" id="cb7"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch, triton, torch.nn.functional <span class="im">as</span> F</span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> src.ch08_activations <span class="im">import</span> gelu, silu, swiglu</span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a>N <span class="op">=</span> <span class="dv">1</span> <span class="op">&lt;&lt;</span> <span class="dv">24</span>  <span class="co"># 16M elements</span></span>
+<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a>x <span class="op">=</span> torch.randn(N, device<span class="op">=</span><span class="st">"cuda"</span>, dtype<span class="op">=</span>torch.float16)</span>
+<span id="cb7-6"><a href="#cb7-6" aria-hidden="true" tabindex="-1"></a>g <span class="op">=</span> torch.randn(N, device<span class="op">=</span><span class="st">"cuda"</span>, dtype<span class="op">=</span>torch.float16)</span>
+<span id="cb7-7"><a href="#cb7-7" aria-hidden="true" tabindex="-1"></a>u <span class="op">=</span> torch.randn(N, device<span class="op">=</span><span class="st">"cuda"</span>, dtype<span class="op">=</span>torch.float16)</span>
+<span id="cb7-8"><a href="#cb7-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-9"><a href="#cb7-9" aria-hidden="true" tabindex="-1"></a>ms_torch    <span class="op">=</span> triton.testing.do_bench(<span class="kw">lambda</span>: F.silu(x))</span>
+<span id="cb7-10"><a href="#cb7-10" aria-hidden="true" tabindex="-1"></a>ms_triton   <span class="op">=</span> triton.testing.do_bench(<span class="kw">lambda</span>: silu(x))</span>
+<span id="cb7-11"><a href="#cb7-11" aria-hidden="true" tabindex="-1"></a>compiled    <span class="op">=</span> torch.<span class="bu">compile</span>(F.silu)<span class="op">;</span> compiled(x)<span class="op">;</span> torch.cuda.synchronize()</span>
+<span id="cb7-12"><a href="#cb7-12" aria-hidden="true" tabindex="-1"></a>ms_compiled <span class="op">=</span> triton.testing.do_bench(<span class="kw">lambda</span>: compiled(x))</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="callout callout-style-simple callout-warning">
+<div class="callout-body d-flex">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-body-container">
+<p><strong>Placeholder data.</strong> The numbers below are hardcoded illustrative values, not measurements. Replace with output from your own <code>triton.testing.do_bench</code> run before drawing conclusions.</p>
+</div>
+</div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code hidden" id="cb8" data-startfrom="185" data-source-offset="0"><pre class="sourceCode js code-with-copy"><code class="sourceCode javascript" style="counter-reset: source-line 184;"><span id="cb8-185"><a href="#cb8-185" aria-hidden="true" tabindex="-1"></a>{</span>
+<span id="cb8-186"><a href="#cb8-186" aria-hidden="true" tabindex="-1"></a>  <span class="kw">const</span> data <span class="op">=</span> [</span>
+<span id="cb8-187"><a href="#cb8-187" aria-hidden="true" tabindex="-1"></a>    {<span class="dt">kernel</span><span class="op">:</span> <span class="st">"silu"</span><span class="op">,</span>   <span class="dt">triton_ms</span><span class="op">:</span> <span class="fl">0.40</span><span class="op">,</span> <span class="dt">torch_ms</span><span class="op">:</span> <span class="fl">0.55</span><span class="op">,</span> <span class="dt">compiled_ms</span><span class="op">:</span> <span class="fl">0.40</span>}<span class="op">,</span></span>
+<span id="cb8-188"><a href="#cb8-188" aria-hidden="true" tabindex="-1"></a>    {<span class="dt">kernel</span><span class="op">:</span> <span class="st">"gelu"</span><span class="op">,</span>   <span class="dt">triton_ms</span><span class="op">:</span> <span class="fl">0.45</span><span class="op">,</span> <span class="dt">torch_ms</span><span class="op">:</span> <span class="fl">0.60</span><span class="op">,</span> <span class="dt">compiled_ms</span><span class="op">:</span> <span class="fl">0.43</span>}<span class="op">,</span></span>
+<span id="cb8-189"><a href="#cb8-189" aria-hidden="true" tabindex="-1"></a>    {<span class="dt">kernel</span><span class="op">:</span> <span class="st">"swiglu"</span><span class="op">,</span> <span class="dt">triton_ms</span><span class="op">:</span> <span class="fl">0.65</span><span class="op">,</span> <span class="dt">torch_ms</span><span class="op">:</span> <span class="fl">1.10</span><span class="op">,</span> <span class="dt">compiled_ms</span><span class="op">:</span> <span class="fl">0.65</span>}<span class="op">,</span></span>
+<span id="cb8-190"><a href="#cb8-190" aria-hidden="true" tabindex="-1"></a>    {<span class="dt">kernel</span><span class="op">:</span> <span class="st">"geglu"</span><span class="op">,</span>  <span class="dt">triton_ms</span><span class="op">:</span> <span class="fl">0.70</span><span class="op">,</span> <span class="dt">torch_ms</span><span class="op">:</span> <span class="fl">1.15</span><span class="op">,</span> <span class="dt">compiled_ms</span><span class="op">:</span> <span class="fl">0.68</span>}<span class="op">,</span></span>
+<span id="cb8-191"><a href="#cb8-191" aria-hidden="true" tabindex="-1"></a>  ]<span class="op">;</span></span>
+<span id="cb8-192"><a href="#cb8-192" aria-hidden="true" tabindex="-1"></a>  <span class="kw">const</span> long <span class="op">=</span> data<span class="op">.</span><span class="fu">flatMap</span>(d <span class="kw">=&gt;</span> [</span>
+<span id="cb8-193"><a href="#cb8-193" aria-hidden="true" tabindex="-1"></a>    {<span class="dt">kernel</span><span class="op">:</span> d<span class="op">.</span><span class="at">kernel</span><span class="op">,</span> <span class="dt">impl</span><span class="op">:</span> <span class="st">"triton"</span><span class="op">,</span>   <span class="dt">ms</span><span class="op">:</span> d<span class="op">.</span><span class="at">triton_ms</span>}<span class="op">,</span></span>
+<span id="cb8-194"><a href="#cb8-194" aria-hidden="true" tabindex="-1"></a>    {<span class="dt">kernel</span><span class="op">:</span> d<span class="op">.</span><span class="at">kernel</span><span class="op">,</span> <span class="dt">impl</span><span class="op">:</span> <span class="st">"torch"</span><span class="op">,</span>    <span class="dt">ms</span><span class="op">:</span> d<span class="op">.</span><span class="at">torch_ms</span>}<span class="op">,</span></span>
+<span id="cb8-195"><a href="#cb8-195" aria-hidden="true" tabindex="-1"></a>    {<span class="dt">kernel</span><span class="op">:</span> d<span class="op">.</span><span class="at">kernel</span><span class="op">,</span> <span class="dt">impl</span><span class="op">:</span> <span class="st">"compiled"</span><span class="op">,</span> <span class="dt">ms</span><span class="op">:</span> d<span class="op">.</span><span class="at">compiled_ms</span>}</span>
+<span id="cb8-196"><a href="#cb8-196" aria-hidden="true" tabindex="-1"></a>  ])<span class="op">;</span></span>
+<span id="cb8-197"><a href="#cb8-197" aria-hidden="true" tabindex="-1"></a>  <span class="cf">return</span> Plot<span class="op">.</span><span class="fu">plot</span>({</span>
+<span id="cb8-198"><a href="#cb8-198" aria-hidden="true" tabindex="-1"></a>    <span class="dt">marginLeft</span><span class="op">:</span> <span class="dv">80</span><span class="op">,</span></span>
+<span id="cb8-199"><a href="#cb8-199" aria-hidden="true" tabindex="-1"></a>    <span class="dt">color</span><span class="op">:</span> {<span class="dt">legend</span><span class="op">:</span> <span class="kw">true</span><span class="op">,</span> <span class="dt">domain</span><span class="op">:</span> [<span class="st">"triton"</span><span class="op">,</span> <span class="st">"torch"</span><span class="op">,</span> <span class="st">"compiled"</span>]<span class="op">,</span> <span class="dt">range</span><span class="op">:</span> [<span class="st">"steelblue"</span><span class="op">,</span> <span class="st">"orange"</span><span class="op">,</span> <span class="st">"seagreen"</span>]}<span class="op">,</span></span>
+<span id="cb8-200"><a href="#cb8-200" aria-hidden="true" tabindex="-1"></a>    <span class="dt">y</span><span class="op">:</span> {<span class="dt">label</span><span class="op">:</span> <span class="st">"median latency (ms, N = 16M fp16) — lower is better"</span>}<span class="op">,</span></span>
+<span id="cb8-201"><a href="#cb8-201" aria-hidden="true" tabindex="-1"></a>    <span class="dt">x</span><span class="op">:</span> {<span class="dt">label</span><span class="op">:</span> <span class="st">"kernel"</span>}<span class="op">,</span></span>
+<span id="cb8-202"><a href="#cb8-202" aria-hidden="true" tabindex="-1"></a>    <span class="dt">fx</span><span class="op">:</span> {<span class="dt">label</span><span class="op">:</span> <span class="st">"kernel"</span>}<span class="op">,</span></span>
+<span id="cb8-203"><a href="#cb8-203" aria-hidden="true" tabindex="-1"></a>    <span class="dt">marks</span><span class="op">:</span> [</span>
+<span id="cb8-204"><a href="#cb8-204" aria-hidden="true" tabindex="-1"></a>      Plot<span class="op">.</span><span class="fu">barY</span>(long<span class="op">,</span> {<span class="dt">fx</span><span class="op">:</span> <span class="st">"kernel"</span><span class="op">,</span> <span class="dt">x</span><span class="op">:</span> <span class="st">"impl"</span><span class="op">,</span> <span class="dt">y</span><span class="op">:</span> <span class="st">"ms"</span><span class="op">,</span> <span class="dt">fill</span><span class="op">:</span> <span class="st">"impl"</span>})</span>
+<span id="cb8-205"><a href="#cb8-205" aria-hidden="true" tabindex="-1"></a>    ]</span>
+<span id="cb8-206"><a href="#cb8-206" aria-hidden="true" tabindex="-1"></a>  })<span class="op">;</span></span>
+<span id="cb8-207"><a href="#cb8-207" aria-hidden="true" tabindex="-1"></a>}</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div id="fig-activations-bench" class="cell-output cell-output-display quarto-float quarto-figure quarto-figure-center anchored">
+<figure class="quarto-float quarto-float-fig figure">
+<div aria-describedby="fig-activations-bench-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+<div id="ojs-cell-1" data-nodetype="expression">
+
+</div>
+</div>
+<figcaption class="quarto-float-caption-bottom quarto-float-caption quarto-float-fig" id="fig-activations-bench-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+Figure&nbsp;10.1: Activation kernel median latency for N=16M fp16 elements, grouped by kernel. Lower is better. Triton vs eager PyTorch vs torch.compile.
+</figcaption>
+</figure>
+</div>
+</div>
+<p>Expect <code>torch.compile</code> and Triton to land within a few percent of each other. Eager PyTorch loses to both because SwiGLU in eager dispatches three separate kernels (silu, multiply, then maybe a result allocation).</p>
+</section>
+<section id="optimization-discussion" class="level3" data-number="10.2.7">
+<h3 data-number="10.2.7" class="anchored" data-anchor-id="optimization-discussion"><span class="header-section-number">10.2.7</span> Optimization discussion</h3>
+<p>These kernels are bandwidth-pinned. The roofline is <code>bytes_moved / bandwidth</code>: for SiLU on N=16M fp16, that is 64 MB / 448 GB/s ~= 0.14 ms. Anything from 0.4 to 0.5 ms (what you actually measure) tells you you are running at ~30% of peak — which is roughly what you get when the kernel launches and memory controllers ramp.</p>
+<p>Two ways to push further. One: increase <code>BLOCK_SIZE</code>. We use 1024; bumping to 4096 reduces launch count by 4x but increases register pressure. Try 2048 first. Two: increase <code>num_warps</code> to 8 so the compiler has more latency hiding. Both help marginally; neither is going to bring you past <code>torch.compile</code>.</p>
+<p>The real optimization is <em>not in this kernel</em>. Fuse with the upstream linear (Chapter 10) and the activation costs zero extra HBM traffic. Fuse with a downstream RMSNorm and you save another round trip. Chapter 19 fuses the entire MLP entry: <code>rmsnorm -&gt; linear -&gt; gate -&gt; silu -&gt; multiply -&gt; linear</code>. Standalone activations are a stepping stone.</p>
+</section>
+<section id="common-bugs" class="level3" data-number="10.2.8">
+<h3 data-number="10.2.8" class="anchored" data-anchor-id="common-bugs"><span class="header-section-number">10.2.8</span> Common bugs</h3>
+<ol type="1">
+<li><strong>Wrong <code>approximate</code> mode.</strong> A model trained with <code>gelu(approximate="tanh")</code> and inferred with <code>approximate="none"</code> is a measurable regression. Match the checkpoint, exactly.</li>
+<li><strong>fp16 sigmoid.</strong> <code>1 / (1 + exp(-x))</code> for <code>x = -100</code> in fp16: <code>exp(100)</code> overflows, the whole thing is <code>+inf</code>, the result is <code>0</code> — by accident, the right answer. For <code>x = +100</code>, <code>exp(-100) = 0</code> in fp16, result is <code>1</code> — also right by accident. fp16 silu is mostly forgiving, but always cast to fp32 first to make it not depend on accident.</li>
+<li><strong>Forgetting the cast back to input dtype on store.</strong> If you store fp32 into an fp16 output buffer, you get garbage values (the store reads four bytes and writes them as if they were a half-precision pair). Always <code>y.to(in_dtype)</code> before <code>tl.store</code>.</li>
+<li><strong>GEGLU/SwiGLU shape mismatch.</strong> The two inputs must have identical shape and dtype. If you accidentally pass <code>g.shape = (M, D)</code> and <code>u.shape = (M, 2D)</code> (a common bug because the producer linear projects to <code>2D</code> and you forgot to split), you read past the end of <code>g</code>. Assert the shapes match in the launcher.</li>
+<li><strong>Computing <code>tanh(z)</code> in fp16 without enough range.</strong> <code>tanh</code> saturates around <code>|z| = 5</code>. In fp16 that is fine, but if you write the rational form <code>(e^z - e^{-z}) / (e^z + e^{-z})</code>, <code>e^z</code> for <code>z = 10</code> is <code>22026</code>, which overflows fp16. Use <code>2 sigmoid(2z) - 1</code> (what the kernel above does) or <code>tl.tanh</code> directly.</li>
+</ol>
+</section>
+<section id="exercises" class="level3" data-number="10.2.9">
+<h3 data-number="10.2.9" class="anchored" data-anchor-id="exercises"><span class="header-section-number">10.2.9</span> Exercises</h3>
+<section id="beginner" class="level4" data-number="10.2.9.1">
+<h4 data-number="10.2.9.1" class="anchored" data-anchor-id="beginner"><span class="header-section-number">10.2.9.1</span> Beginner</h4>
+<ol type="1">
+<li><strong>GELU exact.</strong> Implement the exact erf-based form. Compare against <code>F.gelu(x, approximate="none")</code>.</li>
+<li><strong>SiLU.</strong> Implement <code>x * sigmoid(x)</code>.</li>
+<li><strong>Fused bias + GELU.</strong> Compute <code>gelu(x + b)</code> with <code>b: (D,)</code> broadcast along the last dim of <code>x: (..., D)</code>. Hint: <code>bias_idx = offs % D</code>.</li>
+</ol>
+</section>
+<section id="intermediate" class="level4" data-number="10.2.9.2">
+<h4 data-number="10.2.9.2" class="anchored" data-anchor-id="intermediate"><span class="header-section-number">10.2.9.2</span> Intermediate</h4>
+<ol start="4" type="1">
+<li><strong>SwiGLU.</strong> Two inputs, one output. Same kernel as SiLU plus one extra load and one multiply.</li>
+<li><strong>Linear + bias + activation (skeleton).</strong> Write the launcher signature and the kernel skeleton for <code>y = gelu(x @ W + b)</code>. Do NOT implement the matmul body (Chapter 10 does that); just place the activation in the epilogue. The point is to think through where the activation slots in.</li>
+</ol>
+</section>
+<section id="advanced" class="level4" data-number="10.2.9.3">
+<h4 data-number="10.2.9.3" class="anchored" data-anchor-id="advanced"><span class="header-section-number">10.2.9.3</span> Advanced</h4>
+<ol start="6" type="1">
+<li><strong>GEGLU.</strong> Implement <code>gelu(g) * u</code> with both exact and tanh forms of GELU. Benchmark against <code>F.gelu(g) * u</code> and <code>torch.compile(lambda g, u: F.gelu(g) * u)</code>. Report which variant of GELU is faster and whether either Triton path beats the compiled baseline. Expect a tie; the point is to see the ceiling that pure-elementwise kernels hit.</li>
+</ol>
+<p>Worked solutions in <code>solutions/ch08_solutions.py</code>.</p>
+
+
+<!-- -->
+
+</section>
+</section>
+</section>
+
+</main> <!-- /main -->
+<script type="ojs-module-contents">
+eyJjb250ZW50cyI6W3sibWV0aG9kTmFtZSI6ImludGVycHJldCIsImNlbGxOYW1lIjoib2pzLWNlbGwtMSIsImlubGluZSI6ZmFsc2UsInNvdXJjZSI6IntcbiAgY29uc3QgZGF0YSA9IFtcbiAgICB7a2VybmVsOiBcInNpbHVcIiwgICB0cml0b25fbXM6IDAuNDAsIHRvcmNoX21zOiAwLjU1LCBjb21waWxlZF9tczogMC40MH0sXG4gICAge2tlcm5lbDogXCJnZWx1XCIsICAgdHJpdG9uX21zOiAwLjQ1LCB0b3JjaF9tczogMC42MCwgY29tcGlsZWRfbXM6IDAuNDN9LFxuICAgIHtrZXJuZWw6IFwic3dpZ2x1XCIsIHRyaXRvbl9tczogMC42NSwgdG9yY2hfbXM6IDEuMTAsIGNvbXBpbGVkX21zOiAwLjY1fSxcbiAgICB7a2VybmVsOiBcImdlZ2x1XCIsICB0cml0b25fbXM6IDAuNzAsIHRvcmNoX21zOiAxLjE1LCBjb21waWxlZF9tczogMC42OH0sXG4gIF07XG4gIGNvbnN0IGxvbmcgPSBkYXRhLmZsYXRNYXAoZCA9PiBbXG4gICAge2tlcm5lbDogZC5rZXJuZWwsIGltcGw6IFwidHJpdG9uXCIsICAgbXM6IGQudHJpdG9uX21zfSxcbiAgICB7a2VybmVsOiBkLmtlcm5lbCwgaW1wbDogXCJ0b3JjaFwiLCAgICBtczogZC50b3JjaF9tc30sXG4gICAge2tlcm5lbDogZC5rZXJuZWwsIGltcGw6IFwiY29tcGlsZWRcIiwgbXM6IGQuY29tcGlsZWRfbXN9XG4gIF0pO1xuICByZXR1cm4gUGxvdC5wbG90KHtcbiAgICBtYXJnaW5MZWZ0OiA4MCxcbiAgICBjb2xvcjoge2xlZ2VuZDogdHJ1ZSwgZG9tYWluOiBbXCJ0cml0b25cIiwgXCJ0b3JjaFwiLCBcImNvbXBpbGVkXCJdLCByYW5nZTogW1wic3RlZWxibHVlXCIsIFwib3JhbmdlXCIsIFwic2VhZ3JlZW5cIl19LFxuICAgIHk6IHtsYWJlbDogXCJtZWRpYW4gbGF0ZW5jeSAobXMsIE4gPSAxNk0gZnAxNikg4oCUIGxvd2VyIGlzIGJldHRlclwifSxcbiAgICB4OiB7bGFiZWw6IFwia2VybmVsXCJ9LFxuICAgIGZ4OiB7bGFiZWw6IFwia2VybmVsXCJ9LFxuICAgIG1hcmtzOiBbXG4gICAgICBQbG90LmJhclkobG9uZywge2Z4OiBcImtlcm5lbFwiLCB4OiBcImltcGxcIiwgeTogXCJtc1wiLCBmaWxsOiBcImltcGxcIn0pXG4gICAgXVxuICB9KTtcbn1cbiJ9XX0=
+</script>
+<script type="module">
+if (window.location.protocol === "file:") { alert("The OJS runtime does not work with file:// URLs. Please use a web server to view this document."); }
+window._ojs.paths.runtimeToDoc = "../../book/02-basic-nn";
+window._ojs.paths.runtimeToRoot = "../..";
+window._ojs.paths.docToRoot = "../..";
+window._ojs.selfContained = false;
+window._ojs.runtime.interpretFromScriptTags();
+</script>
+<script id="quarto-html-after-body" type="application/javascript">
+window.document.addEventListener("DOMContentLoaded", function (event) {
+  const toggleBodyColorMode = (bsSheetEl) => {
+    const mode = bsSheetEl.getAttribute("data-mode");
+    const bodyEl = window.document.querySelector("body");
+    if (mode === "dark") {
+      bodyEl.classList.add("quarto-dark");
+      bodyEl.classList.remove("quarto-light");
+    } else {
+      bodyEl.classList.add("quarto-light");
+      bodyEl.classList.remove("quarto-dark");
+    }
+  }
+  const toggleBodyColorPrimary = () => {
+    const bsSheetEl = window.document.querySelector("link#quarto-bootstrap");
+    if (bsSheetEl) {
+      toggleBodyColorMode(bsSheetEl);
+    }
+  }
+  toggleBodyColorPrimary();  
+  const icon = "";
+  const anchorJS = new window.AnchorJS();
+  anchorJS.options = {
+    placement: 'right',
+    icon: icon
+  };
+  anchorJS.add('.anchored');
+  const isCodeAnnotation = (el) => {
+    for (const clz of el.classList) {
+      if (clz.startsWith('code-annotation-')) {                     
+        return true;
+      }
+    }
+    return false;
+  }
+  const onCopySuccess = function(e) {
+    // button target
+    const button = e.trigger;
+    // don't keep focus
+    button.blur();
+    // flash "checked"
+    button.classList.add('code-copy-button-checked');
+    var currentTitle = button.getAttribute("title");
+    button.setAttribute("title", "Copied!");
+    let tooltip;
+    if (window.bootstrap) {
+      button.setAttribute("data-bs-toggle", "tooltip");
+      button.setAttribute("data-bs-placement", "left");
+      button.setAttribute("data-bs-title", "Copied!");
+      tooltip = new bootstrap.Tooltip(button, 
+        { trigger: "manual", 
+          customClass: "code-copy-button-tooltip",
+          offset: [0, -8]});
+      tooltip.show();    
+    }
+    setTimeout(function() {
+      if (tooltip) {
+        tooltip.hide();
+        button.removeAttribute("data-bs-title");
+        button.removeAttribute("data-bs-toggle");
+        button.removeAttribute("data-bs-placement");
+      }
+      button.setAttribute("title", currentTitle);
+      button.classList.remove('code-copy-button-checked');
+    }, 1000);
+    // clear code selection
+    e.clearSelection();
+  }
+  const getTextToCopy = function(trigger) {
+      const codeEl = trigger.previousElementSibling.cloneNode(true);
+      for (const childEl of codeEl.children) {
+        if (isCodeAnnotation(childEl)) {
+          childEl.remove();
+        }
+      }
+      return codeEl.innerText;
+  }
+  const clipboard = new window.ClipboardJS('.code-copy-button:not([data-in-quarto-modal])', {
+    text: getTextToCopy
+  });
+  clipboard.on('success', onCopySuccess);
+  if (window.document.getElementById('quarto-embedded-source-code-modal')) {
+    // For code content inside modals, clipBoardJS needs to be initialized with a container option
+    // TODO: Check when it could be a function (https://github.com/zenorocha/clipboard.js/issues/860)
+    const clipboardModal = new window.ClipboardJS('.code-copy-button[data-in-quarto-modal]', {
+      text: getTextToCopy,
+      container: window.document.getElementById('quarto-embedded-source-code-modal')
+    });
+    clipboardModal.on('success', onCopySuccess);
+  }
+  const viewSource = window.document.getElementById('quarto-view-source') ||
+                     window.document.getElementById('quarto-code-tools-source');
+  if (viewSource) {
+    const sourceUrl = viewSource.getAttribute("data-quarto-source-url");
+    viewSource.addEventListener("click", function(e) {
+      if (sourceUrl) {
+        // rstudio viewer pane
+        if (/\bcapabilities=\b/.test(window.location)) {
+          window.open(sourceUrl);
+        } else {
+          window.location.href = sourceUrl;
+        }
+      } else {
+        const modal = new bootstrap.Modal(document.getElementById('quarto-embedded-source-code-modal'));
+        modal.show();
+      }
+      return false;
+    });
+  }
+  function toggleCodeHandler(show) {
+    return function(e) {
+      const detailsSrc = window.document.querySelectorAll(".cell > details > .sourceCode");
+      for (let i=0; i<detailsSrc.length; i++) {
+        const details = detailsSrc[i].parentElement;
+        if (show) {
+          details.open = true;
+        } else {
+          details.removeAttribute("open");
+        }
+      }
+      const cellCodeDivs = window.document.querySelectorAll(".cell > .sourceCode");
+      const fromCls = show ? "hidden" : "unhidden";
+      const toCls = show ? "unhidden" : "hidden";
+      for (let i=0; i<cellCodeDivs.length; i++) {
+        const codeDiv = cellCodeDivs[i];
+        if (codeDiv.classList.contains(fromCls)) {
+          codeDiv.classList.remove(fromCls);
+          codeDiv.classList.add(toCls);
+        } 
+      }
+      return false;
+    }
+  }
+  const hideAllCode = window.document.getElementById("quarto-hide-all-code");
+  if (hideAllCode) {
+    hideAllCode.addEventListener("click", toggleCodeHandler(false));
+  }
+  const showAllCode = window.document.getElementById("quarto-show-all-code");
+  if (showAllCode) {
+    showAllCode.addEventListener("click", toggleCodeHandler(true));
+  }
+    var localhostRegex = new RegExp(/^(?:http|https):\/\/localhost\:?[0-9]*\//);
+    var mailtoRegex = new RegExp(/^mailto:/);
+      var filterRegex = new RegExp('/' + window.location.host + '/');
+    var isInternal = (href) => {
+        return filterRegex.test(href) || localhostRegex.test(href) || mailtoRegex.test(href);
+    }
+    // Inspect non-navigation links and adorn them if external
+ 	var links = window.document.querySelectorAll('a[href]:not(.nav-link):not(.navbar-brand):not(.toc-action):not(.sidebar-link):not(.sidebar-item-toggle):not(.pagination-link):not(.no-external):not([aria-hidden]):not(.dropdown-item):not(.quarto-navigation-tool):not(.about-link)');
+    for (var i=0; i<links.length; i++) {
+      const link = links[i];
+      if (!isInternal(link.href)) {
+        // undo the damage that might have been done by quarto-nav.js in the case of
+        // links that we want to consider external
+        if (link.dataset.originalHref !== undefined) {
+          link.href = link.dataset.originalHref;
+        }
+      }
+    }
+  function tippyHover(el, contentFn, onTriggerFn, onUntriggerFn) {
+    const config = {
+      allowHTML: true,
+      maxWidth: 500,
+      delay: 100,
+      arrow: false,
+      appendTo: function(el) {
+          return el.parentElement;
+      },
+      interactive: true,
+      interactiveBorder: 10,
+      theme: 'quarto',
+      placement: 'bottom-start',
+    };
+    if (contentFn) {
+      config.content = contentFn;
+    }
+    if (onTriggerFn) {
+      config.onTrigger = onTriggerFn;
+    }
+    if (onUntriggerFn) {
+      config.onUntrigger = onUntriggerFn;
+    }
+    window.tippy(el, config); 
+  }
+  const noterefs = window.document.querySelectorAll('a[role="doc-noteref"]');
+  for (var i=0; i<noterefs.length; i++) {
+    const ref = noterefs[i];
+    tippyHover(ref, function() {
+      // use id or data attribute instead here
+      let href = ref.getAttribute('data-footnote-href') || ref.getAttribute('href');
+      try { href = new URL(href).hash; } catch {}
+      const id = href.replace(/^#\/?/, "");
+      const note = window.document.getElementById(id);
+      if (note) {
+        return note.innerHTML;
+      } else {
+        return "";
+      }
+    });
+  }
+  const xrefs = window.document.querySelectorAll('a.quarto-xref');
+  const processXRef = (id, note) => {
+    // Strip column container classes
+    const stripColumnClz = (el) => {
+      el.classList.remove("page-full", "page-columns");
+      if (el.children) {
+        for (const child of el.children) {
+          stripColumnClz(child);
+        }
+      }
+    }
+    stripColumnClz(note)
+    if (id === null || id.startsWith('sec-')) {
+      // Special case sections, only their first couple elements
+      const container = document.createElement("div");
+      if (note.children && note.children.length > 2) {
+        container.appendChild(note.children[0].cloneNode(true));
+        for (let i = 1; i < note.children.length; i++) {
+          const child = note.children[i];
+          if (child.tagName === "P" && child.innerText === "") {
+            continue;
+          } else {
+            container.appendChild(child.cloneNode(true));
+            break;
+          }
+        }
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(container);
+        }
+        return container.innerHTML
+      } else {
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(note);
+        }
+        return note.innerHTML;
+      }
+    } else {
+      // Remove any anchor links if they are present
+      const anchorLink = note.querySelector('a.anchorjs-link');
+      if (anchorLink) {
+        anchorLink.remove();
+      }
+      if (window.Quarto?.typesetMath) {
+        window.Quarto.typesetMath(note);
+      }
+      // TODO in 1.5, we should make sure this works without a callout special case
+      if (note.classList.contains("callout")) {
+        return note.outerHTML;
+      } else {
+        return note.innerHTML;
+      }
+    }
+  }
+  for (var i=0; i<xrefs.length; i++) {
+    const xref = xrefs[i];
+    tippyHover(xref, undefined, function(instance) {
+      instance.disable();
+      let url = xref.getAttribute('href');
+      let hash = undefined; 
+      if (url.startsWith('#')) {
+        hash = url;
+      } else {
+        try { hash = new URL(url).hash; } catch {}
+      }
+      if (hash) {
+        const id = hash.replace(/^#\/?/, "");
+        const note = window.document.getElementById(id);
+        if (note !== null) {
+          try {
+            const html = processXRef(id, note.cloneNode(true));
+            instance.setContent(html);
+          } finally {
+            instance.enable();
+            instance.show();
+          }
+        } else {
+          // See if we can fetch this
+          fetch(url.split('#')[0])
+          .then(res => res.text())
+          .then(html => {
+            const parser = new DOMParser();
+            const htmlDoc = parser.parseFromString(html, "text/html");
+            const note = htmlDoc.getElementById(id);
+            if (note !== null) {
+              const html = processXRef(id, note);
+              instance.setContent(html);
+            } 
+          }).finally(() => {
+            instance.enable();
+            instance.show();
+          });
+        }
+      } else {
+        // See if we can fetch a full url (with no hash to target)
+        // This is a special case and we should probably do some content thinning / targeting
+        fetch(url)
+        .then(res => res.text())
+        .then(html => {
+          const parser = new DOMParser();
+          const htmlDoc = parser.parseFromString(html, "text/html");
+          const note = htmlDoc.querySelector('main.content');
+          if (note !== null) {
+            // This should only happen for chapter cross references
+            // (since there is no id in the URL)
+            // remove the first header
+            if (note.children.length > 0 && note.children[0].tagName === "HEADER") {
+              note.children[0].remove();
+            }
+            const html = processXRef(null, note);
+            instance.setContent(html);
+          } 
+        }).finally(() => {
+          instance.enable();
+          instance.show();
+        });
+      }
+    }, function(instance) {
+    });
+  }
+      let selectedAnnoteEl;
+      const selectorForAnnotation = ( cell, annotation) => {
+        let cellAttr = 'data-code-cell="' + cell + '"';
+        let lineAttr = 'data-code-annotation="' +  annotation + '"';
+        const selector = 'span[' + cellAttr + '][' + lineAttr + ']';
+        return selector;
+      }
+      const selectCodeLines = (annoteEl) => {
+        const doc = window.document;
+        const targetCell = annoteEl.getAttribute("data-target-cell");
+        const targetAnnotation = annoteEl.getAttribute("data-target-annotation");
+        const annoteSpan = window.document.querySelector(selectorForAnnotation(targetCell, targetAnnotation));
+        const lines = annoteSpan.getAttribute("data-code-lines").split(",");
+        const lineIds = lines.map((line) => {
+          return targetCell + "-" + line;
+        })
+        let top = null;
+        let height = null;
+        let parent = null;
+        if (lineIds.length > 0) {
+            //compute the position of the single el (top and bottom and make a div)
+            const el = window.document.getElementById(lineIds[0]);
+            top = el.offsetTop;
+            height = el.offsetHeight;
+            parent = el.parentElement.parentElement;
+          if (lineIds.length > 1) {
+            const lastEl = window.document.getElementById(lineIds[lineIds.length - 1]);
+            const bottom = lastEl.offsetTop + lastEl.offsetHeight;
+            height = bottom - top;
+          }
+          if (top !== null && height !== null && parent !== null) {
+            // cook up a div (if necessary) and position it 
+            let div = window.document.getElementById("code-annotation-line-highlight");
+            if (div === null) {
+              div = window.document.createElement("div");
+              div.setAttribute("id", "code-annotation-line-highlight");
+              div.style.position = 'absolute';
+              parent.appendChild(div);
+            }
+            div.style.top = top - 2 + "px";
+            div.style.height = height + 4 + "px";
+            div.style.left = 0;
+            let gutterDiv = window.document.getElementById("code-annotation-line-highlight-gutter");
+            if (gutterDiv === null) {
+              gutterDiv = window.document.createElement("div");
+              gutterDiv.setAttribute("id", "code-annotation-line-highlight-gutter");
+              gutterDiv.style.position = 'absolute';
+              const codeCell = window.document.getElementById(targetCell);
+              const gutter = codeCell.querySelector('.code-annotation-gutter');
+              gutter.appendChild(gutterDiv);
+            }
+            gutterDiv.style.top = top - 2 + "px";
+            gutterDiv.style.height = height + 4 + "px";
+          }
+          selectedAnnoteEl = annoteEl;
+        }
+      };
+      const unselectCodeLines = () => {
+        const elementsIds = ["code-annotation-line-highlight", "code-annotation-line-highlight-gutter"];
+        elementsIds.forEach((elId) => {
+          const div = window.document.getElementById(elId);
+          if (div) {
+            div.remove();
+          }
+        });
+        selectedAnnoteEl = undefined;
+      };
+        // Handle positioning of the toggle
+    window.addEventListener(
+      "resize",
+      throttle(() => {
+        elRect = undefined;
+        if (selectedAnnoteEl) {
+          selectCodeLines(selectedAnnoteEl);
+        }
+      }, 10)
+    );
+    function throttle(fn, ms) {
+    let throttle = false;
+    let timer;
+      return (...args) => {
+        if(!throttle) { // first call gets through
+            fn.apply(this, args);
+            throttle = true;
+        } else { // all the others get throttled
+            if(timer) clearTimeout(timer); // cancel #2
+            timer = setTimeout(() => {
+              fn.apply(this, args);
+              timer = throttle = false;
+            }, ms);
+        }
+      };
+    }
+      // Attach click handler to the DT
+      const annoteDls = window.document.querySelectorAll('dt[data-target-cell]');
+      for (const annoteDlNode of annoteDls) {
+        annoteDlNode.addEventListener('click', (event) => {
+          const clickedEl = event.target;
+          if (clickedEl !== selectedAnnoteEl) {
+            unselectCodeLines();
+            const activeEl = window.document.querySelector('dt[data-target-cell].code-annotation-active');
+            if (activeEl) {
+              activeEl.classList.remove('code-annotation-active');
+            }
+            selectCodeLines(clickedEl);
+            clickedEl.classList.add('code-annotation-active');
+          } else {
+            // Unselect the line
+            unselectCodeLines();
+            clickedEl.classList.remove('code-annotation-active');
+          }
+        });
+      }
+  const findCites = (el) => {
+    const parentEl = el.parentElement;
+    if (parentEl) {
+      const cites = parentEl.dataset.cites;
+      if (cites) {
+        return {
+          el,
+          cites: cites.split(' ')
+        };
+      } else {
+        return findCites(el.parentElement)
+      }
+    } else {
+      return undefined;
+    }
+  };
+  var bibliorefs = window.document.querySelectorAll('a[role="doc-biblioref"]');
+  for (var i=0; i<bibliorefs.length; i++) {
+    const ref = bibliorefs[i];
+    const citeInfo = findCites(ref);
+    if (citeInfo) {
+      tippyHover(citeInfo.el, function() {
+        var popup = window.document.createElement('div');
+        citeInfo.cites.forEach(function(cite) {
+          var citeDiv = window.document.createElement('div');
+          citeDiv.classList.add('hanging-indent');
+          citeDiv.classList.add('csl-entry');
+          var biblioDiv = window.document.getElementById('ref-' + cite);
+          if (biblioDiv) {
+            citeDiv.innerHTML = biblioDiv.innerHTML;
+          }
+          popup.appendChild(citeDiv);
+        });
+        return popup.innerHTML;
+      });
+    }
+  }
+});
+</script>
+<nav class="page-navigation">
+  <div class="nav-page nav-page-previous">
+      <a href="../../book/02-basic-nn/07-rmsnorm.html" class="pagination-link" aria-label="Chapter 7: RMSNorm">
+        <i class="bi bi-arrow-left-short"></i> <span class="nav-page-text"><span class="chapter-number">9</span>&nbsp; <span class="chapter-title">Chapter 7: RMSNorm</span></span>
+      </a>          
+  </div>
+  <div class="nav-page nav-page-next">
+      <a href="../../book/03-matmul/09-matmul.html" class="pagination-link" aria-label="Chapter 9: Matmul From Scratch">
+        <span class="nav-page-text"><span class="chapter-number">11</span>&nbsp; <span class="chapter-title">Chapter 9: Matmul From Scratch</span></span> <i class="bi bi-arrow-right-short"></i>
+      </a>
+  </div>
+</nav><div class="modal fade" id="quarto-embedded-source-code-modal" tabindex="-1" aria-labelledby="quarto-embedded-source-code-modal-label" aria-hidden="true"><div class="modal-dialog modal-dialog-scrollable"><div class="modal-content"><div class="modal-header"><h5 class="modal-title" id="quarto-embedded-source-code-modal-label">Source Code</h5><button class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><div class="">
+<div class="sourceCode" id="cb9" data-shortcodes="false"><pre class="sourceCode markdown code-with-copy"><code class="sourceCode markdown"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="co">---</span></span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a><span class="an">title:</span><span class="co"> "Chapter 8: Activation Functions and Gated MLPs"</span></span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a><span class="co">---</span></span>
+<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-5"><a href="#cb9-5" aria-hidden="true" tabindex="-1"></a>Activation kernels are the simplest possible Triton kernels — pure elementwise, one read, one write, no reduction, no inter-program coordination. That is also why this chapter exists: they are the right place to internalize the basic launcher template before we start building anything stateful.</span>
+<span id="cb9-6"><a href="#cb9-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-7"><a href="#cb9-7" aria-hidden="true" tabindex="-1"></a>The honest framing for this chapter: activations are memory-bound, <span class="in">`torch.compile`</span> is excellent at memory-bound elementwise ops, and you should expect to *tie* the compiled baseline, not beat it. The reason to write these kernels yourself is not standalone speed; it is so you can fuse them into the matmul epilogue (Chapter 10) and the gated MLP (Chapter 19), where <span class="in">`torch.compile`</span> cannot reach.</span>
+<span id="cb9-8"><a href="#cb9-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-9"><a href="#cb9-9" aria-hidden="true" tabindex="-1"></a><span class="fu">## What we are building</span></span>
+<span id="cb9-10"><a href="#cb9-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-11"><a href="#cb9-11" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**GELU**: exact (via <span class="in">`erf`</span>) and tanh approximation.</span>
+<span id="cb9-12"><a href="#cb9-12" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**SiLU / Swish**: <span class="in">`x * sigmoid(x)`</span>.</span>
+<span id="cb9-13"><a href="#cb9-13" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**ReLU**: as a one-line exercise.</span>
+<span id="cb9-14"><a href="#cb9-14" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**SwiGLU**: <span class="in">`silu(x_gate) * x_up`</span>.</span>
+<span id="cb9-15"><a href="#cb9-15" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**GEGLU**: <span class="in">`gelu(x_gate) * x_up`</span>.</span>
+<span id="cb9-16"><a href="#cb9-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-17"><a href="#cb9-17" aria-hidden="true" tabindex="-1"></a>LLaMA, Mistral, Gemma, Qwen all use SwiGLU. GEGLU shows up in T5-v1.1, Gemini's MLPs, and a few others. The pattern is: the MLP's first linear projects to <span class="in">`2 * d_ff`</span>, you split into halves, gate one with an activation, multiply, project back to <span class="in">`d_model`</span>.</span>
+<span id="cb9-18"><a href="#cb9-18" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-19"><a href="#cb9-19" aria-hidden="true" tabindex="-1"></a><span class="fu">## Where these kernels actually live</span></span>
+<span id="cb9-20"><a href="#cb9-20" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-21"><a href="#cb9-21" aria-hidden="true" tabindex="-1"></a>Most production setups fuse activations into the producer matmul's epilogue — the elementwise op happens in registers right after the dot product, before the C tile is stored. That gives you the activation for free in terms of memory traffic. We cover epilogue fusion in Chapter 10. But there are still cases where a standalone activation kernel is the right thing: pre-norm inputs, attention output projections, anywhere the activation is between two ops you do not own.</span>
+<span id="cb9-22"><a href="#cb9-22" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-23"><a href="#cb9-23" aria-hidden="true" tabindex="-1"></a><span class="fu">### PyTorch reference</span></span>
+<span id="cb9-24"><a href="#cb9-24" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-25"><a href="#cb9-25" aria-hidden="true" tabindex="-1"></a><span class="in">```{.python}</span></span>
+<span id="cb9-26"><a href="#cb9-26" aria-hidden="true" tabindex="-1"></a><span class="in">import torch.nn.functional as F</span></span>
+<span id="cb9-27"><a href="#cb9-27" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-28"><a href="#cb9-28" aria-hidden="true" tabindex="-1"></a><span class="in">def pytorch_gelu(x, approximate="none"):</span></span>
+<span id="cb9-29"><a href="#cb9-29" aria-hidden="true" tabindex="-1"></a><span class="in">    return F.gelu(x, approximate=approximate)</span></span>
+<span id="cb9-30"><a href="#cb9-30" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-31"><a href="#cb9-31" aria-hidden="true" tabindex="-1"></a><span class="in">def pytorch_silu(x):</span></span>
+<span id="cb9-32"><a href="#cb9-32" aria-hidden="true" tabindex="-1"></a><span class="in">    return F.silu(x)</span></span>
+<span id="cb9-33"><a href="#cb9-33" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-34"><a href="#cb9-34" aria-hidden="true" tabindex="-1"></a><span class="in">def pytorch_swiglu(x_gate, x_up):</span></span>
+<span id="cb9-35"><a href="#cb9-35" aria-hidden="true" tabindex="-1"></a><span class="in">    return F.silu(x_gate) * x_up</span></span>
+<span id="cb9-36"><a href="#cb9-36" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb9-37"><a href="#cb9-37" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-38"><a href="#cb9-38" aria-hidden="true" tabindex="-1"></a><span class="in">`F.gelu`</span>'s <span class="in">`approximate`</span> argument toggles between the exact form ($0.5 x (1 + \text{erf}(x/\sqrt{2}))$) and the tanh approximation Hendrycks and Gimpel proposed ($0.5 x (1 + \tanh(\sqrt{2/\pi}(x + 0.044715 x^3)))$). Most pretrained checkpoints use the tanh form because it was the only one available when they were trained; new code should match the checkpoint.</span>
+<span id="cb9-39"><a href="#cb9-39" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-40"><a href="#cb9-40" aria-hidden="true" tabindex="-1"></a><span class="fu">### Triton implementation</span></span>
+<span id="cb9-41"><a href="#cb9-41" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-42"><a href="#cb9-42" aria-hidden="true" tabindex="-1"></a><span class="fu">#### GELU</span></span>
+<span id="cb9-43"><a href="#cb9-43" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-44"><a href="#cb9-44" aria-hidden="true" tabindex="-1"></a><span class="in">```{.python}</span></span>
+<span id="cb9-45"><a href="#cb9-45" aria-hidden="true" tabindex="-1"></a><span class="in">import math</span></span>
+<span id="cb9-46"><a href="#cb9-46" aria-hidden="true" tabindex="-1"></a><span class="in">import triton</span></span>
+<span id="cb9-47"><a href="#cb9-47" aria-hidden="true" tabindex="-1"></a><span class="in">import triton.language as tl</span></span>
+<span id="cb9-48"><a href="#cb9-48" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-49"><a href="#cb9-49" aria-hidden="true" tabindex="-1"></a><span class="in">_INV_SQRT2 = 1.0 / math.sqrt(2.0)</span></span>
+<span id="cb9-50"><a href="#cb9-50" aria-hidden="true" tabindex="-1"></a><span class="in">_SQRT_2_OVER_PI = math.sqrt(2.0 / math.pi)</span></span>
+<span id="cb9-51"><a href="#cb9-51" aria-hidden="true" tabindex="-1"></a><span class="in">_COEFF = 0.044715</span></span>
+<span id="cb9-52"><a href="#cb9-52" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-53"><a href="#cb9-53" aria-hidden="true" tabindex="-1"></a><span class="in">@triton.jit</span></span>
+<span id="cb9-54"><a href="#cb9-54" aria-hidden="true" tabindex="-1"></a><span class="in">def _gelu_kernel(</span></span>
+<span id="cb9-55"><a href="#cb9-55" aria-hidden="true" tabindex="-1"></a><span class="in">    x_ptr, y_ptr, N,</span></span>
+<span id="cb9-56"><a href="#cb9-56" aria-hidden="true" tabindex="-1"></a><span class="in">    BLOCK_SIZE: tl.constexpr,</span></span>
+<span id="cb9-57"><a href="#cb9-57" aria-hidden="true" tabindex="-1"></a><span class="in">    APPROX: tl.constexpr,</span></span>
+<span id="cb9-58"><a href="#cb9-58" aria-hidden="true" tabindex="-1"></a><span class="in">    INV_SQRT2: tl.constexpr,</span></span>
+<span id="cb9-59"><a href="#cb9-59" aria-hidden="true" tabindex="-1"></a><span class="in">    SQRT_2_OVER_PI: tl.constexpr,</span></span>
+<span id="cb9-60"><a href="#cb9-60" aria-hidden="true" tabindex="-1"></a><span class="in">    COEFF: tl.constexpr,</span></span>
+<span id="cb9-61"><a href="#cb9-61" aria-hidden="true" tabindex="-1"></a><span class="in">):</span></span>
+<span id="cb9-62"><a href="#cb9-62" aria-hidden="true" tabindex="-1"></a><span class="in">    pid = tl.program_id(0)</span></span>
+<span id="cb9-63"><a href="#cb9-63" aria-hidden="true" tabindex="-1"></a><span class="in">    offs = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)</span></span>
+<span id="cb9-64"><a href="#cb9-64" aria-hidden="true" tabindex="-1"></a><span class="in">    mask = offs &lt; N</span></span>
+<span id="cb9-65"><a href="#cb9-65" aria-hidden="true" tabindex="-1"></a><span class="in">    x = tl.load(x_ptr + offs, mask=mask, other=0.0).to(tl.float32)</span></span>
+<span id="cb9-66"><a href="#cb9-66" aria-hidden="true" tabindex="-1"></a><span class="in">    if APPROX == 0:</span></span>
+<span id="cb9-67"><a href="#cb9-67" aria-hidden="true" tabindex="-1"></a><span class="in">        y = 0.5 * x * (1.0 + tl.erf(x * INV_SQRT2))</span></span>
+<span id="cb9-68"><a href="#cb9-68" aria-hidden="true" tabindex="-1"></a><span class="in">    else:</span></span>
+<span id="cb9-69"><a href="#cb9-69" aria-hidden="true" tabindex="-1"></a><span class="in">        inner = SQRT_2_OVER_PI * (x + COEFF * x * x * x)</span></span>
+<span id="cb9-70"><a href="#cb9-70" aria-hidden="true" tabindex="-1"></a><span class="in">        # tanh(z) = 2 sigmoid(2z) - 1, written out so it compiles on older</span></span>
+<span id="cb9-71"><a href="#cb9-71" aria-hidden="true" tabindex="-1"></a><span class="in">        # Triton versions that lack tl.tanh.</span></span>
+<span id="cb9-72"><a href="#cb9-72" aria-hidden="true" tabindex="-1"></a><span class="in">        y = 0.5 * x * (1.0 + 2.0 / (1.0 + tl.exp(-2.0 * inner)) - 1.0)</span></span>
+<span id="cb9-73"><a href="#cb9-73" aria-hidden="true" tabindex="-1"></a><span class="in">    in_dtype = tl.load(x_ptr + offs, mask=mask, other=0.0).dtype</span></span>
+<span id="cb9-74"><a href="#cb9-74" aria-hidden="true" tabindex="-1"></a><span class="in">    tl.store(y_ptr + offs, y.to(in_dtype), mask=mask)</span></span>
+<span id="cb9-75"><a href="#cb9-75" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb9-76"><a href="#cb9-76" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-77"><a href="#cb9-77" aria-hidden="true" tabindex="-1"></a><span class="in">`APPROX`</span> is a <span class="in">`tl.constexpr`</span> so the <span class="in">`if`</span> resolves at compile time — there is no branch in the generated code, you get the right code path baked in. The same trick will appear in matmul epilogues (Chapter 10) and FlashAttention (Chapter 14) for things like causal-mask toggles.</span>
+<span id="cb9-78"><a href="#cb9-78" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-79"><a href="#cb9-79" aria-hidden="true" tabindex="-1"></a><span class="in">`INV_SQRT2`</span> and friends are also <span class="in">`tl.constexpr`</span>; we hand them in as kernel arguments rather than importing <span class="in">`math`</span> inside the kernel, because Triton kernels run in their own narrow Python-like environment that does not have full Python imports.</span>
+<span id="cb9-80"><a href="#cb9-80" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-81"><a href="#cb9-81" aria-hidden="true" tabindex="-1"></a><span class="fu">#### SiLU</span></span>
+<span id="cb9-82"><a href="#cb9-82" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-83"><a href="#cb9-83" aria-hidden="true" tabindex="-1"></a><span class="in">```{.python}</span></span>
+<span id="cb9-84"><a href="#cb9-84" aria-hidden="true" tabindex="-1"></a><span class="in">@triton.jit</span></span>
+<span id="cb9-85"><a href="#cb9-85" aria-hidden="true" tabindex="-1"></a><span class="in">def _silu_kernel(x_ptr, y_ptr, N, BLOCK_SIZE: tl.constexpr):</span></span>
+<span id="cb9-86"><a href="#cb9-86" aria-hidden="true" tabindex="-1"></a><span class="in">    pid = tl.program_id(0)</span></span>
+<span id="cb9-87"><a href="#cb9-87" aria-hidden="true" tabindex="-1"></a><span class="in">    offs = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)</span></span>
+<span id="cb9-88"><a href="#cb9-88" aria-hidden="true" tabindex="-1"></a><span class="in">    mask = offs &lt; N</span></span>
+<span id="cb9-89"><a href="#cb9-89" aria-hidden="true" tabindex="-1"></a><span class="in">    x = tl.load(x_ptr + offs, mask=mask, other=0.0).to(tl.float32)</span></span>
+<span id="cb9-90"><a href="#cb9-90" aria-hidden="true" tabindex="-1"></a><span class="in">    y = x * (1.0 / (1.0 + tl.exp(-x)))</span></span>
+<span id="cb9-91"><a href="#cb9-91" aria-hidden="true" tabindex="-1"></a><span class="in">    in_dtype = tl.load(x_ptr + offs, mask=mask, other=0.0).dtype</span></span>
+<span id="cb9-92"><a href="#cb9-92" aria-hidden="true" tabindex="-1"></a><span class="in">    tl.store(y_ptr + offs, y.to(in_dtype), mask=mask)</span></span>
+<span id="cb9-93"><a href="#cb9-93" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb9-94"><a href="#cb9-94" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-95"><a href="#cb9-95" aria-hidden="true" tabindex="-1"></a>Pure elementwise. The fp32 cast guards against the edge case where <span class="in">`exp(-x)`</span> for very negative <span class="in">`x`</span> underflows to zero in fp16 — fine here (you just get <span class="in">`x * 1 = x`</span>), but the habit is correct.</span>
+<span id="cb9-96"><a href="#cb9-96" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-97"><a href="#cb9-97" aria-hidden="true" tabindex="-1"></a><span class="fu">#### SwiGLU</span></span>
+<span id="cb9-98"><a href="#cb9-98" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-99"><a href="#cb9-99" aria-hidden="true" tabindex="-1"></a><span class="in">```{.python}</span></span>
+<span id="cb9-100"><a href="#cb9-100" aria-hidden="true" tabindex="-1"></a><span class="in">@triton.jit</span></span>
+<span id="cb9-101"><a href="#cb9-101" aria-hidden="true" tabindex="-1"></a><span class="in">def _swiglu_kernel(g_ptr, u_ptr, y_ptr, N, BLOCK_SIZE: tl.constexpr):</span></span>
+<span id="cb9-102"><a href="#cb9-102" aria-hidden="true" tabindex="-1"></a><span class="in">    pid = tl.program_id(0)</span></span>
+<span id="cb9-103"><a href="#cb9-103" aria-hidden="true" tabindex="-1"></a><span class="in">    offs = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)</span></span>
+<span id="cb9-104"><a href="#cb9-104" aria-hidden="true" tabindex="-1"></a><span class="in">    mask = offs &lt; N</span></span>
+<span id="cb9-105"><a href="#cb9-105" aria-hidden="true" tabindex="-1"></a><span class="in">    g = tl.load(g_ptr + offs, mask=mask, other=0.0).to(tl.float32)</span></span>
+<span id="cb9-106"><a href="#cb9-106" aria-hidden="true" tabindex="-1"></a><span class="in">    u = tl.load(u_ptr + offs, mask=mask, other=0.0).to(tl.float32)</span></span>
+<span id="cb9-107"><a href="#cb9-107" aria-hidden="true" tabindex="-1"></a><span class="in">    silu_g = g * (1.0 / (1.0 + tl.exp(-g)))</span></span>
+<span id="cb9-108"><a href="#cb9-108" aria-hidden="true" tabindex="-1"></a><span class="in">    y = silu_g * u</span></span>
+<span id="cb9-109"><a href="#cb9-109" aria-hidden="true" tabindex="-1"></a><span class="in">    in_dtype = tl.load(g_ptr + offs, mask=mask, other=0.0).dtype</span></span>
+<span id="cb9-110"><a href="#cb9-110" aria-hidden="true" tabindex="-1"></a><span class="in">    tl.store(y_ptr + offs, y.to(in_dtype), mask=mask)</span></span>
+<span id="cb9-111"><a href="#cb9-111" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb9-112"><a href="#cb9-112" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-113"><a href="#cb9-113" aria-hidden="true" tabindex="-1"></a>Two reads, one write. The kernel structure is identical to SiLU; the only difference is that we load a second tensor and multiply at the end. GEGLU swaps in GELU; same structure.</span>
+<span id="cb9-114"><a href="#cb9-114" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-115"><a href="#cb9-115" aria-hidden="true" tabindex="-1"></a><span class="fu">### Shape trace</span></span>
+<span id="cb9-116"><a href="#cb9-116" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-117"><a href="#cb9-117" aria-hidden="true" tabindex="-1"></a>Elementwise. Pick <span class="in">`x: (N,)`</span> flat for simplicity; the launcher reshapes any-rank inputs to 1D and the kernel does not care about shape past the total element count.</span>
+<span id="cb9-118"><a href="#cb9-118" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-119"><a href="#cb9-119" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb9-120"><a href="#cb9-120" aria-hidden="true" tabindex="-1"></a><span class="in">Input:                       x   : (N,)           fp16</span></span>
+<span id="cb9-121"><a href="#cb9-121" aria-hidden="true" tabindex="-1"></a><span class="in">Program owns:                BLOCK_SIZE elements  (axis=0 grid, size ceil(N / BLOCK_SIZE))</span></span>
+<span id="cb9-122"><a href="#cb9-122" aria-hidden="true" tabindex="-1"></a><span class="in">pid = tl.program_id(0)       scalar               int32</span></span>
+<span id="cb9-123"><a href="#cb9-123" aria-hidden="true" tabindex="-1"></a><span class="in">offs = pid * BS + range(0,BS) (BS,)               int32</span></span>
+<span id="cb9-124"><a href="#cb9-124" aria-hidden="true" tabindex="-1"></a><span class="in">mask = offs &lt; N              (BS,)                bool</span></span>
+<span id="cb9-125"><a href="#cb9-125" aria-hidden="true" tabindex="-1"></a><span class="in">x = tl.load(x_ptr + offs)    (BS,)                fp16</span></span>
+<span id="cb9-126"><a href="#cb9-126" aria-hidden="true" tabindex="-1"></a><span class="in">x = x.to(tl.float32)         (BS,)                fp32</span></span>
+<span id="cb9-127"><a href="#cb9-127" aria-hidden="true" tabindex="-1"></a><span class="in">y = activation(x)            (BS,)                fp32</span></span>
+<span id="cb9-128"><a href="#cb9-128" aria-hidden="true" tabindex="-1"></a><span class="in">y_fp16 = y.to(fp16)          (BS,)                fp16</span></span>
+<span id="cb9-129"><a href="#cb9-129" aria-hidden="true" tabindex="-1"></a><span class="in">tl.store(y_ptr + offs, y_fp16, mask)</span></span>
+<span id="cb9-130"><a href="#cb9-130" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb9-131"><a href="#cb9-131" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-132"><a href="#cb9-132" aria-hidden="true" tabindex="-1"></a>For SwiGLU, the trace is the same but with two loads — <span class="in">`g`</span> and <span class="in">`u`</span> of the same shape.</span>
+<span id="cb9-133"><a href="#cb9-133" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-134"><a href="#cb9-134" aria-hidden="true" tabindex="-1"></a><span class="fu">### Pointer arithmetic and masks</span></span>
+<span id="cb9-135"><a href="#cb9-135" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-136"><a href="#cb9-136" aria-hidden="true" tabindex="-1"></a>Trivial 1D mapping. <span class="in">`offs = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)`</span>. Mask <span class="in">`offs &lt; N`</span>. <span class="in">`other=0.0`</span> is fine on the load because the masked lanes are never written to the output.</span>
+<span id="cb9-137"><a href="#cb9-137" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-138"><a href="#cb9-138" aria-hidden="true" tabindex="-1"></a>For the fused bias variant (exercise 3), the bias is broadcast along the last dim: <span class="in">`bias_idx = offs % D`</span> where <span class="in">`D = x.shape[-1]`</span>. The modulo is cheap; the load pattern is small-vector broadcast, which the compiler handles well.</span>
+<span id="cb9-139"><a href="#cb9-139" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-140"><a href="#cb9-140" aria-hidden="true" tabindex="-1"></a><span class="fu">### Correctness test</span></span>
+<span id="cb9-141"><a href="#cb9-141" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-142"><a href="#cb9-142" aria-hidden="true" tabindex="-1"></a><span class="in">```{.python}</span></span>
+<span id="cb9-143"><a href="#cb9-143" aria-hidden="true" tabindex="-1"></a><span class="in">import pytest, torch</span></span>
+<span id="cb9-144"><a href="#cb9-144" aria-hidden="true" tabindex="-1"></a><span class="in">import torch.nn.functional as F</span></span>
+<span id="cb9-145"><a href="#cb9-145" aria-hidden="true" tabindex="-1"></a><span class="in">from src.ch08_activations import gelu, silu, swiglu, geglu</span></span>
+<span id="cb9-146"><a href="#cb9-146" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-147"><a href="#cb9-147" aria-hidden="true" tabindex="-1"></a><span class="in">pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda only")</span></span>
+<span id="cb9-148"><a href="#cb9-148" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-149"><a href="#cb9-149" aria-hidden="true" tabindex="-1"></a><span class="in">@pytest.mark.parametrize("approximate", ["none", "tanh"])</span></span>
+<span id="cb9-150"><a href="#cb9-150" aria-hidden="true" tabindex="-1"></a><span class="in">@pytest.mark.parametrize("dtype", [torch.float32, torch.float16])</span></span>
+<span id="cb9-151"><a href="#cb9-151" aria-hidden="true" tabindex="-1"></a><span class="in">def test_gelu(approximate, dtype):</span></span>
+<span id="cb9-152"><a href="#cb9-152" aria-hidden="true" tabindex="-1"></a><span class="in">    x = torch.randn(4, 1024 + 1, device="cuda", dtype=dtype)</span></span>
+<span id="cb9-153"><a href="#cb9-153" aria-hidden="true" tabindex="-1"></a><span class="in">    out = gelu(x, approximate=approximate)</span></span>
+<span id="cb9-154"><a href="#cb9-154" aria-hidden="true" tabindex="-1"></a><span class="in">    ref = F.gelu(x, approximate=approximate)</span></span>
+<span id="cb9-155"><a href="#cb9-155" aria-hidden="true" tabindex="-1"></a><span class="in">    rtol, atol = (1e-5, 1e-5) if dtype == torch.float32 else (1e-2, 1e-2)</span></span>
+<span id="cb9-156"><a href="#cb9-156" aria-hidden="true" tabindex="-1"></a><span class="in">    torch.testing.assert_close(out, ref, rtol=rtol, atol=atol)</span></span>
+<span id="cb9-157"><a href="#cb9-157" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb9-158"><a href="#cb9-158" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-159"><a href="#cb9-159" aria-hidden="true" tabindex="-1"></a>The <span class="in">`1024 + 1`</span> shape forces the last tile to be partial; that exercises the mask. Both <span class="in">`approximate`</span> values must pass.</span>
+<span id="cb9-160"><a href="#cb9-160" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-161"><a href="#cb9-161" aria-hidden="true" tabindex="-1"></a><span class="fu">### Benchmark</span></span>
+<span id="cb9-162"><a href="#cb9-162" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-163"><a href="#cb9-163" aria-hidden="true" tabindex="-1"></a><span class="in">```{.python}</span></span>
+<span id="cb9-164"><a href="#cb9-164" aria-hidden="true" tabindex="-1"></a><span class="in">import torch, triton, torch.nn.functional as F</span></span>
+<span id="cb9-165"><a href="#cb9-165" aria-hidden="true" tabindex="-1"></a><span class="in">from src.ch08_activations import gelu, silu, swiglu</span></span>
+<span id="cb9-166"><a href="#cb9-166" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-167"><a href="#cb9-167" aria-hidden="true" tabindex="-1"></a><span class="in">N = 1 &lt;&lt; 24  # 16M elements</span></span>
+<span id="cb9-168"><a href="#cb9-168" aria-hidden="true" tabindex="-1"></a><span class="in">x = torch.randn(N, device="cuda", dtype=torch.float16)</span></span>
+<span id="cb9-169"><a href="#cb9-169" aria-hidden="true" tabindex="-1"></a><span class="in">g = torch.randn(N, device="cuda", dtype=torch.float16)</span></span>
+<span id="cb9-170"><a href="#cb9-170" aria-hidden="true" tabindex="-1"></a><span class="in">u = torch.randn(N, device="cuda", dtype=torch.float16)</span></span>
+<span id="cb9-171"><a href="#cb9-171" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-172"><a href="#cb9-172" aria-hidden="true" tabindex="-1"></a><span class="in">ms_torch    = triton.testing.do_bench(lambda: F.silu(x))</span></span>
+<span id="cb9-173"><a href="#cb9-173" aria-hidden="true" tabindex="-1"></a><span class="in">ms_triton   = triton.testing.do_bench(lambda: silu(x))</span></span>
+<span id="cb9-174"><a href="#cb9-174" aria-hidden="true" tabindex="-1"></a><span class="in">compiled    = torch.compile(F.silu); compiled(x); torch.cuda.synchronize()</span></span>
+<span id="cb9-175"><a href="#cb9-175" aria-hidden="true" tabindex="-1"></a><span class="in">ms_compiled = triton.testing.do_bench(lambda: compiled(x))</span></span>
+<span id="cb9-176"><a href="#cb9-176" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb9-177"><a href="#cb9-177" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-178"><a href="#cb9-178" aria-hidden="true" tabindex="-1"></a>::: {.callout-warning appearance="simple"}</span>
+<span id="cb9-179"><a href="#cb9-179" aria-hidden="true" tabindex="-1"></a>**Placeholder data.** The numbers below are hardcoded illustrative values, not measurements. Replace with output from your own <span class="in">`triton.testing.do_bench`</span> run before drawing conclusions.</span>
+<span id="cb9-180"><a href="#cb9-180" aria-hidden="true" tabindex="-1"></a>:::</span>
+<span id="cb9-181"><a href="#cb9-181" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-184"><a href="#cb9-184" aria-hidden="true" tabindex="-1"></a><span class="in">```{ojs}</span></span>
+<span id="cb9-185"><a href="#cb9-185" aria-hidden="true" tabindex="-1"></a><span class="in">//| echo: false</span></span>
+<span id="cb9-186"><a href="#cb9-186" aria-hidden="true" tabindex="-1"></a><span class="in">//| label: fig-activations-bench</span></span>
+<span id="cb9-187"><a href="#cb9-187" aria-hidden="true" tabindex="-1"></a><span class="in">//| fig-cap: "Activation kernel median latency for N=16M fp16 elements, grouped by kernel. Lower is better. Triton vs eager PyTorch vs torch.compile."</span></span>
+<span id="cb9-188"><a href="#cb9-188" aria-hidden="true" tabindex="-1"></a><span class="in">{</span></span>
+<span id="cb9-189"><a href="#cb9-189" aria-hidden="true" tabindex="-1"></a><span class="in">  const data = [</span></span>
+<span id="cb9-190"><a href="#cb9-190" aria-hidden="true" tabindex="-1"></a><span class="in">    {kernel: "silu",   triton_ms: 0.40, torch_ms: 0.55, compiled_ms: 0.40},</span></span>
+<span id="cb9-191"><a href="#cb9-191" aria-hidden="true" tabindex="-1"></a><span class="in">    {kernel: "gelu",   triton_ms: 0.45, torch_ms: 0.60, compiled_ms: 0.43},</span></span>
+<span id="cb9-192"><a href="#cb9-192" aria-hidden="true" tabindex="-1"></a><span class="in">    {kernel: "swiglu", triton_ms: 0.65, torch_ms: 1.10, compiled_ms: 0.65},</span></span>
+<span id="cb9-193"><a href="#cb9-193" aria-hidden="true" tabindex="-1"></a><span class="in">    {kernel: "geglu",  triton_ms: 0.70, torch_ms: 1.15, compiled_ms: 0.68},</span></span>
+<span id="cb9-194"><a href="#cb9-194" aria-hidden="true" tabindex="-1"></a><span class="in">  ];</span></span>
+<span id="cb9-195"><a href="#cb9-195" aria-hidden="true" tabindex="-1"></a><span class="in">  const long = data.flatMap(d =&gt; [</span></span>
+<span id="cb9-196"><a href="#cb9-196" aria-hidden="true" tabindex="-1"></a><span class="in">    {kernel: d.kernel, impl: "triton",   ms: d.triton_ms},</span></span>
+<span id="cb9-197"><a href="#cb9-197" aria-hidden="true" tabindex="-1"></a><span class="in">    {kernel: d.kernel, impl: "torch",    ms: d.torch_ms},</span></span>
+<span id="cb9-198"><a href="#cb9-198" aria-hidden="true" tabindex="-1"></a><span class="in">    {kernel: d.kernel, impl: "compiled", ms: d.compiled_ms}</span></span>
+<span id="cb9-199"><a href="#cb9-199" aria-hidden="true" tabindex="-1"></a><span class="in">  ]);</span></span>
+<span id="cb9-200"><a href="#cb9-200" aria-hidden="true" tabindex="-1"></a><span class="in">  return Plot.plot({</span></span>
+<span id="cb9-201"><a href="#cb9-201" aria-hidden="true" tabindex="-1"></a><span class="in">    marginLeft: 80,</span></span>
+<span id="cb9-202"><a href="#cb9-202" aria-hidden="true" tabindex="-1"></a><span class="in">    color: {legend: true, domain: ["triton", "torch", "compiled"], range: ["steelblue", "orange", "seagreen"]},</span></span>
+<span id="cb9-203"><a href="#cb9-203" aria-hidden="true" tabindex="-1"></a><span class="in">    y: {label: "median latency (ms, N = 16M fp16) — lower is better"},</span></span>
+<span id="cb9-204"><a href="#cb9-204" aria-hidden="true" tabindex="-1"></a><span class="in">    x: {label: "kernel"},</span></span>
+<span id="cb9-205"><a href="#cb9-205" aria-hidden="true" tabindex="-1"></a><span class="in">    fx: {label: "kernel"},</span></span>
+<span id="cb9-206"><a href="#cb9-206" aria-hidden="true" tabindex="-1"></a><span class="in">    marks: [</span></span>
+<span id="cb9-207"><a href="#cb9-207" aria-hidden="true" tabindex="-1"></a><span class="in">      Plot.barY(long, {fx: "kernel", x: "impl", y: "ms", fill: "impl"})</span></span>
+<span id="cb9-208"><a href="#cb9-208" aria-hidden="true" tabindex="-1"></a><span class="in">    ]</span></span>
+<span id="cb9-209"><a href="#cb9-209" aria-hidden="true" tabindex="-1"></a><span class="in">  });</span></span>
+<span id="cb9-210"><a href="#cb9-210" aria-hidden="true" tabindex="-1"></a><span class="in">}</span></span>
+<span id="cb9-211"><a href="#cb9-211" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb9-212"><a href="#cb9-212" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-213"><a href="#cb9-213" aria-hidden="true" tabindex="-1"></a>Expect <span class="in">`torch.compile`</span> and Triton to land within a few percent of each other. Eager PyTorch loses to both because SwiGLU in eager dispatches three separate kernels (silu, multiply, then maybe a result allocation).</span>
+<span id="cb9-214"><a href="#cb9-214" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-215"><a href="#cb9-215" aria-hidden="true" tabindex="-1"></a><span class="fu">### Optimization discussion</span></span>
+<span id="cb9-216"><a href="#cb9-216" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-217"><a href="#cb9-217" aria-hidden="true" tabindex="-1"></a>These kernels are bandwidth-pinned. The roofline is <span class="in">`bytes_moved / bandwidth`</span>: for SiLU on N=16M fp16, that is 64 MB / 448 GB/s ~= 0.14 ms. Anything from 0.4 to 0.5 ms (what you actually measure) tells you you are running at ~30% of peak — which is roughly what you get when the kernel launches and memory controllers ramp.</span>
+<span id="cb9-218"><a href="#cb9-218" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-219"><a href="#cb9-219" aria-hidden="true" tabindex="-1"></a>Two ways to push further. One: increase <span class="in">`BLOCK_SIZE`</span>. We use 1024; bumping to 4096 reduces launch count by 4x but increases register pressure. Try 2048 first. Two: increase <span class="in">`num_warps`</span> to 8 so the compiler has more latency hiding. Both help marginally; neither is going to bring you past <span class="in">`torch.compile`</span>.</span>
+<span id="cb9-220"><a href="#cb9-220" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-221"><a href="#cb9-221" aria-hidden="true" tabindex="-1"></a>The real optimization is *not in this kernel*. Fuse with the upstream linear (Chapter 10) and the activation costs zero extra HBM traffic. Fuse with a downstream RMSNorm and you save another round trip. Chapter 19 fuses the entire MLP entry: <span class="in">`rmsnorm -&gt; linear -&gt; gate -&gt; silu -&gt; multiply -&gt; linear`</span>. Standalone activations are a stepping stone.</span>
+<span id="cb9-222"><a href="#cb9-222" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-223"><a href="#cb9-223" aria-hidden="true" tabindex="-1"></a><span class="fu">### Common bugs</span></span>
+<span id="cb9-224"><a href="#cb9-224" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-225"><a href="#cb9-225" aria-hidden="true" tabindex="-1"></a><span class="ss">1. </span>**Wrong `approximate` mode.** A model trained with <span class="in">`gelu(approximate="tanh")`</span> and inferred with <span class="in">`approximate="none"`</span> is a measurable regression. Match the checkpoint, exactly.</span>
+<span id="cb9-226"><a href="#cb9-226" aria-hidden="true" tabindex="-1"></a><span class="ss">2. </span>**fp16 sigmoid.** <span class="in">`1 / (1 + exp(-x))`</span> for <span class="in">`x = -100`</span> in fp16: <span class="in">`exp(100)`</span> overflows, the whole thing is <span class="in">`+inf`</span>, the result is <span class="in">`0`</span> — by accident, the right answer. For <span class="in">`x = +100`</span>, <span class="in">`exp(-100) = 0`</span> in fp16, result is <span class="in">`1`</span> — also right by accident. fp16 silu is mostly forgiving, but always cast to fp32 first to make it not depend on accident.</span>
+<span id="cb9-227"><a href="#cb9-227" aria-hidden="true" tabindex="-1"></a><span class="ss">3. </span>**Forgetting the cast back to input dtype on store.** If you store fp32 into an fp16 output buffer, you get garbage values (the store reads four bytes and writes them as if they were a half-precision pair). Always <span class="in">`y.to(in_dtype)`</span> before <span class="in">`tl.store`</span>.</span>
+<span id="cb9-228"><a href="#cb9-228" aria-hidden="true" tabindex="-1"></a><span class="ss">4. </span>**GEGLU/SwiGLU shape mismatch.** The two inputs must have identical shape and dtype. If you accidentally pass <span class="in">`g.shape = (M, D)`</span> and <span class="in">`u.shape = (M, 2D)`</span> (a common bug because the producer linear projects to <span class="in">`2D`</span> and you forgot to split), you read past the end of <span class="in">`g`</span>. Assert the shapes match in the launcher.</span>
+<span id="cb9-229"><a href="#cb9-229" aria-hidden="true" tabindex="-1"></a><span class="ss">5. </span>**Computing `tanh(z)` in fp16 without enough range.** <span class="in">`tanh`</span> saturates around <span class="in">`|z| = 5`</span>. In fp16 that is fine, but if you write the rational form <span class="in">`(e^z - e^{-z}) / (e^z + e^{-z})`</span>, <span class="in">`e^z`</span> for <span class="in">`z = 10`</span> is <span class="in">`22026`</span>, which overflows fp16. Use <span class="in">`2 sigmoid(2z) - 1`</span> (what the kernel above does) or <span class="in">`tl.tanh`</span> directly.</span>
+<span id="cb9-230"><a href="#cb9-230" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-231"><a href="#cb9-231" aria-hidden="true" tabindex="-1"></a><span class="fu">### Exercises</span></span>
+<span id="cb9-232"><a href="#cb9-232" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-233"><a href="#cb9-233" aria-hidden="true" tabindex="-1"></a><span class="fu">#### Beginner</span></span>
+<span id="cb9-234"><a href="#cb9-234" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-235"><a href="#cb9-235" aria-hidden="true" tabindex="-1"></a><span class="ss">1. </span>**GELU exact.** Implement the exact erf-based form. Compare against <span class="in">`F.gelu(x, approximate="none")`</span>.</span>
+<span id="cb9-236"><a href="#cb9-236" aria-hidden="true" tabindex="-1"></a><span class="ss">2. </span>**SiLU.** Implement <span class="in">`x * sigmoid(x)`</span>.</span>
+<span id="cb9-237"><a href="#cb9-237" aria-hidden="true" tabindex="-1"></a><span class="ss">3. </span>**Fused bias + GELU.** Compute <span class="in">`gelu(x + b)`</span> with <span class="in">`b: (D,)`</span> broadcast along the last dim of <span class="in">`x: (..., D)`</span>. Hint: <span class="in">`bias_idx = offs % D`</span>.</span>
+<span id="cb9-238"><a href="#cb9-238" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-239"><a href="#cb9-239" aria-hidden="true" tabindex="-1"></a><span class="fu">#### Intermediate</span></span>
+<span id="cb9-240"><a href="#cb9-240" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-241"><a href="#cb9-241" aria-hidden="true" tabindex="-1"></a><span class="ss">4. </span>**SwiGLU.** Two inputs, one output. Same kernel as SiLU plus one extra load and one multiply.</span>
+<span id="cb9-242"><a href="#cb9-242" aria-hidden="true" tabindex="-1"></a><span class="ss">5. </span>**Linear + bias + activation (skeleton).** Write the launcher signature and the kernel skeleton for <span class="in">`y = gelu(x @ W + b)`</span>. Do NOT implement the matmul body (Chapter 10 does that); just place the activation in the epilogue. The point is to think through where the activation slots in.</span>
+<span id="cb9-243"><a href="#cb9-243" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-244"><a href="#cb9-244" aria-hidden="true" tabindex="-1"></a><span class="fu">#### Advanced</span></span>
+<span id="cb9-245"><a href="#cb9-245" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-246"><a href="#cb9-246" aria-hidden="true" tabindex="-1"></a><span class="ss">6. </span>**GEGLU.** Implement <span class="in">`gelu(g) * u`</span> with both exact and tanh forms of GELU. Benchmark against <span class="in">`F.gelu(g) * u`</span> and <span class="in">`torch.compile(lambda g, u: F.gelu(g) * u)`</span>. Report which variant of GELU is faster and whether either Triton path beats the compiled baseline. Expect a tie; the point is to see the ceiling that pure-elementwise kernels hit.</span>
+<span id="cb9-247"><a href="#cb9-247" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-248"><a href="#cb9-248" aria-hidden="true" tabindex="-1"></a>Worked solutions in <span class="in">`solutions/ch08_solutions.py`</span>.</span>
+</code><button title="Copy to Clipboard" class="code-copy-button" data-in-quarto-modal=""><i class="bi"></i></button></pre></div>
+</div></div></div></div></div>
+</div> <!-- /content -->
+
+
+
+
+</body></html>

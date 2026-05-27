@@ -1,0 +1,1636 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"><head>
+
+<meta charset="utf-8">
+<meta name="generator" content="quarto-1.5.57">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+
+<title>4&nbsp; Chapter 2: The Triton Mental Model – Learning Triton by Rebuilding Modern LLM Kernels</title>
+<style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+  width: 0.8em;
+  margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
+  vertical-align: middle;
+}
+/* CSS for syntax highlighting */
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { display: inline-block; text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+  { counter-reset: source-line 0; }
+pre.numberSource code > span
+  { position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+  { content: counter(source-line);
+    position: relative; left: -1em; text-align: right; vertical-align: baseline;
+    border: none; display: inline-block;
+    -webkit-touch-callout: none; -webkit-user-select: none;
+    -khtml-user-select: none; -moz-user-select: none;
+    -ms-user-select: none; user-select: none;
+    padding: 0 4px; width: 4em;
+  }
+pre.numberSource { margin-left: 3em;  padding-left: 4px; }
+div.sourceCode
+  {   }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+</style>
+
+
+<script src="../../site_libs/quarto-nav/quarto-nav.js"></script>
+<script src="../../site_libs/quarto-nav/headroom.min.js"></script>
+<script src="../../site_libs/clipboard/clipboard.min.js"></script>
+<script src="../../site_libs/quarto-search/autocomplete.umd.js"></script>
+<script src="../../site_libs/quarto-search/fuse.min.js"></script>
+<script src="../../site_libs/quarto-search/quarto-search.js"></script>
+<meta name="quarto:offset" content="../../">
+<link href="../../book/01-fundamentals/03-memory-pointers-strides.html" rel="next">
+<link href="../../book/00-orientation/01-setup.html" rel="prev">
+<script src="../../site_libs/quarto-html/quarto.js"></script>
+<script src="../../site_libs/quarto-html/popper.min.js"></script>
+<script src="../../site_libs/quarto-html/tippy.umd.min.js"></script>
+<script src="../../site_libs/quarto-html/anchor.min.js"></script>
+<link href="../../site_libs/quarto-html/tippy.css" rel="stylesheet">
+<link href="../../site_libs/quarto-html/quarto-syntax-highlighting.css" rel="stylesheet" id="quarto-text-highlighting-styles">
+<script src="../../site_libs/bootstrap/bootstrap.min.js"></script>
+<link href="../../site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
+<link href="../../site_libs/bootstrap/bootstrap.min.css" rel="stylesheet" id="quarto-bootstrap" data-mode="light">
+<script id="quarto-search-options" type="application/json">{
+  "location": "sidebar",
+  "copy-button": false,
+  "collapse-after": 3,
+  "panel-placement": "start",
+  "type": "textbox",
+  "limit": 50,
+  "keyboard-shortcut": [
+    "f",
+    "/",
+    "s"
+  ],
+  "show-item-context": false,
+  "language": {
+    "search-no-results-text": "No results",
+    "search-matching-documents-text": "matching documents",
+    "search-copy-link-title": "Copy link to search",
+    "search-hide-matches-text": "Hide additional matches",
+    "search-more-match-text": "more match in this document",
+    "search-more-matches-text": "more matches in this document",
+    "search-clear-button-title": "Clear",
+    "search-text-placeholder": "",
+    "search-detached-cancel-button-title": "Cancel",
+    "search-submit-button-title": "Submit",
+    "search-label": "Search"
+  }
+}</script>
+<script type="module" src="../../site_libs/quarto-ojs/quarto-ojs-runtime.js"></script>
+<link href="../../site_libs/quarto-ojs/quarto-ojs.css" rel="stylesheet">
+
+
+</head>
+
+<body class="nav-sidebar floating">
+
+<div id="quarto-search-results"></div>
+  <header id="quarto-header" class="headroom fixed-top">
+  <nav class="quarto-secondary-nav">
+    <div class="container-fluid d-flex">
+      <button type="button" class="quarto-btn-toggle btn" data-bs-toggle="collapse" role="button" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">
+        <i class="bi bi-layout-text-sidebar-reverse"></i>
+      </button>
+        <nav class="quarto-page-breadcrumbs" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="../../book/01-fundamentals/02-mental-model.html">Part 1: Triton Fundamentals</a></li><li class="breadcrumb-item"><a href="../../book/01-fundamentals/02-mental-model.html"><span class="chapter-number">4</span>&nbsp; <span class="chapter-title">Chapter 2: The Triton Mental Model</span></a></li></ol></nav>
+        <a class="flex-grow-1" role="navigation" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">      
+        </a>
+      <button type="button" class="btn quarto-search-button" aria-label="Search" onclick="window.quartoOpenSearch();">
+        <i class="bi bi-search"></i>
+      </button>
+    </div>
+  </nav>
+</header>
+<!-- content -->
+<div id="quarto-content" class="quarto-container page-columns page-rows-contents page-layout-article">
+<!-- sidebar -->
+  <nav id="quarto-sidebar" class="sidebar collapse collapse-horizontal quarto-sidebar-collapse-item sidebar-navigation floating overflow-auto">
+    <div class="pt-lg-2 mt-2 text-left sidebar-header">
+    <div class="sidebar-title mb-0 py-0">
+      <a href="../../">Learning Triton by Rebuilding Modern LLM Kernels</a> 
+    </div>
+      </div>
+        <div class="mt-2 flex-shrink-0 align-items-center">
+        <div class="sidebar-search">
+        <div id="quarto-search" class="" title="Search"></div>
+        </div>
+        </div>
+    <div class="sidebar-menu-container"> 
+    <ul class="list-unstyled mt-1">
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../index.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">1</span>&nbsp; <span class="chapter-title">Learning Triton by Rebuilding Modern LLM Kernels</span></span></a>
+  </div>
+</li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-1" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 0: Orientation</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-1" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-1" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/00-orientation/00-why-triton.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">2</span>&nbsp; <span class="chapter-title">Chapter 00: Why Triton Exists</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/00-orientation/01-setup.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">3</span>&nbsp; <span class="chapter-title">Chapter 01: Environment Setup</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-2" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 1: Triton Fundamentals</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-2" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-2" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/01-fundamentals/02-mental-model.html" class="sidebar-item-text sidebar-link active">
+ <span class="menu-text"><span class="chapter-number">4</span>&nbsp; <span class="chapter-title">Chapter 2: The Triton Mental Model</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/01-fundamentals/03-memory-pointers-strides.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">5</span>&nbsp; <span class="chapter-title">Chapter 3: Memory, Pointers, Strides, and Masks</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/01-fundamentals/04-reductions.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">6</span>&nbsp; <span class="chapter-title">Chapter 4: Reductions</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-3" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 2: Basic Neural Network Kernels</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-3" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-3" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/02-basic-nn/05-fused-softmax.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">7</span>&nbsp; <span class="chapter-title">Chapter 5: Fused Softmax</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/02-basic-nn/06-layernorm.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">8</span>&nbsp; <span class="chapter-title">Chapter 6: LayerNorm</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/02-basic-nn/07-rmsnorm.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">9</span>&nbsp; <span class="chapter-title">Chapter 7: RMSNorm</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/02-basic-nn/08-activations-swiglu.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">10</span>&nbsp; <span class="chapter-title">Chapter 8: Activation Functions and Gated MLPs</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-4" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 3: Matrix Multiplication</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-4" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-4" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/03-matmul/09-matmul.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">11</span>&nbsp; <span class="chapter-title">Chapter 9: Matmul From Scratch</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/03-matmul/10-batched-matmul-linear.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">12</span>&nbsp; <span class="chapter-title">Chapter 10: Batched Matmul and Linear Layers</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/03-matmul/11-persistent-matmul.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">13</span>&nbsp; <span class="chapter-title">Chapter 11: Persistent Matmul and Advanced Matmul Concepts</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-5" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 4: Attention and Transformer Kernels</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-5" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-5" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/12-attention-math.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">14</span>&nbsp; <span class="chapter-title">Chapter 12: Attention Math Refresher for Kernel Writers</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/13-naive-attention.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">15</span>&nbsp; <span class="chapter-title">Chapter 13: Naive Attention in PyTorch and Triton Pieces</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/14-flashattention-fwd.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">16</span>&nbsp; <span class="chapter-title">Chapter 14: FlashAttention Forward in Triton</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/15-attention-backward.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">17</span>&nbsp; <span class="chapter-title">Chapter 15: Attention Backward — Conceptual and Optional Implementation</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/16-rope-alibi.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">18</span>&nbsp; <span class="chapter-title">Chapter 16: Rotary Positional Embeddings, ALiBi, and Position Kernels</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/17-kv-cache.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">19</span>&nbsp; <span class="chapter-title">Chapter 17: KV Cache Kernels for Inference</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-6" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 5: Modern LLM Layer Fusion</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-6" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-6" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/05-llm-fusion/18-residual-rmsnorm.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">20</span>&nbsp; <span class="chapter-title">Chapter 18: Residual Add + RMSNorm Fusion</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/05-llm-fusion/19-fused-bias-act-gate.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">21</span>&nbsp; <span class="chapter-title">Chapter 19: Fused Bias + Activation + Gate</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/05-llm-fusion/20-cross-entropy.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">22</span>&nbsp; <span class="chapter-title">Chapter 20: Cross Entropy and Logits Kernels</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/05-llm-fusion/21-sampling.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">23</span>&nbsp; <span class="chapter-title">Chapter 21: Sampling Kernels for Inference</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-7" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 6: Quantization-Oriented Kernels</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-7" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-7" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/06-quantization/22-low-precision.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">24</span>&nbsp; <span class="chapter-title">Chapter 22: Low Precision Basics</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/06-quantization/23-dequant-matmul.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">25</span>&nbsp; <span class="chapter-title">Chapter 23: Int8 / FP8 Style Dequant + Matmul Concepts</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-8" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 7: Debugging, Testing, Profiling, Optimization</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-8" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-8" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/07-debug-perf/24-debugging.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">26</span>&nbsp; <span class="chapter-title">Chapter 24: Debugging Triton Kernels</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/07-debug-perf/25-benchmarking.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">27</span>&nbsp; <span class="chapter-title">Chapter 25: Benchmarking Correctly</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/07-debug-perf/26-autotuning.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">28</span>&nbsp; <span class="chapter-title">Chapter 26: Autotuning</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/07-debug-perf/27-perf-tuning.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">29</span>&nbsp; <span class="chapter-title">Chapter 27: Performance Tuning Mental Model</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-9" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 8: Capstone Projects</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-9" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-9" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/08-capstone/28-mini-library.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">30</span>&nbsp; <span class="chapter-title">Chapter 28: Build a Mini Triton LLM Kernel Library</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/08-capstone/29-replace-transformer-pieces.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">31</span>&nbsp; <span class="chapter-title">Chapter 29: Replace Pieces of a Tiny Transformer</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/08-capstone/30-design-playbook.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">32</span>&nbsp; <span class="chapter-title">Chapter 30: Final Kernel Design Playbook</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/appendix-study-plan.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">33</span>&nbsp; <span class="chapter-title">Appendix: Study Plan, Memory Kernels, and the Capstone Challenge</span></span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../kernel_checklist.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">34</span>&nbsp; <span class="chapter-title">Triton Kernel Design Checklist</span></span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../llm_kernel_map.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">35</span>&nbsp; <span class="chapter-title">LLM Component → Triton Kernel Map</span></span></a>
+  </div>
+</li>
+    </ul>
+    </div>
+</nav>
+<div id="quarto-sidebar-glass" class="quarto-sidebar-collapse-item" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item"></div>
+<!-- margin-sidebar -->
+    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar">
+        <nav id="TOC" role="doc-toc" class="toc-active">
+    <h2 id="toc-title">Table of contents</h2>
+   
+  <ul>
+  <li><a href="#programs-grids-and-launches" id="toc-programs-grids-and-launches" class="nav-link active" data-scroll-target="#programs-grids-and-launches"><span class="header-section-number">4.1</span> Programs, grids, and launches</a></li>
+  <li><a href="#tiles-not-scalars" id="toc-tiles-not-scalars" class="nav-link" data-scroll-target="#tiles-not-scalars"><span class="header-section-number">4.2</span> Tiles, not scalars</a></li>
+  <li><a href="#a-first-kernel-vector-add" id="toc-a-first-kernel-vector-add" class="nav-link" data-scroll-target="#a-first-kernel-vector-add"><span class="header-section-number">4.3</span> A first kernel: vector add</a>
+  <ul class="collapse">
+  <li><a href="#pytorch-reference" id="toc-pytorch-reference" class="nav-link" data-scroll-target="#pytorch-reference"><span class="header-section-number">4.3.1</span> PyTorch reference</a></li>
+  <li><a href="#triton-implementation" id="toc-triton-implementation" class="nav-link" data-scroll-target="#triton-implementation"><span class="header-section-number">4.3.2</span> Triton implementation</a></li>
+  <li><a href="#shape-trace" id="toc-shape-trace" class="nav-link" data-scroll-target="#shape-trace"><span class="header-section-number">4.3.3</span> Shape trace</a></li>
+  </ul></li>
+  <li><a href="#interactive-how-block_size-tiles-a-1d-tensor" id="toc-interactive-how-block_size-tiles-a-1d-tensor" class="nav-link" data-scroll-target="#interactive-how-block_size-tiles-a-1d-tensor"><span class="header-section-number">4.4</span> Interactive: how <code>BLOCK_SIZE</code> tiles a 1D tensor</a>
+  <ul class="collapse">
+  <li><a href="#pointer-arithmetic-and-masks" id="toc-pointer-arithmetic-and-masks" class="nav-link" data-scroll-target="#pointer-arithmetic-and-masks"><span class="header-section-number">4.4.1</span> Pointer arithmetic and masks</a></li>
+  <li><a href="#correctness-test" id="toc-correctness-test" class="nav-link" data-scroll-target="#correctness-test"><span class="header-section-number">4.4.2</span> Correctness test</a></li>
+  <li><a href="#benchmark" id="toc-benchmark" class="nav-link" data-scroll-target="#benchmark"><span class="header-section-number">4.4.3</span> Benchmark</a></li>
+  <li><a href="#optimization-discussion" id="toc-optimization-discussion" class="nav-link" data-scroll-target="#optimization-discussion"><span class="header-section-number">4.4.4</span> Optimization discussion</a></li>
+  <li><a href="#common-bugs" id="toc-common-bugs" class="nav-link" data-scroll-target="#common-bugs"><span class="header-section-number">4.4.5</span> Common bugs</a></li>
+  <li><a href="#exercises" id="toc-exercises" class="nav-link" data-scroll-target="#exercises"><span class="header-section-number">4.4.6</span> Exercises</a></li>
+  </ul></li>
+  </ul>
+</nav>
+    </div>
+<!-- main -->
+<main class="content" id="quarto-document-content">
+
+<header id="title-block-header" class="quarto-title-block default"><nav class="quarto-page-breadcrumbs quarto-title-breadcrumbs d-none d-lg-block" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="../../book/01-fundamentals/02-mental-model.html">Part 1: Triton Fundamentals</a></li><li class="breadcrumb-item"><a href="../../book/01-fundamentals/02-mental-model.html"><span class="chapter-number">4</span>&nbsp; <span class="chapter-title">Chapter 2: The Triton Mental Model</span></a></li></ol></nav>
+<div class="quarto-title">
+<div class="quarto-title-block"><div><h1 class="title"><span class="chapter-number">4</span>&nbsp; <span class="chapter-title">Chapter 2: The Triton Mental Model</span></h1><button type="button" class="btn code-tools-button" id="quarto-code-tools-source"><i class="bi"></i> Code</button></div></div>
+</div>
+
+
+
+<div class="quarto-title-meta">
+
+    
+  
+    
+  </div>
+  
+
+
+</header>
+
+
+<p>Triton code looks like vectorized NumPy that runs on the GPU. Internalize that single sentence and three quarters of the early surprises go away. The other quarter is about pointers, masks, and <code>constexpr</code>, which is what the rest of this chapter is for.</p>
+<p>You already know how to write a CUDA kernel mentally — a grid of blocks of threads, each thread holding one scalar, with explicit cooperation through shared memory. You can throw most of that away. Triton is <strong>SIMD at the tile level</strong>: one program instance runs a vectorized program over a tile of elements, and the compiler decides how that vector becomes warps and threads. You will not write per-thread code in this book. You will write per-program code, and the program operates on tensors.</p>
+<section id="programs-grids-and-launches" class="level2" data-number="4.1">
+<h2 data-number="4.1" class="anchored" data-anchor-id="programs-grids-and-launches"><span class="header-section-number">4.1</span> Programs, grids, and launches</h2>
+<p>A Triton kernel is a Python function decorated with <code>@triton.jit</code>. You launch it from regular PyTorch code by indexing the kernel object with a <strong>grid</strong> and calling it:</p>
+<div id="c1e95c27" class="cell">
+<div class="sourceCode cell-code" id="cb1"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a>vector_add_kernel[(num_programs,)](x, y, out, n_elements, BLOCK_SIZE<span class="op">=</span><span class="dv">1024</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+<p>The grid is a tuple. <code>(N,)</code> is a 1-D grid of <code>N</code> programs. <code>(M, N)</code> is a 2-D grid of <code>M * N</code> programs. Each program is one <em>instance</em> of your kernel and is uniquely identified by a <code>pid</code> (program id) on each axis:</p>
+<div id="263c63bd" class="cell">
+<div class="sourceCode cell-code" id="cb2"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a>pid   <span class="op">=</span> tl.program_id(axis<span class="op">=</span><span class="dv">0</span>)  <span class="co"># 1-D grid</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>pid_m <span class="op">=</span> tl.program_id(axis<span class="op">=</span><span class="dv">0</span>)  <span class="co"># 2-D grid, first axis</span></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>pid_n <span class="op">=</span> tl.program_id(axis<span class="op">=</span><span class="dv">1</span>)  <span class="co"># 2-D grid, second axis</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+<p>If you are used to CUDA, the closest analogy is <code>blockIdx</code>. Unlike CUDA there is no <code>threadIdx</code> — a Triton program is a <em>single SIMD unit</em>, not a collection of cooperating threads. There are no <code>__syncthreads()</code> either. The compiler may emit them under the hood when you do a reduction, but you do not write them.</p>
+</section>
+<section id="tiles-not-scalars" class="level2" data-number="4.2">
+<h2 data-number="4.2" class="anchored" data-anchor-id="tiles-not-scalars"><span class="header-section-number">4.2</span> Tiles, not scalars</h2>
+<p>Inside the kernel you do not see one element at a time. You see a tile of <code>BLOCK_SIZE</code> elements. Whenever you write <code>tl.arange(0, BLOCK_SIZE)</code>, you create a tensor of shape <code>(BLOCK_SIZE,)</code>. Whenever you load through that tensor, you get back a tensor. Whenever you add two such tensors, the result is a tensor. The fact that this tensor is <em>implemented</em> as a warp’s worth of registers across some number of warps is the compiler’s problem.</p>
+<p><code>BLOCK_SIZE</code> is a <code>tl.constexpr</code> argument. That is how you tell Triton “this is a compile-time constant; specialize the kernel for this value.” Two different <code>BLOCK_SIZE</code> values produce two different compiled kernels in Triton’s cache. Forgetting to mark a tile dimension <code>constexpr</code> is the first compile error you will hit; the second is forgetting the mask.</p>
+</section>
+<section id="a-first-kernel-vector-add" class="level2" data-number="4.3">
+<h2 data-number="4.3" class="anchored" data-anchor-id="a-first-kernel-vector-add"><span class="header-section-number">4.3</span> A first kernel: vector add</h2>
+<p>The “hello world” of Triton.</p>
+<section id="pytorch-reference" class="level3" data-number="4.3.1">
+<h3 data-number="4.3.1" class="anchored" data-anchor-id="pytorch-reference"><span class="header-section-number">4.3.1</span> PyTorch reference</h3>
+<div id="11238522" class="cell">
+<div class="sourceCode cell-code" id="cb3"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> vector_add_ref(x: torch.Tensor, y: torch.Tensor) <span class="op">-&gt;</span> torch.Tensor:</span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> x <span class="op">+</span> y</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+<p>That is the oracle. Everything below must match it bit-for-bit in fp32 and within <code>rtol=atol=1e-2</code> in fp16/bf16.</p>
+</section>
+<section id="triton-implementation" class="level3" data-number="4.3.2">
+<h3 data-number="4.3.2" class="anchored" data-anchor-id="triton-implementation"><span class="header-section-number">4.3.2</span> Triton implementation</h3>
+<div id="1548e925" class="cell">
+<div class="sourceCode cell-code" id="cb4"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch</span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> triton</span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> triton.language <span class="im">as</span> tl</span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.jit</span></span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> vector_add_kernel(</span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a>    x_ptr, y_ptr, out_ptr,</span>
+<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a>    n_elements,</span>
+<span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a>    BLOCK_SIZE: tl.constexpr,</span>
+<span id="cb4-11"><a href="#cb4-11" aria-hidden="true" tabindex="-1"></a>):</span>
+<span id="cb4-12"><a href="#cb4-12" aria-hidden="true" tabindex="-1"></a>    pid <span class="op">=</span> tl.program_id(axis<span class="op">=</span><span class="dv">0</span>)</span>
+<span id="cb4-13"><a href="#cb4-13" aria-hidden="true" tabindex="-1"></a>    block_start <span class="op">=</span> pid <span class="op">*</span> BLOCK_SIZE</span>
+<span id="cb4-14"><a href="#cb4-14" aria-hidden="true" tabindex="-1"></a>    offsets <span class="op">=</span> block_start <span class="op">+</span> tl.arange(<span class="dv">0</span>, BLOCK_SIZE)</span>
+<span id="cb4-15"><a href="#cb4-15" aria-hidden="true" tabindex="-1"></a>    mask <span class="op">=</span> offsets <span class="op">&lt;</span> n_elements</span>
+<span id="cb4-16"><a href="#cb4-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-17"><a href="#cb4-17" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> tl.load(x_ptr <span class="op">+</span> offsets, mask<span class="op">=</span>mask)</span>
+<span id="cb4-18"><a href="#cb4-18" aria-hidden="true" tabindex="-1"></a>    y <span class="op">=</span> tl.load(y_ptr <span class="op">+</span> offsets, mask<span class="op">=</span>mask)</span>
+<span id="cb4-19"><a href="#cb4-19" aria-hidden="true" tabindex="-1"></a>    tl.store(out_ptr <span class="op">+</span> offsets, x <span class="op">+</span> y, mask<span class="op">=</span>mask)</span>
+<span id="cb4-20"><a href="#cb4-20" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-21"><a href="#cb4-21" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-22"><a href="#cb4-22" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> vector_add(x, y, BLOCK_SIZE<span class="op">=</span><span class="dv">1024</span>):</span>
+<span id="cb4-23"><a href="#cb4-23" aria-hidden="true" tabindex="-1"></a>    out <span class="op">=</span> torch.empty_like(x)</span>
+<span id="cb4-24"><a href="#cb4-24" aria-hidden="true" tabindex="-1"></a>    grid <span class="op">=</span> (triton.cdiv(x.numel(), BLOCK_SIZE),)</span>
+<span id="cb4-25"><a href="#cb4-25" aria-hidden="true" tabindex="-1"></a>    vector_add_kernel[grid](x, y, out, x.numel(), BLOCK_SIZE<span class="op">=</span>BLOCK_SIZE)</span>
+<span id="cb4-26"><a href="#cb4-26" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> out</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+<p>The launcher allocates the output, computes the grid as <code>ceil(n / BLOCK_SIZE)</code>, and calls the kernel. Note that you pass <code>x</code> (a <code>torch.Tensor</code>) where the kernel expects a <code>*Pointer*</code> — Triton extracts the data pointer automatically. The same is true for <code>y</code> and <code>out</code>.</p>
+<p>The kernel body is five lines. <code>pid</code> says which tile this program owns; <code>block_start</code> is the first element index; <code>offsets</code> is the vector <code>[block_start, block_start+1, ..., block_start+BLOCK_SIZE-1]</code>. The mask kills the lanes that fall off the end of the tensor on the tail tile. Load, add, store.</p>
+</section>
+<section id="shape-trace" class="level3" data-number="4.3.3">
+<h3 data-number="4.3.3" class="anchored" data-anchor-id="shape-trace"><span class="header-section-number">4.3.3</span> Shape trace</h3>
+<p>For <code>N = 1_048_576</code>, <code>BLOCK_SIZE = 1024</code>:</p>
+<pre><code>Input:                       x, y : (1_048_576,)    fp32
+Grid:                        (1024,)
+pid = tl.program_id(0)       scalar               int32   # 0 .. 1023
+block_start = pid * 1024     scalar offset        int32
+offsets = block_start +
+          tl.arange(0, 1024) (1024,)              int32   # element indices
+mask = offsets &lt; 1_048_576   (1024,)              bool    # all True here
+x = tl.load(x_ptr + offsets) (1024,)              fp32
+y = tl.load(y_ptr + offsets) (1024,)              fp32
+out = x + y                  (1024,)              fp32
+tl.store(out_ptr + offsets,
+         out, mask=mask)</code></pre>
+<p>For <code>N = 1_000_000</code>, same <code>BLOCK_SIZE</code>: the grid is <code>triton.cdiv(1_000_000, 1024) = 977</code>. Programs 0 through 975 see <code>mask = all True</code>. Program 976 sees <code>mask = offsets &lt; 1_000_000</code> with exactly <code>976 * 1024 - 1_000_000 = -23552</code>… wait, the math: <code>976 * 1024 = 999424</code> and <code>977 * 1024 = 1000448</code>, so the last program covers indices <code>[999424, 1000448)</code> and the mask kills the last <code>1000448 - 1000000 = 448</code> lanes.</p>
+<p>Convince yourself by sliding the widget below to <code>N=17, BLOCK_SIZE=4</code>. You should see exactly 5 programs, and the last one has 3 grey (masked) lanes.</p>
+</section>
+</section>
+<section id="interactive-how-block_size-tiles-a-1d-tensor" class="level2" data-number="4.4">
+<h2 data-number="4.4" class="anchored" data-anchor-id="interactive-how-block_size-tiles-a-1d-tensor"><span class="header-section-number">4.4</span> Interactive: how <code>BLOCK_SIZE</code> tiles a 1D tensor</h2>
+<p>Drag the sliders. The shaded portion of the last tile is what your mask saves you from clobbering.</p>
+<div class="cell">
+<div class="sourceCode cell-code hidden" id="cb6" data-startfrom="118" data-source-offset="-77"><pre class="sourceCode js code-with-copy"><code class="sourceCode javascript" style="counter-reset: source-line 117;"><span id="cb6-118"><a href="#cb6-118" aria-hidden="true" tabindex="-1"></a>viewof N <span class="op">=</span> Inputs<span class="op">.</span><span class="fu">range</span>([<span class="dv">1</span><span class="op">,</span> <span class="dv">64</span>]<span class="op">,</span> {<span class="dt">value</span><span class="op">:</span> <span class="dv">17</span><span class="op">,</span> <span class="dt">step</span><span class="op">:</span> <span class="dv">1</span><span class="op">,</span> <span class="dt">label</span><span class="op">:</span> <span class="st">"N (tensor length)"</span>})</span>
+<span id="cb6-119"><a href="#cb6-119" aria-hidden="true" tabindex="-1"></a>viewof BLOCK_SIZE <span class="op">=</span> Inputs<span class="op">.</span><span class="fu">range</span>([<span class="dv">1</span><span class="op">,</span> <span class="dv">32</span>]<span class="op">,</span> {<span class="dt">value</span><span class="op">:</span> <span class="dv">4</span><span class="op">,</span> <span class="dt">step</span><span class="op">:</span> <span class="dv">1</span><span class="op">,</span> <span class="dt">label</span><span class="op">:</span> <span class="st">"BLOCK_SIZE"</span>})</span>
+<span id="cb6-120"><a href="#cb6-120" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-121"><a href="#cb6-121" aria-hidden="true" tabindex="-1"></a><span class="co">// --- Derived ------------------------------------------------------------</span></span>
+<span id="cb6-122"><a href="#cb6-122" aria-hidden="true" tabindex="-1"></a>num_programs <span class="op">=</span> <span class="bu">Math</span><span class="op">.</span><span class="fu">ceil</span>(N <span class="op">/</span> BLOCK_SIZE)</span>
+<span id="cb6-123"><a href="#cb6-123" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-124"><a href="#cb6-124" aria-hidden="true" tabindex="-1"></a>tiles <span class="op">=</span> {</span>
+<span id="cb6-125"><a href="#cb6-125" aria-hidden="true" tabindex="-1"></a>  <span class="kw">const</span> out <span class="op">=</span> []<span class="op">;</span></span>
+<span id="cb6-126"><a href="#cb6-126" aria-hidden="true" tabindex="-1"></a>  <span class="cf">for</span> (<span class="kw">let</span> pid <span class="op">=</span> <span class="dv">0</span><span class="op">;</span> pid <span class="op">&lt;</span> num_programs<span class="op">;</span> pid<span class="op">++</span>) {</span>
+<span id="cb6-127"><a href="#cb6-127" aria-hidden="true" tabindex="-1"></a>    <span class="kw">const</span> start <span class="op">=</span> pid <span class="op">*</span> BLOCK_SIZE<span class="op">;</span></span>
+<span id="cb6-128"><a href="#cb6-128" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> (<span class="kw">let</span> lane <span class="op">=</span> <span class="dv">0</span><span class="op">;</span> lane <span class="op">&lt;</span> BLOCK_SIZE<span class="op">;</span> lane<span class="op">++</span>) {</span>
+<span id="cb6-129"><a href="#cb6-129" aria-hidden="true" tabindex="-1"></a>      <span class="kw">const</span> idx <span class="op">=</span> start <span class="op">+</span> lane<span class="op">;</span></span>
+<span id="cb6-130"><a href="#cb6-130" aria-hidden="true" tabindex="-1"></a>      out<span class="op">.</span><span class="fu">push</span>({</span>
+<span id="cb6-131"><a href="#cb6-131" aria-hidden="true" tabindex="-1"></a>        <span class="dt">pid</span><span class="op">:</span> pid<span class="op">,</span></span>
+<span id="cb6-132"><a href="#cb6-132" aria-hidden="true" tabindex="-1"></a>        <span class="dt">lane</span><span class="op">:</span> lane<span class="op">,</span></span>
+<span id="cb6-133"><a href="#cb6-133" aria-hidden="true" tabindex="-1"></a>        <span class="dt">index</span><span class="op">:</span> idx<span class="op">,</span></span>
+<span id="cb6-134"><a href="#cb6-134" aria-hidden="true" tabindex="-1"></a>        <span class="dt">in_bounds</span><span class="op">:</span> idx <span class="op">&lt;</span> N<span class="op">,</span></span>
+<span id="cb6-135"><a href="#cb6-135" aria-hidden="true" tabindex="-1"></a>        <span class="dt">state</span><span class="op">:</span> idx <span class="op">&lt;</span> N <span class="op">?</span> <span class="st">"in-bounds"</span> <span class="op">:</span> <span class="st">"masked"</span></span>
+<span id="cb6-136"><a href="#cb6-136" aria-hidden="true" tabindex="-1"></a>      })<span class="op">;</span></span>
+<span id="cb6-137"><a href="#cb6-137" aria-hidden="true" tabindex="-1"></a>    }</span>
+<span id="cb6-138"><a href="#cb6-138" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb6-139"><a href="#cb6-139" aria-hidden="true" tabindex="-1"></a>  <span class="cf">return</span> out<span class="op">;</span></span>
+<span id="cb6-140"><a href="#cb6-140" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb6-141"><a href="#cb6-141" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-142"><a href="#cb6-142" aria-hidden="true" tabindex="-1"></a>Plot<span class="op">.</span><span class="fu">plot</span>({</span>
+<span id="cb6-143"><a href="#cb6-143" aria-hidden="true" tabindex="-1"></a>  <span class="dt">width</span><span class="op">:</span> <span class="dv">720</span><span class="op">,</span></span>
+<span id="cb6-144"><a href="#cb6-144" aria-hidden="true" tabindex="-1"></a>  <span class="dt">height</span><span class="op">:</span> <span class="dv">60</span> <span class="op">+</span> num_programs <span class="op">*</span> <span class="dv">32</span><span class="op">,</span></span>
+<span id="cb6-145"><a href="#cb6-145" aria-hidden="true" tabindex="-1"></a>  <span class="dt">x</span><span class="op">:</span> {<span class="dt">label</span><span class="op">:</span> <span class="st">"lane within program"</span><span class="op">,</span> <span class="dt">domain</span><span class="op">:</span> [<span class="dv">0</span><span class="op">,</span> BLOCK_SIZE]<span class="op">,</span> <span class="dt">ticks</span><span class="op">:</span> d3<span class="op">.</span><span class="fu">range</span>(BLOCK_SIZE <span class="op">+</span> <span class="dv">1</span>)}<span class="op">,</span></span>
+<span id="cb6-146"><a href="#cb6-146" aria-hidden="true" tabindex="-1"></a>  <span class="dt">y</span><span class="op">:</span> {<span class="dt">label</span><span class="op">:</span> <span class="st">"program id (pid)"</span><span class="op">,</span> <span class="dt">domain</span><span class="op">:</span> [<span class="dv">0</span><span class="op">,</span> num_programs]<span class="op">,</span> <span class="dt">ticks</span><span class="op">:</span> d3<span class="op">.</span><span class="fu">range</span>(num_programs <span class="op">+</span> <span class="dv">1</span>)<span class="op">,</span> <span class="dt">reverse</span><span class="op">:</span> <span class="kw">true</span>}<span class="op">,</span></span>
+<span id="cb6-147"><a href="#cb6-147" aria-hidden="true" tabindex="-1"></a>  <span class="dt">color</span><span class="op">:</span> {<span class="dt">legend</span><span class="op">:</span> <span class="kw">true</span><span class="op">,</span> <span class="dt">domain</span><span class="op">:</span> [<span class="st">"in-bounds"</span><span class="op">,</span> <span class="st">"masked"</span>]<span class="op">,</span> <span class="dt">range</span><span class="op">:</span> [<span class="st">"steelblue"</span><span class="op">,</span> <span class="st">"lightgray"</span>]}<span class="op">,</span></span>
+<span id="cb6-148"><a href="#cb6-148" aria-hidden="true" tabindex="-1"></a>  <span class="dt">marks</span><span class="op">:</span> [</span>
+<span id="cb6-149"><a href="#cb6-149" aria-hidden="true" tabindex="-1"></a>    Plot<span class="op">.</span><span class="fu">rect</span>(tiles<span class="op">,</span> {</span>
+<span id="cb6-150"><a href="#cb6-150" aria-hidden="true" tabindex="-1"></a>      <span class="dt">x1</span><span class="op">:</span> d <span class="kw">=&gt;</span> d<span class="op">.</span><span class="at">lane</span><span class="op">,</span></span>
+<span id="cb6-151"><a href="#cb6-151" aria-hidden="true" tabindex="-1"></a>      <span class="dt">x2</span><span class="op">:</span> d <span class="kw">=&gt;</span> d<span class="op">.</span><span class="at">lane</span> <span class="op">+</span> <span class="dv">1</span><span class="op">,</span></span>
+<span id="cb6-152"><a href="#cb6-152" aria-hidden="true" tabindex="-1"></a>      <span class="dt">y1</span><span class="op">:</span> d <span class="kw">=&gt;</span> d<span class="op">.</span><span class="at">pid</span><span class="op">,</span></span>
+<span id="cb6-153"><a href="#cb6-153" aria-hidden="true" tabindex="-1"></a>      <span class="dt">y2</span><span class="op">:</span> d <span class="kw">=&gt;</span> d<span class="op">.</span><span class="at">pid</span> <span class="op">+</span> <span class="dv">1</span><span class="op">,</span></span>
+<span id="cb6-154"><a href="#cb6-154" aria-hidden="true" tabindex="-1"></a>      <span class="dt">fill</span><span class="op">:</span> <span class="st">"state"</span><span class="op">,</span></span>
+<span id="cb6-155"><a href="#cb6-155" aria-hidden="true" tabindex="-1"></a>      <span class="dt">stroke</span><span class="op">:</span> <span class="st">"white"</span><span class="op">,</span></span>
+<span id="cb6-156"><a href="#cb6-156" aria-hidden="true" tabindex="-1"></a>      <span class="dt">strokeWidth</span><span class="op">:</span> <span class="dv">2</span><span class="op">,</span></span>
+<span id="cb6-157"><a href="#cb6-157" aria-hidden="true" tabindex="-1"></a>      <span class="dt">title</span><span class="op">:</span> d <span class="kw">=&gt;</span> <span class="vs">`pid=</span><span class="sc">${</span>d<span class="op">.</span><span class="at">pid</span><span class="sc">}</span><span class="vs"> lane=</span><span class="sc">${</span>d<span class="op">.</span><span class="at">lane</span><span class="sc">}</span><span class="vs"> index=</span><span class="sc">${</span>d<span class="op">.</span><span class="at">index</span><span class="sc">}</span><span class="vs"> </span><span class="sc">${</span>d<span class="op">.</span><span class="at">in_bounds</span> <span class="op">?</span> <span class="st">""</span> <span class="op">:</span> <span class="st">"(masked)"</span><span class="sc">}</span><span class="vs">`</span></span>
+<span id="cb6-158"><a href="#cb6-158" aria-hidden="true" tabindex="-1"></a>    })<span class="op">,</span></span>
+<span id="cb6-159"><a href="#cb6-159" aria-hidden="true" tabindex="-1"></a>    Plot<span class="op">.</span><span class="fu">text</span>(tiles<span class="op">,</span> {</span>
+<span id="cb6-160"><a href="#cb6-160" aria-hidden="true" tabindex="-1"></a>      <span class="dt">x</span><span class="op">:</span> d <span class="kw">=&gt;</span> d<span class="op">.</span><span class="at">lane</span> <span class="op">+</span> <span class="fl">0.5</span><span class="op">,</span></span>
+<span id="cb6-161"><a href="#cb6-161" aria-hidden="true" tabindex="-1"></a>      <span class="dt">y</span><span class="op">:</span> d <span class="kw">=&gt;</span> d<span class="op">.</span><span class="at">pid</span> <span class="op">+</span> <span class="fl">0.5</span><span class="op">,</span></span>
+<span id="cb6-162"><a href="#cb6-162" aria-hidden="true" tabindex="-1"></a>      <span class="dt">text</span><span class="op">:</span> d <span class="kw">=&gt;</span> d<span class="op">.</span><span class="at">in_bounds</span> <span class="op">?</span> <span class="vs">`</span><span class="sc">${</span>d<span class="op">.</span><span class="at">index</span><span class="sc">}</span><span class="vs">`</span> <span class="op">:</span> <span class="st">"x"</span><span class="op">,</span></span>
+<span id="cb6-163"><a href="#cb6-163" aria-hidden="true" tabindex="-1"></a>      <span class="dt">fill</span><span class="op">:</span> <span class="st">"white"</span><span class="op">,</span></span>
+<span id="cb6-164"><a href="#cb6-164" aria-hidden="true" tabindex="-1"></a>      <span class="dt">fontSize</span><span class="op">:</span> <span class="dv">11</span></span>
+<span id="cb6-165"><a href="#cb6-165" aria-hidden="true" tabindex="-1"></a>    })</span>
+<span id="cb6-166"><a href="#cb6-166" aria-hidden="true" tabindex="-1"></a>  ]</span>
+<span id="cb6-167"><a href="#cb6-167" aria-hidden="true" tabindex="-1"></a>})</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="sourceCode cell-code hidden" id="cb7" data-startfrom="169" data-source-offset="-1595"><pre class="sourceCode js code-with-copy"><code class="sourceCode javascript" style="counter-reset: source-line 168;"><span id="cb7-169"><a href="#cb7-169" aria-hidden="true" tabindex="-1"></a><span class="fu">md</span><span class="vs">`**Grid size:** </span><span class="sc">${</span>num_programs<span class="sc">}</span><span class="vs"> program(s). **Masked lanes in last tile:** </span><span class="sc">${</span></span>
+<span id="cb7-170"><a href="#cb7-170" aria-hidden="true" tabindex="-1"></a>  num_programs <span class="op">*</span> BLOCK_SIZE <span class="op">-</span> N</span>
+<span id="cb7-171"><a href="#cb7-171" aria-hidden="true" tabindex="-1"></a><span class="sc">}</span><span class="vs">.`</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div id="fig-vector-add-tiling" class="cell quarto-float quarto-figure quarto-figure-center anchored">
+<figure class="quarto-float quarto-float-fig figure">
+<div aria-describedby="fig-vector-add-tiling-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+<div class="cell-output cell-output-display">
+<div id="fig-vector-add-tiling-1" class="quarto-float quarto-figure quarto-figure-center anchored">
+<figure class="quarto-float quarto-subfloat-fig figure">
+<div aria-describedby="fig-vector-add-tiling-1-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+<div id="ojs-cell-1-1" data-nodetype="declaration">
+
+</div>
+</div>
+<figcaption class="quarto-float-caption-bottom quarto-subfloat-caption quarto-subfloat-fig" id="fig-vector-add-tiling-1-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+(a)
+</figcaption>
+</figure>
+</div>
+</div>
+<div class="cell-output cell-output-display">
+<div id="fig-vector-add-tiling-2" class="quarto-float quarto-figure quarto-figure-center anchored">
+<figure class="quarto-float quarto-subfloat-fig figure">
+<div aria-describedby="fig-vector-add-tiling-2-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+<div id="ojs-cell-1-2" data-nodetype="declaration">
+
+</div>
+</div>
+<figcaption class="quarto-float-caption-bottom quarto-subfloat-caption quarto-subfloat-fig" id="fig-vector-add-tiling-2-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+(b)
+</figcaption>
+</figure>
+</div>
+</div>
+<div class="cell-output cell-output-display">
+<div id="fig-vector-add-tiling-3" class="quarto-float quarto-figure quarto-figure-center anchored">
+<figure class="quarto-float quarto-subfloat-fig figure">
+<div aria-describedby="fig-vector-add-tiling-3-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+<div id="ojs-cell-1-3" data-nodetype="declaration">
+
+</div>
+</div>
+<figcaption class="quarto-float-caption-bottom quarto-subfloat-caption quarto-subfloat-fig" id="fig-vector-add-tiling-3-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+(c)
+</figcaption>
+</figure>
+</div>
+</div>
+<div class="cell-output cell-output-display">
+<div id="fig-vector-add-tiling-4" class="quarto-float quarto-figure quarto-figure-center anchored">
+<figure class="quarto-float quarto-subfloat-fig figure">
+<div aria-describedby="fig-vector-add-tiling-4-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+<div id="ojs-cell-1-4" data-nodetype="declaration">
+
+</div>
+</div>
+<figcaption class="quarto-float-caption-bottom quarto-subfloat-caption quarto-subfloat-fig" id="fig-vector-add-tiling-4-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+(d)
+</figcaption>
+</figure>
+</div>
+</div>
+<div class="cell-output cell-output-display">
+<div id="fig-vector-add-tiling-5" class="quarto-float quarto-figure quarto-figure-center anchored">
+<figure class="quarto-float quarto-subfloat-fig figure">
+<div aria-describedby="fig-vector-add-tiling-5-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+<div id="ojs-cell-1-5" data-nodetype="expression">
+
+</div>
+</div>
+<figcaption class="quarto-float-caption-bottom quarto-subfloat-caption quarto-subfloat-fig" id="fig-vector-add-tiling-5-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+(e)
+</figcaption>
+</figure>
+</div>
+</div>
+<div class="cell-output cell-output-display">
+<div id="fig-vector-add-tiling-6" class="quarto-float quarto-figure quarto-figure-center anchored">
+<figure class="quarto-float quarto-subfloat-fig figure">
+<div aria-describedby="fig-vector-add-tiling-6-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+<div id="ojs-cell-1-6" data-nodetype="expression">
+
+</div>
+</div>
+<figcaption class="quarto-float-caption-bottom quarto-subfloat-caption quarto-subfloat-fig" id="fig-vector-add-tiling-6-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+(f)
+</figcaption>
+</figure>
+</div>
+</div>
+</div>
+<figcaption class="quarto-float-caption-bottom quarto-float-caption quarto-float-fig" id="fig-vector-add-tiling-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+Figure&nbsp;4.1: Per-program tile coverage of a length-N 1D tensor by BLOCK_SIZE lanes. Steel-blue cells are in-bounds lanes (the kernel reads/writes them); light-gray cells are masked-off tail lanes that the kernel’s mask must guard against. Numbers inside cells are global element indices; ‘x’ marks masked lanes.
+</figcaption>
+</figure>
+</div>
+</div>
+<section id="pointer-arithmetic-and-masks" class="level3" data-number="4.4.1">
+<h3 data-number="4.4.1" class="anchored" data-anchor-id="pointer-arithmetic-and-masks"><span class="header-section-number">4.4.1</span> Pointer arithmetic and masks</h3>
+<p><code>x_ptr</code> is a pointer to fp32 (when <code>x.dtype == torch.float32</code>). Adding an integer offset advances the pointer in <em>element units</em>, not bytes. So <code>x_ptr + offsets</code> is a <code>(BLOCK_SIZE,)</code> tensor of pointers, each pointing at the corresponding element of <code>x</code>. <code>tl.load</code> takes a pointer (or a tile of pointers) and returns the value(s) at those addresses. The <code>mask</code> argument suppresses loads on lanes where <code>mask</code> is false — those lanes return <code>other=</code> (defaulting to <code>0</code>) and, crucially, do not perform the memory access. That last bit is the whole point of the mask: it prevents out-of-bounds reads on the tail tile.</p>
+<p><code>tl.store</code> is symmetric. Masked lanes simply do not write.</p>
+<p><code>other=</code> matters for reductions, not for elementwise. In Chapter 4 you will see why <code>other=0</code> is right for sums and <code>other=-inf</code> is right for maxes. For <code>vector_add</code> the default <code>other=0</code> is fine because we never read the masked lanes of the result.</p>
+</section>
+<section id="correctness-test" class="level3" data-number="4.4.2">
+<h3 data-number="4.4.2" class="anchored" data-anchor-id="correctness-test"><span class="header-section-number">4.4.2</span> Correctness test</h3>
+<p>The full test module is in <code>tests/test_ch02_vector_add.py</code>. The core of it:</p>
+<div id="d9943f5b" class="cell">
+<div class="sourceCode cell-code" id="cb8"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="at">@pytest.mark.parametrize</span>(<span class="st">"n"</span>, [<span class="dv">7</span>, <span class="dv">1024</span>, <span class="dv">1023</span>, <span class="dv">1025</span>, <span class="dv">1_048_576</span>])</span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> test_vector_add_fp32(n):</span>
+<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> torch.randn(n, device<span class="op">=</span><span class="st">"cuda"</span>, dtype<span class="op">=</span>torch.float32)</span>
+<span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a>    y <span class="op">=</span> torch.randn(n, device<span class="op">=</span><span class="st">"cuda"</span>, dtype<span class="op">=</span>torch.float32)</span>
+<span id="cb8-5"><a href="#cb8-5" aria-hidden="true" tabindex="-1"></a>    out <span class="op">=</span> vector_add(x, y)</span>
+<span id="cb8-6"><a href="#cb8-6" aria-hidden="true" tabindex="-1"></a>    torch.testing.assert_close(out, x <span class="op">+</span> y, rtol<span class="op">=</span><span class="fl">1e-5</span>, atol<span class="op">=</span><span class="fl">1e-5</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+<p><code>n=7</code> is small enough to step through by hand. <code>n=1023</code> and <code>n=1025</code> force the tail-mask path on either side of the <code>BLOCK_SIZE=1024</code> boundary. <code>n=1_048_576</code> is a round number for the benchmark below.</p>
+</section>
+<section id="benchmark" class="level3" data-number="4.4.3">
+<h3 data-number="4.4.3" class="anchored" data-anchor-id="benchmark"><span class="header-section-number">4.4.3</span> Benchmark</h3>
+<p><code>triton.testing.do_bench</code> runs the callable, warms up, syncs, and returns the median elapsed time in milliseconds. Use it.</p>
+<div id="24f9103a" class="cell">
+<div class="sourceCode cell-code" id="cb9"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> triton</span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> bench(x, y):</span>
+<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> triton.testing.do_bench(<span class="kw">lambda</span>: vector_add(x, y))</span>
+<span id="cb9-5"><a href="#cb9-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-6"><a href="#cb9-6" aria-hidden="true" tabindex="-1"></a><span class="co"># Effective bandwidth for fp32 vector_add:</span></span>
+<span id="cb9-7"><a href="#cb9-7" aria-hidden="true" tabindex="-1"></a><span class="co">#   2 loads + 1 store per element = 3 * N * 4 bytes</span></span>
+<span id="cb9-8"><a href="#cb9-8" aria-hidden="true" tabindex="-1"></a>ms <span class="op">=</span> bench(x, y)</span>
+<span id="cb9-9"><a href="#cb9-9" aria-hidden="true" tabindex="-1"></a>gbps <span class="op">=</span> <span class="dv">3</span> <span class="op">*</span> x.numel() <span class="op">*</span> <span class="dv">4</span> <span class="op">/</span> (ms <span class="op">*</span> <span class="fl">1e-3</span>) <span class="op">/</span> <span class="fl">1e9</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+<p>For a 2070 SUPER (~448 GB/s peak), expect to see ~390–420 GB/s on a 4 MB-or-larger working set. Anything dramatically lower means the kernel is launch-bound (try larger <code>N</code>) or you forgot to warm up (<code>do_bench</code> does this for you, so don’t).</p>
+<div class="callout callout-style-simple callout-warning">
+<div class="callout-body d-flex">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-body-container">
+<p><strong>Placeholder data.</strong> The numbers below are hardcoded illustrative values, not measurements. Replace with output from your own <code>triton.testing.do_bench</code> run before drawing conclusions.</p>
+</div>
+</div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code hidden" id="cb10" data-startfrom="224" data-source-offset="0"><pre class="sourceCode js code-with-copy"><code class="sourceCode javascript" style="counter-reset: source-line 223;"><span id="cb10-224"><a href="#cb10-224" aria-hidden="true" tabindex="-1"></a>{</span>
+<span id="cb10-225"><a href="#cb10-225" aria-hidden="true" tabindex="-1"></a>  <span class="kw">const</span> data <span class="op">=</span> [</span>
+<span id="cb10-226"><a href="#cb10-226" aria-hidden="true" tabindex="-1"></a>    {<span class="dt">N</span><span class="op">:</span> <span class="dv">4096</span><span class="op">,</span>      <span class="dt">triton_ms</span><span class="op">:</span> <span class="fl">0.012</span><span class="op">,</span> <span class="dt">torch_ms</span><span class="op">:</span> <span class="fl">0.015</span>}<span class="op">,</span></span>
+<span id="cb10-227"><a href="#cb10-227" aria-hidden="true" tabindex="-1"></a>    {<span class="dt">N</span><span class="op">:</span> <span class="dv">65536</span><span class="op">,</span>     <span class="dt">triton_ms</span><span class="op">:</span> <span class="fl">0.018</span><span class="op">,</span> <span class="dt">torch_ms</span><span class="op">:</span> <span class="fl">0.022</span>}<span class="op">,</span></span>
+<span id="cb10-228"><a href="#cb10-228" aria-hidden="true" tabindex="-1"></a>    {<span class="dt">N</span><span class="op">:</span> <span class="dv">1048576</span><span class="op">,</span>   <span class="dt">triton_ms</span><span class="op">:</span> <span class="fl">0.085</span><span class="op">,</span> <span class="dt">torch_ms</span><span class="op">:</span> <span class="fl">0.092</span>}<span class="op">,</span></span>
+<span id="cb10-229"><a href="#cb10-229" aria-hidden="true" tabindex="-1"></a>    {<span class="dt">N</span><span class="op">:</span> <span class="dv">16777216</span><span class="op">,</span>  <span class="dt">triton_ms</span><span class="op">:</span> <span class="fl">1.30</span><span class="op">,</span>  <span class="dt">torch_ms</span><span class="op">:</span> <span class="fl">1.45</span>}<span class="op">,</span></span>
+<span id="cb10-230"><a href="#cb10-230" aria-hidden="true" tabindex="-1"></a>  ]<span class="op">;</span></span>
+<span id="cb10-231"><a href="#cb10-231" aria-hidden="true" tabindex="-1"></a>  <span class="kw">const</span> long <span class="op">=</span> data<span class="op">.</span><span class="fu">flatMap</span>(d <span class="kw">=&gt;</span> [</span>
+<span id="cb10-232"><a href="#cb10-232" aria-hidden="true" tabindex="-1"></a>    {<span class="dt">N</span><span class="op">:</span> d<span class="op">.</span><span class="at">N</span><span class="op">,</span> <span class="dt">impl</span><span class="op">:</span> <span class="st">"triton"</span><span class="op">,</span> <span class="dt">ms</span><span class="op">:</span> d<span class="op">.</span><span class="at">triton_ms</span>}<span class="op">,</span></span>
+<span id="cb10-233"><a href="#cb10-233" aria-hidden="true" tabindex="-1"></a>    {<span class="dt">N</span><span class="op">:</span> d<span class="op">.</span><span class="at">N</span><span class="op">,</span> <span class="dt">impl</span><span class="op">:</span> <span class="st">"torch"</span><span class="op">,</span>  <span class="dt">ms</span><span class="op">:</span> d<span class="op">.</span><span class="at">torch_ms</span>}</span>
+<span id="cb10-234"><a href="#cb10-234" aria-hidden="true" tabindex="-1"></a>  ])<span class="op">;</span></span>
+<span id="cb10-235"><a href="#cb10-235" aria-hidden="true" tabindex="-1"></a>  <span class="cf">return</span> Plot<span class="op">.</span><span class="fu">plot</span>({</span>
+<span id="cb10-236"><a href="#cb10-236" aria-hidden="true" tabindex="-1"></a>    <span class="dt">color</span><span class="op">:</span> {<span class="dt">legend</span><span class="op">:</span> <span class="kw">true</span><span class="op">,</span> <span class="dt">domain</span><span class="op">:</span> [<span class="st">"triton"</span><span class="op">,</span> <span class="st">"torch"</span>]<span class="op">,</span> <span class="dt">range</span><span class="op">:</span> [<span class="st">"steelblue"</span><span class="op">,</span> <span class="st">"orange"</span>]}<span class="op">,</span></span>
+<span id="cb10-237"><a href="#cb10-237" aria-hidden="true" tabindex="-1"></a>    <span class="dt">x</span><span class="op">:</span> {<span class="dt">type</span><span class="op">:</span> <span class="st">"log"</span><span class="op">,</span> <span class="dt">label</span><span class="op">:</span> <span class="st">"N (elements)"</span>}<span class="op">,</span></span>
+<span id="cb10-238"><a href="#cb10-238" aria-hidden="true" tabindex="-1"></a>    <span class="dt">y</span><span class="op">:</span> {<span class="dt">label</span><span class="op">:</span> <span class="st">"median latency (ms) — lower is better"</span>}<span class="op">,</span></span>
+<span id="cb10-239"><a href="#cb10-239" aria-hidden="true" tabindex="-1"></a>    <span class="dt">marks</span><span class="op">:</span> [</span>
+<span id="cb10-240"><a href="#cb10-240" aria-hidden="true" tabindex="-1"></a>      Plot<span class="op">.</span><span class="fu">line</span>(long<span class="op">,</span> {<span class="dt">x</span><span class="op">:</span> <span class="st">"N"</span><span class="op">,</span> <span class="dt">y</span><span class="op">:</span> <span class="st">"ms"</span><span class="op">,</span> <span class="dt">stroke</span><span class="op">:</span> <span class="st">"impl"</span>})<span class="op">,</span></span>
+<span id="cb10-241"><a href="#cb10-241" aria-hidden="true" tabindex="-1"></a>      Plot<span class="op">.</span><span class="fu">dot</span>(long<span class="op">,</span>  {<span class="dt">x</span><span class="op">:</span> <span class="st">"N"</span><span class="op">,</span> <span class="dt">y</span><span class="op">:</span> <span class="st">"ms"</span><span class="op">,</span> <span class="dt">fill</span><span class="op">:</span> <span class="st">"impl"</span>})</span>
+<span id="cb10-242"><a href="#cb10-242" aria-hidden="true" tabindex="-1"></a>    ]</span>
+<span id="cb10-243"><a href="#cb10-243" aria-hidden="true" tabindex="-1"></a>  })<span class="op">;</span></span>
+<span id="cb10-244"><a href="#cb10-244" aria-hidden="true" tabindex="-1"></a>}</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div id="fig-vector-add-bench" class="cell-output cell-output-display quarto-float quarto-figure quarto-figure-center anchored">
+<figure class="quarto-float quarto-float-fig figure">
+<div aria-describedby="fig-vector-add-bench-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+<div id="ojs-cell-2" data-nodetype="expression">
+
+</div>
+</div>
+<figcaption class="quarto-float-caption-bottom quarto-float-caption quarto-float-fig" id="fig-vector-add-bench-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+Figure&nbsp;4.2: Vector-add median latency vs tensor length N (log x-axis). Lower is better. Compares the Triton kernel (steelblue) against eager torch.add (orange).
+</figcaption>
+</figure>
+</div>
+</div>
+</section>
+<section id="optimization-discussion" class="level3" data-number="4.4.4">
+<h3 data-number="4.4.4" class="anchored" data-anchor-id="optimization-discussion"><span class="header-section-number">4.4.4</span> Optimization discussion</h3>
+<p>The only knob in <code>vector_add</code> is <code>BLOCK_SIZE</code>. The benchmark script sweeps <code>[64, 128, 256, 1024, 4096]</code>. The typical pattern on a modern NVIDIA GPU:</p>
+<ul>
+<li><code>BLOCK_SIZE=64</code>: many small programs, launch overhead dominates at small <code>N</code>, bandwidth flat at large <code>N</code>.</li>
+<li><code>BLOCK_SIZE=256</code>: usually a good balance.</li>
+<li><code>BLOCK_SIZE=1024</code>: the default in this book for elementwise. It is the right answer often enough that you should start here and only deviate with a measurement to justify it.</li>
+<li><code>BLOCK_SIZE=4096</code>: more registers per program, fewer programs total, occupancy may drop, marginal change for elementwise.</li>
+</ul>
+<p>The right answer depends on the GPU and on <code>N</code>. For real production code use <code>triton.autotune</code> (Chapter 26). For learning, a fixed default plus a manual sweep teaches you more.</p>
+<p>The kernel is memory-bound. The compute (one add per element) is trivial; you are limited by how fast you can stream from HBM. The bound is the peak HBM bandwidth of your GPU times whatever fraction of it the access pattern can achieve. Coalesced, contiguous reads at <code>BLOCK_SIZE &gt;= 256</code> typically hit 90 %+ of peak.</p>
+</section>
+<section id="common-bugs" class="level3" data-number="4.4.5">
+<h3 data-number="4.4.5" class="anchored" data-anchor-id="common-bugs"><span class="header-section-number">4.4.5</span> Common bugs</h3>
+<ol type="1">
+<li><strong>Forgot the mask.</strong> Without <code>mask=mask</code> on <code>tl.load</code>, the tail program reads past the end of the tensor. You may get garbage values or a memory fault depending on alignment. Always add the mask, even when you “know” <code>N</code> is a multiple of <code>BLOCK_SIZE</code> — production code does not know.</li>
+<li><strong><code>BLOCK_SIZE</code> not <code>tl.constexpr</code>.</strong> Without the annotation, Triton cannot specialize the loop bounds at compile time and you get either a confusing compile error or, worse, a slow kernel. The annotation lives on the <em>parameter</em>, not on a Python variable inside the kernel.</li>
+<li><strong>Passing a non-contiguous tensor without strides.</strong> The kernel above assumes contiguous storage. If you pass <code>x.t()</code> or <code>x[::2]</code>, the data is no longer at consecutive addresses and <code>x_ptr + offsets</code> walks into the wrong cells. Chapter 3 handles strides explicitly.</li>
+<li><strong>Wrong grid math.</strong> <code>(n_elements // BLOCK_SIZE,)</code> drops the tail tile. Use <code>triton.cdiv(n, BLOCK_SIZE)</code>.</li>
+</ol>
+</section>
+<section id="exercises" class="level3" data-number="4.4.6">
+<h3 data-number="4.4.6" class="anchored" data-anchor-id="exercises"><span class="header-section-number">4.4.6</span> Exercises</h3>
+<p>See <code>exercises/ch02_exercises.md</code> for the full text; here are the prompts in brief:</p>
+<p><strong>Beginner:</strong> (B1) <code>vector_sub</code>. (B2) <code>scalar_mul(x, alpha)</code>. (B3) Fused <code>fma(x, y, z) = x * y + z</code>.</p>
+<p><strong>Intermediate:</strong> (I1) <code>clamp(x, lo, hi)</code>. (I2) <code>where(cond, x, y)</code> for a <code>torch.bool</code> mask tensor.</p>
+<p><strong>Advanced:</strong> (A1) <code>vector_add_strided</code> — accept non-contiguous 1-D inputs, pass strides as kernel args. A teaser for Chapter 3, where strides are first-class.</p>
+<p>Worked solutions are in <code>solutions/ch02_solutions.py</code>. Try them blind first.</p>
+
+
+<!-- -->
+
+</section>
+</section>
+
+</main> <!-- /main -->
+<script type="ojs-module-contents">
+eyJjb250ZW50cyI6W3sibWV0aG9kTmFtZSI6ImludGVycHJldCIsImNlbGxOYW1lIjoib2pzLWNlbGwtMSIsImlubGluZSI6ZmFsc2UsInNvdXJjZSI6IlxuLy8gLS0tIElucHV0cyAtLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tXG52aWV3b2YgTiA9IElucHV0cy5yYW5nZShbMSwgNjRdLCB7dmFsdWU6IDE3LCBzdGVwOiAxLCBsYWJlbDogXCJOICh0ZW5zb3IgbGVuZ3RoKVwifSlcbnZpZXdvZiBCTE9DS19TSVpFID0gSW5wdXRzLnJhbmdlKFsxLCAzMl0sIHt2YWx1ZTogNCwgc3RlcDogMSwgbGFiZWw6IFwiQkxPQ0tfU0laRVwifSlcblxuLy8gLS0tIERlcml2ZWQgLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tLS0tXG5udW1fcHJvZ3JhbXMgPSBNYXRoLmNlaWwoTiAvIEJMT0NLX1NJWkUpXG5cbnRpbGVzID0ge1xuICBjb25zdCBvdXQgPSBbXTtcbiAgZm9yIChsZXQgcGlkID0gMDsgcGlkIDwgbnVtX3Byb2dyYW1zOyBwaWQrKykge1xuICAgIGNvbnN0IHN0YXJ0ID0gcGlkICogQkxPQ0tfU0laRTtcbiAgICBmb3IgKGxldCBsYW5lID0gMDsgbGFuZSA8IEJMT0NLX1NJWkU7IGxhbmUrKykge1xuICAgICAgY29uc3QgaWR4ID0gc3RhcnQgKyBsYW5lO1xuICAgICAgb3V0LnB1c2goe1xuICAgICAgICBwaWQ6IHBpZCxcbiAgICAgICAgbGFuZTogbGFuZSxcbiAgICAgICAgaW5kZXg6IGlkeCxcbiAgICAgICAgaW5fYm91bmRzOiBpZHggPCBOLFxuICAgICAgICBzdGF0ZTogaWR4IDwgTiA/IFwiaW4tYm91bmRzXCIgOiBcIm1hc2tlZFwiXG4gICAgICB9KTtcbiAgICB9XG4gIH1cbiAgcmV0dXJuIG91dDtcbn1cblxuUGxvdC5wbG90KHtcbiAgd2lkdGg6IDcyMCxcbiAgaGVpZ2h0OiA2MCArIG51bV9wcm9ncmFtcyAqIDMyLFxuICB4OiB7bGFiZWw6IFwibGFuZSB3aXRoaW4gcHJvZ3JhbVwiLCBkb21haW46IFswLCBCTE9DS19TSVpFXSwgdGlja3M6IGQzLnJhbmdlKEJMT0NLX1NJWkUgKyAxKX0sXG4gIHk6IHtsYWJlbDogXCJwcm9ncmFtIGlkIChwaWQpXCIsIGRvbWFpbjogWzAsIG51bV9wcm9ncmFtc10sIHRpY2tzOiBkMy5yYW5nZShudW1fcHJvZ3JhbXMgKyAxKSwgcmV2ZXJzZTogdHJ1ZX0sXG4gIGNvbG9yOiB7bGVnZW5kOiB0cnVlLCBkb21haW46IFtcImluLWJvdW5kc1wiLCBcIm1hc2tlZFwiXSwgcmFuZ2U6IFtcInN0ZWVsYmx1ZVwiLCBcImxpZ2h0Z3JheVwiXX0sXG4gIG1hcmtzOiBbXG4gICAgUGxvdC5yZWN0KHRpbGVzLCB7XG4gICAgICB4MTogZCA9PiBkLmxhbmUsXG4gICAgICB4MjogZCA9PiBkLmxhbmUgKyAxLFxuICAgICAgeTE6IGQgPT4gZC5waWQsXG4gICAgICB5MjogZCA9PiBkLnBpZCArIDEsXG4gICAgICBmaWxsOiBcInN0YXRlXCIsXG4gICAgICBzdHJva2U6IFwid2hpdGVcIixcbiAgICAgIHN0cm9rZVdpZHRoOiAyLFxuICAgICAgdGl0bGU6IGQgPT4gYHBpZD0ke2QucGlkfSBsYW5lPSR7ZC5sYW5lfSBpbmRleD0ke2QuaW5kZXh9ICR7ZC5pbl9ib3VuZHMgPyBcIlwiIDogXCIobWFza2VkKVwifWBcbiAgICB9KSxcbiAgICBQbG90LnRleHQodGlsZXMsIHtcbiAgICAgIHg6IGQgPT4gZC5sYW5lICsgMC41LFxuICAgICAgeTogZCA9PiBkLnBpZCArIDAuNSxcbiAgICAgIHRleHQ6IGQgPT4gZC5pbl9ib3VuZHMgPyBgJHtkLmluZGV4fWAgOiBcInhcIixcbiAgICAgIGZpbGw6IFwid2hpdGVcIixcbiAgICAgIGZvbnRTaXplOiAxMVxuICAgIH0pXG4gIF1cbn0pXG5cbm1kYCoqR3JpZCBzaXplOioqICR7bnVtX3Byb2dyYW1zfSBwcm9ncmFtKHMpLiAqKk1hc2tlZCBsYW5lcyBpbiBsYXN0IHRpbGU6KiogJHtcbiAgbnVtX3Byb2dyYW1zICogQkxPQ0tfU0laRSAtIE5cbn0uYFxuIn0seyJtZXRob2ROYW1lIjoiaW50ZXJwcmV0IiwiY2VsbE5hbWUiOiJvanMtY2VsbC0yIiwiaW5saW5lIjpmYWxzZSwic291cmNlIjoie1xuICBjb25zdCBkYXRhID0gW1xuICAgIHtOOiA0MDk2LCAgICAgIHRyaXRvbl9tczogMC4wMTIsIHRvcmNoX21zOiAwLjAxNX0sXG4gICAge046IDY1NTM2LCAgICAgdHJpdG9uX21zOiAwLjAxOCwgdG9yY2hfbXM6IDAuMDIyfSxcbiAgICB7TjogMTA0ODU3NiwgICB0cml0b25fbXM6IDAuMDg1LCB0b3JjaF9tczogMC4wOTJ9LFxuICAgIHtOOiAxNjc3NzIxNiwgIHRyaXRvbl9tczogMS4zMCwgIHRvcmNoX21zOiAxLjQ1fSxcbiAgXTtcbiAgY29uc3QgbG9uZyA9IGRhdGEuZmxhdE1hcChkID0+IFtcbiAgICB7TjogZC5OLCBpbXBsOiBcInRyaXRvblwiLCBtczogZC50cml0b25fbXN9LFxuICAgIHtOOiBkLk4sIGltcGw6IFwidG9yY2hcIiwgIG1zOiBkLnRvcmNoX21zfVxuICBdKTtcbiAgcmV0dXJuIFBsb3QucGxvdCh7XG4gICAgY29sb3I6IHtsZWdlbmQ6IHRydWUsIGRvbWFpbjogW1widHJpdG9uXCIsIFwidG9yY2hcIl0sIHJhbmdlOiBbXCJzdGVlbGJsdWVcIiwgXCJvcmFuZ2VcIl19LFxuICAgIHg6IHt0eXBlOiBcImxvZ1wiLCBsYWJlbDogXCJOIChlbGVtZW50cylcIn0sXG4gICAgeToge2xhYmVsOiBcIm1lZGlhbiBsYXRlbmN5IChtcykg4oCUIGxvd2VyIGlzIGJldHRlclwifSxcbiAgICBtYXJrczogW1xuICAgICAgUGxvdC5saW5lKGxvbmcsIHt4OiBcIk5cIiwgeTogXCJtc1wiLCBzdHJva2U6IFwiaW1wbFwifSksXG4gICAgICBQbG90LmRvdChsb25nLCAge3g6IFwiTlwiLCB5OiBcIm1zXCIsIGZpbGw6IFwiaW1wbFwifSlcbiAgICBdXG4gIH0pO1xufVxuIn0seyJtZXRob2ROYW1lIjoiaW50ZXJwcmV0UXVpZXQiLCJzb3VyY2UiOiJzaGlueUlucHV0KCdOJykifSx7Im1ldGhvZE5hbWUiOiJpbnRlcnByZXRRdWlldCIsInNvdXJjZSI6InNoaW55SW5wdXQoJ0JMT0NLX1NJWkUnKSJ9XX0=
+</script>
+<script type="module">
+if (window.location.protocol === "file:") { alert("The OJS runtime does not work with file:// URLs. Please use a web server to view this document."); }
+window._ojs.paths.runtimeToDoc = "../../book/01-fundamentals";
+window._ojs.paths.runtimeToRoot = "../..";
+window._ojs.paths.docToRoot = "../..";
+window._ojs.selfContained = false;
+window._ojs.runtime.interpretFromScriptTags();
+</script>
+<script id="quarto-html-after-body" type="application/javascript">
+window.document.addEventListener("DOMContentLoaded", function (event) {
+  const toggleBodyColorMode = (bsSheetEl) => {
+    const mode = bsSheetEl.getAttribute("data-mode");
+    const bodyEl = window.document.querySelector("body");
+    if (mode === "dark") {
+      bodyEl.classList.add("quarto-dark");
+      bodyEl.classList.remove("quarto-light");
+    } else {
+      bodyEl.classList.add("quarto-light");
+      bodyEl.classList.remove("quarto-dark");
+    }
+  }
+  const toggleBodyColorPrimary = () => {
+    const bsSheetEl = window.document.querySelector("link#quarto-bootstrap");
+    if (bsSheetEl) {
+      toggleBodyColorMode(bsSheetEl);
+    }
+  }
+  toggleBodyColorPrimary();  
+  const icon = "";
+  const anchorJS = new window.AnchorJS();
+  anchorJS.options = {
+    placement: 'right',
+    icon: icon
+  };
+  anchorJS.add('.anchored');
+  const isCodeAnnotation = (el) => {
+    for (const clz of el.classList) {
+      if (clz.startsWith('code-annotation-')) {                     
+        return true;
+      }
+    }
+    return false;
+  }
+  const onCopySuccess = function(e) {
+    // button target
+    const button = e.trigger;
+    // don't keep focus
+    button.blur();
+    // flash "checked"
+    button.classList.add('code-copy-button-checked');
+    var currentTitle = button.getAttribute("title");
+    button.setAttribute("title", "Copied!");
+    let tooltip;
+    if (window.bootstrap) {
+      button.setAttribute("data-bs-toggle", "tooltip");
+      button.setAttribute("data-bs-placement", "left");
+      button.setAttribute("data-bs-title", "Copied!");
+      tooltip = new bootstrap.Tooltip(button, 
+        { trigger: "manual", 
+          customClass: "code-copy-button-tooltip",
+          offset: [0, -8]});
+      tooltip.show();    
+    }
+    setTimeout(function() {
+      if (tooltip) {
+        tooltip.hide();
+        button.removeAttribute("data-bs-title");
+        button.removeAttribute("data-bs-toggle");
+        button.removeAttribute("data-bs-placement");
+      }
+      button.setAttribute("title", currentTitle);
+      button.classList.remove('code-copy-button-checked');
+    }, 1000);
+    // clear code selection
+    e.clearSelection();
+  }
+  const getTextToCopy = function(trigger) {
+      const codeEl = trigger.previousElementSibling.cloneNode(true);
+      for (const childEl of codeEl.children) {
+        if (isCodeAnnotation(childEl)) {
+          childEl.remove();
+        }
+      }
+      return codeEl.innerText;
+  }
+  const clipboard = new window.ClipboardJS('.code-copy-button:not([data-in-quarto-modal])', {
+    text: getTextToCopy
+  });
+  clipboard.on('success', onCopySuccess);
+  if (window.document.getElementById('quarto-embedded-source-code-modal')) {
+    // For code content inside modals, clipBoardJS needs to be initialized with a container option
+    // TODO: Check when it could be a function (https://github.com/zenorocha/clipboard.js/issues/860)
+    const clipboardModal = new window.ClipboardJS('.code-copy-button[data-in-quarto-modal]', {
+      text: getTextToCopy,
+      container: window.document.getElementById('quarto-embedded-source-code-modal')
+    });
+    clipboardModal.on('success', onCopySuccess);
+  }
+  const viewSource = window.document.getElementById('quarto-view-source') ||
+                     window.document.getElementById('quarto-code-tools-source');
+  if (viewSource) {
+    const sourceUrl = viewSource.getAttribute("data-quarto-source-url");
+    viewSource.addEventListener("click", function(e) {
+      if (sourceUrl) {
+        // rstudio viewer pane
+        if (/\bcapabilities=\b/.test(window.location)) {
+          window.open(sourceUrl);
+        } else {
+          window.location.href = sourceUrl;
+        }
+      } else {
+        const modal = new bootstrap.Modal(document.getElementById('quarto-embedded-source-code-modal'));
+        modal.show();
+      }
+      return false;
+    });
+  }
+  function toggleCodeHandler(show) {
+    return function(e) {
+      const detailsSrc = window.document.querySelectorAll(".cell > details > .sourceCode");
+      for (let i=0; i<detailsSrc.length; i++) {
+        const details = detailsSrc[i].parentElement;
+        if (show) {
+          details.open = true;
+        } else {
+          details.removeAttribute("open");
+        }
+      }
+      const cellCodeDivs = window.document.querySelectorAll(".cell > .sourceCode");
+      const fromCls = show ? "hidden" : "unhidden";
+      const toCls = show ? "unhidden" : "hidden";
+      for (let i=0; i<cellCodeDivs.length; i++) {
+        const codeDiv = cellCodeDivs[i];
+        if (codeDiv.classList.contains(fromCls)) {
+          codeDiv.classList.remove(fromCls);
+          codeDiv.classList.add(toCls);
+        } 
+      }
+      return false;
+    }
+  }
+  const hideAllCode = window.document.getElementById("quarto-hide-all-code");
+  if (hideAllCode) {
+    hideAllCode.addEventListener("click", toggleCodeHandler(false));
+  }
+  const showAllCode = window.document.getElementById("quarto-show-all-code");
+  if (showAllCode) {
+    showAllCode.addEventListener("click", toggleCodeHandler(true));
+  }
+    var localhostRegex = new RegExp(/^(?:http|https):\/\/localhost\:?[0-9]*\//);
+    var mailtoRegex = new RegExp(/^mailto:/);
+      var filterRegex = new RegExp('/' + window.location.host + '/');
+    var isInternal = (href) => {
+        return filterRegex.test(href) || localhostRegex.test(href) || mailtoRegex.test(href);
+    }
+    // Inspect non-navigation links and adorn them if external
+ 	var links = window.document.querySelectorAll('a[href]:not(.nav-link):not(.navbar-brand):not(.toc-action):not(.sidebar-link):not(.sidebar-item-toggle):not(.pagination-link):not(.no-external):not([aria-hidden]):not(.dropdown-item):not(.quarto-navigation-tool):not(.about-link)');
+    for (var i=0; i<links.length; i++) {
+      const link = links[i];
+      if (!isInternal(link.href)) {
+        // undo the damage that might have been done by quarto-nav.js in the case of
+        // links that we want to consider external
+        if (link.dataset.originalHref !== undefined) {
+          link.href = link.dataset.originalHref;
+        }
+      }
+    }
+  function tippyHover(el, contentFn, onTriggerFn, onUntriggerFn) {
+    const config = {
+      allowHTML: true,
+      maxWidth: 500,
+      delay: 100,
+      arrow: false,
+      appendTo: function(el) {
+          return el.parentElement;
+      },
+      interactive: true,
+      interactiveBorder: 10,
+      theme: 'quarto',
+      placement: 'bottom-start',
+    };
+    if (contentFn) {
+      config.content = contentFn;
+    }
+    if (onTriggerFn) {
+      config.onTrigger = onTriggerFn;
+    }
+    if (onUntriggerFn) {
+      config.onUntrigger = onUntriggerFn;
+    }
+    window.tippy(el, config); 
+  }
+  const noterefs = window.document.querySelectorAll('a[role="doc-noteref"]');
+  for (var i=0; i<noterefs.length; i++) {
+    const ref = noterefs[i];
+    tippyHover(ref, function() {
+      // use id or data attribute instead here
+      let href = ref.getAttribute('data-footnote-href') || ref.getAttribute('href');
+      try { href = new URL(href).hash; } catch {}
+      const id = href.replace(/^#\/?/, "");
+      const note = window.document.getElementById(id);
+      if (note) {
+        return note.innerHTML;
+      } else {
+        return "";
+      }
+    });
+  }
+  const xrefs = window.document.querySelectorAll('a.quarto-xref');
+  const processXRef = (id, note) => {
+    // Strip column container classes
+    const stripColumnClz = (el) => {
+      el.classList.remove("page-full", "page-columns");
+      if (el.children) {
+        for (const child of el.children) {
+          stripColumnClz(child);
+        }
+      }
+    }
+    stripColumnClz(note)
+    if (id === null || id.startsWith('sec-')) {
+      // Special case sections, only their first couple elements
+      const container = document.createElement("div");
+      if (note.children && note.children.length > 2) {
+        container.appendChild(note.children[0].cloneNode(true));
+        for (let i = 1; i < note.children.length; i++) {
+          const child = note.children[i];
+          if (child.tagName === "P" && child.innerText === "") {
+            continue;
+          } else {
+            container.appendChild(child.cloneNode(true));
+            break;
+          }
+        }
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(container);
+        }
+        return container.innerHTML
+      } else {
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(note);
+        }
+        return note.innerHTML;
+      }
+    } else {
+      // Remove any anchor links if they are present
+      const anchorLink = note.querySelector('a.anchorjs-link');
+      if (anchorLink) {
+        anchorLink.remove();
+      }
+      if (window.Quarto?.typesetMath) {
+        window.Quarto.typesetMath(note);
+      }
+      // TODO in 1.5, we should make sure this works without a callout special case
+      if (note.classList.contains("callout")) {
+        return note.outerHTML;
+      } else {
+        return note.innerHTML;
+      }
+    }
+  }
+  for (var i=0; i<xrefs.length; i++) {
+    const xref = xrefs[i];
+    tippyHover(xref, undefined, function(instance) {
+      instance.disable();
+      let url = xref.getAttribute('href');
+      let hash = undefined; 
+      if (url.startsWith('#')) {
+        hash = url;
+      } else {
+        try { hash = new URL(url).hash; } catch {}
+      }
+      if (hash) {
+        const id = hash.replace(/^#\/?/, "");
+        const note = window.document.getElementById(id);
+        if (note !== null) {
+          try {
+            const html = processXRef(id, note.cloneNode(true));
+            instance.setContent(html);
+          } finally {
+            instance.enable();
+            instance.show();
+          }
+        } else {
+          // See if we can fetch this
+          fetch(url.split('#')[0])
+          .then(res => res.text())
+          .then(html => {
+            const parser = new DOMParser();
+            const htmlDoc = parser.parseFromString(html, "text/html");
+            const note = htmlDoc.getElementById(id);
+            if (note !== null) {
+              const html = processXRef(id, note);
+              instance.setContent(html);
+            } 
+          }).finally(() => {
+            instance.enable();
+            instance.show();
+          });
+        }
+      } else {
+        // See if we can fetch a full url (with no hash to target)
+        // This is a special case and we should probably do some content thinning / targeting
+        fetch(url)
+        .then(res => res.text())
+        .then(html => {
+          const parser = new DOMParser();
+          const htmlDoc = parser.parseFromString(html, "text/html");
+          const note = htmlDoc.querySelector('main.content');
+          if (note !== null) {
+            // This should only happen for chapter cross references
+            // (since there is no id in the URL)
+            // remove the first header
+            if (note.children.length > 0 && note.children[0].tagName === "HEADER") {
+              note.children[0].remove();
+            }
+            const html = processXRef(null, note);
+            instance.setContent(html);
+          } 
+        }).finally(() => {
+          instance.enable();
+          instance.show();
+        });
+      }
+    }, function(instance) {
+    });
+  }
+      let selectedAnnoteEl;
+      const selectorForAnnotation = ( cell, annotation) => {
+        let cellAttr = 'data-code-cell="' + cell + '"';
+        let lineAttr = 'data-code-annotation="' +  annotation + '"';
+        const selector = 'span[' + cellAttr + '][' + lineAttr + ']';
+        return selector;
+      }
+      const selectCodeLines = (annoteEl) => {
+        const doc = window.document;
+        const targetCell = annoteEl.getAttribute("data-target-cell");
+        const targetAnnotation = annoteEl.getAttribute("data-target-annotation");
+        const annoteSpan = window.document.querySelector(selectorForAnnotation(targetCell, targetAnnotation));
+        const lines = annoteSpan.getAttribute("data-code-lines").split(",");
+        const lineIds = lines.map((line) => {
+          return targetCell + "-" + line;
+        })
+        let top = null;
+        let height = null;
+        let parent = null;
+        if (lineIds.length > 0) {
+            //compute the position of the single el (top and bottom and make a div)
+            const el = window.document.getElementById(lineIds[0]);
+            top = el.offsetTop;
+            height = el.offsetHeight;
+            parent = el.parentElement.parentElement;
+          if (lineIds.length > 1) {
+            const lastEl = window.document.getElementById(lineIds[lineIds.length - 1]);
+            const bottom = lastEl.offsetTop + lastEl.offsetHeight;
+            height = bottom - top;
+          }
+          if (top !== null && height !== null && parent !== null) {
+            // cook up a div (if necessary) and position it 
+            let div = window.document.getElementById("code-annotation-line-highlight");
+            if (div === null) {
+              div = window.document.createElement("div");
+              div.setAttribute("id", "code-annotation-line-highlight");
+              div.style.position = 'absolute';
+              parent.appendChild(div);
+            }
+            div.style.top = top - 2 + "px";
+            div.style.height = height + 4 + "px";
+            div.style.left = 0;
+            let gutterDiv = window.document.getElementById("code-annotation-line-highlight-gutter");
+            if (gutterDiv === null) {
+              gutterDiv = window.document.createElement("div");
+              gutterDiv.setAttribute("id", "code-annotation-line-highlight-gutter");
+              gutterDiv.style.position = 'absolute';
+              const codeCell = window.document.getElementById(targetCell);
+              const gutter = codeCell.querySelector('.code-annotation-gutter');
+              gutter.appendChild(gutterDiv);
+            }
+            gutterDiv.style.top = top - 2 + "px";
+            gutterDiv.style.height = height + 4 + "px";
+          }
+          selectedAnnoteEl = annoteEl;
+        }
+      };
+      const unselectCodeLines = () => {
+        const elementsIds = ["code-annotation-line-highlight", "code-annotation-line-highlight-gutter"];
+        elementsIds.forEach((elId) => {
+          const div = window.document.getElementById(elId);
+          if (div) {
+            div.remove();
+          }
+        });
+        selectedAnnoteEl = undefined;
+      };
+        // Handle positioning of the toggle
+    window.addEventListener(
+      "resize",
+      throttle(() => {
+        elRect = undefined;
+        if (selectedAnnoteEl) {
+          selectCodeLines(selectedAnnoteEl);
+        }
+      }, 10)
+    );
+    function throttle(fn, ms) {
+    let throttle = false;
+    let timer;
+      return (...args) => {
+        if(!throttle) { // first call gets through
+            fn.apply(this, args);
+            throttle = true;
+        } else { // all the others get throttled
+            if(timer) clearTimeout(timer); // cancel #2
+            timer = setTimeout(() => {
+              fn.apply(this, args);
+              timer = throttle = false;
+            }, ms);
+        }
+      };
+    }
+      // Attach click handler to the DT
+      const annoteDls = window.document.querySelectorAll('dt[data-target-cell]');
+      for (const annoteDlNode of annoteDls) {
+        annoteDlNode.addEventListener('click', (event) => {
+          const clickedEl = event.target;
+          if (clickedEl !== selectedAnnoteEl) {
+            unselectCodeLines();
+            const activeEl = window.document.querySelector('dt[data-target-cell].code-annotation-active');
+            if (activeEl) {
+              activeEl.classList.remove('code-annotation-active');
+            }
+            selectCodeLines(clickedEl);
+            clickedEl.classList.add('code-annotation-active');
+          } else {
+            // Unselect the line
+            unselectCodeLines();
+            clickedEl.classList.remove('code-annotation-active');
+          }
+        });
+      }
+  const findCites = (el) => {
+    const parentEl = el.parentElement;
+    if (parentEl) {
+      const cites = parentEl.dataset.cites;
+      if (cites) {
+        return {
+          el,
+          cites: cites.split(' ')
+        };
+      } else {
+        return findCites(el.parentElement)
+      }
+    } else {
+      return undefined;
+    }
+  };
+  var bibliorefs = window.document.querySelectorAll('a[role="doc-biblioref"]');
+  for (var i=0; i<bibliorefs.length; i++) {
+    const ref = bibliorefs[i];
+    const citeInfo = findCites(ref);
+    if (citeInfo) {
+      tippyHover(citeInfo.el, function() {
+        var popup = window.document.createElement('div');
+        citeInfo.cites.forEach(function(cite) {
+          var citeDiv = window.document.createElement('div');
+          citeDiv.classList.add('hanging-indent');
+          citeDiv.classList.add('csl-entry');
+          var biblioDiv = window.document.getElementById('ref-' + cite);
+          if (biblioDiv) {
+            citeDiv.innerHTML = biblioDiv.innerHTML;
+          }
+          popup.appendChild(citeDiv);
+        });
+        return popup.innerHTML;
+      });
+    }
+  }
+});
+</script>
+<nav class="page-navigation">
+  <div class="nav-page nav-page-previous">
+      <a href="../../book/00-orientation/01-setup.html" class="pagination-link" aria-label="Chapter 01: Environment Setup">
+        <i class="bi bi-arrow-left-short"></i> <span class="nav-page-text"><span class="chapter-number">3</span>&nbsp; <span class="chapter-title">Chapter 01: Environment Setup</span></span>
+      </a>          
+  </div>
+  <div class="nav-page nav-page-next">
+      <a href="../../book/01-fundamentals/03-memory-pointers-strides.html" class="pagination-link" aria-label="Chapter 3: Memory, Pointers, Strides, and Masks">
+        <span class="nav-page-text"><span class="chapter-number">5</span>&nbsp; <span class="chapter-title">Chapter 3: Memory, Pointers, Strides, and Masks</span></span> <i class="bi bi-arrow-right-short"></i>
+      </a>
+  </div>
+</nav><div class="modal fade" id="quarto-embedded-source-code-modal" tabindex="-1" aria-labelledby="quarto-embedded-source-code-modal-label" aria-hidden="true"><div class="modal-dialog modal-dialog-scrollable"><div class="modal-content"><div class="modal-header"><h5 class="modal-title" id="quarto-embedded-source-code-modal-label">Source Code</h5><button class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><div class="">
+<div class="sourceCode" id="cb11" data-shortcodes="false"><pre class="sourceCode markdown code-with-copy"><code class="sourceCode markdown"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="co">---</span></span>
+<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a><span class="an">title:</span><span class="co"> "Chapter 2: The Triton Mental Model"</span></span>
+<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a><span class="co">---</span></span>
+<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-5"><a href="#cb11-5" aria-hidden="true" tabindex="-1"></a>Triton code looks like vectorized NumPy that runs on the GPU. Internalize that single sentence and three quarters of the early surprises go away. The other quarter is about pointers, masks, and <span class="in">`constexpr`</span>, which is what the rest of this chapter is for.</span>
+<span id="cb11-6"><a href="#cb11-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-7"><a href="#cb11-7" aria-hidden="true" tabindex="-1"></a>You already know how to write a CUDA kernel mentally — a grid of blocks of threads, each thread holding one scalar, with explicit cooperation through shared memory. You can throw most of that away. Triton is **SIMD at the tile level**: one program instance runs a vectorized program over a tile of elements, and the compiler decides how that vector becomes warps and threads. You will not write per-thread code in this book. You will write per-program code, and the program operates on tensors.</span>
+<span id="cb11-8"><a href="#cb11-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-9"><a href="#cb11-9" aria-hidden="true" tabindex="-1"></a><span class="fu">## Programs, grids, and launches</span></span>
+<span id="cb11-10"><a href="#cb11-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-11"><a href="#cb11-11" aria-hidden="true" tabindex="-1"></a>A Triton kernel is a Python function decorated with <span class="in">`@triton.jit`</span>. You launch it from regular PyTorch code by indexing the kernel object with a **grid** and calling it:</span>
+<span id="cb11-12"><a href="#cb11-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-15"><a href="#cb11-15" aria-hidden="true" tabindex="-1"></a><span class="in">```{python}</span></span>
+<span id="cb11-16"><a href="#cb11-16" aria-hidden="true" tabindex="-1"></a><span class="co">#| eval: false</span></span>
+<span id="cb11-17"><a href="#cb11-17" aria-hidden="true" tabindex="-1"></a>vector_add_kernel[(num_programs,)](x, y, out, n_elements, BLOCK_SIZE<span class="op">=</span><span class="dv">1024</span>)</span>
+<span id="cb11-18"><a href="#cb11-18" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb11-19"><a href="#cb11-19" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-20"><a href="#cb11-20" aria-hidden="true" tabindex="-1"></a>The grid is a tuple. <span class="in">`(N,)`</span> is a 1-D grid of <span class="in">`N`</span> programs. <span class="in">`(M, N)`</span> is a 2-D grid of <span class="in">`M * N`</span> programs. Each program is one *instance* of your kernel and is uniquely identified by a <span class="in">`pid`</span> (program id) on each axis:</span>
+<span id="cb11-21"><a href="#cb11-21" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-24"><a href="#cb11-24" aria-hidden="true" tabindex="-1"></a><span class="in">```{python}</span></span>
+<span id="cb11-25"><a href="#cb11-25" aria-hidden="true" tabindex="-1"></a><span class="co">#| eval: false</span></span>
+<span id="cb11-26"><a href="#cb11-26" aria-hidden="true" tabindex="-1"></a>pid   <span class="op">=</span> tl.program_id(axis<span class="op">=</span><span class="dv">0</span>)  <span class="co"># 1-D grid</span></span>
+<span id="cb11-27"><a href="#cb11-27" aria-hidden="true" tabindex="-1"></a>pid_m <span class="op">=</span> tl.program_id(axis<span class="op">=</span><span class="dv">0</span>)  <span class="co"># 2-D grid, first axis</span></span>
+<span id="cb11-28"><a href="#cb11-28" aria-hidden="true" tabindex="-1"></a>pid_n <span class="op">=</span> tl.program_id(axis<span class="op">=</span><span class="dv">1</span>)  <span class="co"># 2-D grid, second axis</span></span>
+<span id="cb11-29"><a href="#cb11-29" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb11-30"><a href="#cb11-30" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-31"><a href="#cb11-31" aria-hidden="true" tabindex="-1"></a>If you are used to CUDA, the closest analogy is <span class="in">`blockIdx`</span>. Unlike CUDA there is no <span class="in">`threadIdx`</span> — a Triton program is a *single SIMD unit*, not a collection of cooperating threads. There are no <span class="in">`__syncthreads()`</span> either. The compiler may emit them under the hood when you do a reduction, but you do not write them.</span>
+<span id="cb11-32"><a href="#cb11-32" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-33"><a href="#cb11-33" aria-hidden="true" tabindex="-1"></a><span class="fu">## Tiles, not scalars</span></span>
+<span id="cb11-34"><a href="#cb11-34" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-35"><a href="#cb11-35" aria-hidden="true" tabindex="-1"></a>Inside the kernel you do not see one element at a time. You see a tile of <span class="in">`BLOCK_SIZE`</span> elements. Whenever you write <span class="in">`tl.arange(0, BLOCK_SIZE)`</span>, you create a tensor of shape <span class="in">`(BLOCK_SIZE,)`</span>. Whenever you load through that tensor, you get back a tensor. Whenever you add two such tensors, the result is a tensor. The fact that this tensor is *implemented* as a warp's worth of registers across some number of warps is the compiler's problem.</span>
+<span id="cb11-36"><a href="#cb11-36" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-37"><a href="#cb11-37" aria-hidden="true" tabindex="-1"></a><span class="in">`BLOCK_SIZE`</span> is a <span class="in">`tl.constexpr`</span> argument. That is how you tell Triton "this is a compile-time constant; specialize the kernel for this value." Two different <span class="in">`BLOCK_SIZE`</span> values produce two different compiled kernels in Triton's cache. Forgetting to mark a tile dimension <span class="in">`constexpr`</span> is the first compile error you will hit; the second is forgetting the mask.</span>
+<span id="cb11-38"><a href="#cb11-38" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-39"><a href="#cb11-39" aria-hidden="true" tabindex="-1"></a><span class="fu">## A first kernel: vector add</span></span>
+<span id="cb11-40"><a href="#cb11-40" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-41"><a href="#cb11-41" aria-hidden="true" tabindex="-1"></a>The "hello world" of Triton.</span>
+<span id="cb11-42"><a href="#cb11-42" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-43"><a href="#cb11-43" aria-hidden="true" tabindex="-1"></a><span class="fu">### PyTorch reference</span></span>
+<span id="cb11-44"><a href="#cb11-44" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-47"><a href="#cb11-47" aria-hidden="true" tabindex="-1"></a><span class="in">```{python}</span></span>
+<span id="cb11-48"><a href="#cb11-48" aria-hidden="true" tabindex="-1"></a><span class="co">#| eval: false</span></span>
+<span id="cb11-49"><a href="#cb11-49" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> vector_add_ref(x: torch.Tensor, y: torch.Tensor) <span class="op">-&gt;</span> torch.Tensor:</span>
+<span id="cb11-50"><a href="#cb11-50" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> x <span class="op">+</span> y</span>
+<span id="cb11-51"><a href="#cb11-51" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb11-52"><a href="#cb11-52" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-53"><a href="#cb11-53" aria-hidden="true" tabindex="-1"></a>That is the oracle. Everything below must match it bit-for-bit in fp32 and within <span class="in">`rtol=atol=1e-2`</span> in fp16/bf16.</span>
+<span id="cb11-54"><a href="#cb11-54" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-55"><a href="#cb11-55" aria-hidden="true" tabindex="-1"></a><span class="fu">### Triton implementation</span></span>
+<span id="cb11-56"><a href="#cb11-56" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-59"><a href="#cb11-59" aria-hidden="true" tabindex="-1"></a><span class="in">```{python}</span></span>
+<span id="cb11-60"><a href="#cb11-60" aria-hidden="true" tabindex="-1"></a><span class="co">#| eval: false</span></span>
+<span id="cb11-61"><a href="#cb11-61" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch</span>
+<span id="cb11-62"><a href="#cb11-62" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> triton</span>
+<span id="cb11-63"><a href="#cb11-63" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> triton.language <span class="im">as</span> tl</span>
+<span id="cb11-64"><a href="#cb11-64" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-65"><a href="#cb11-65" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-66"><a href="#cb11-66" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.jit</span></span>
+<span id="cb11-67"><a href="#cb11-67" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> vector_add_kernel(</span>
+<span id="cb11-68"><a href="#cb11-68" aria-hidden="true" tabindex="-1"></a>    x_ptr, y_ptr, out_ptr,</span>
+<span id="cb11-69"><a href="#cb11-69" aria-hidden="true" tabindex="-1"></a>    n_elements,</span>
+<span id="cb11-70"><a href="#cb11-70" aria-hidden="true" tabindex="-1"></a>    BLOCK_SIZE: tl.constexpr,</span>
+<span id="cb11-71"><a href="#cb11-71" aria-hidden="true" tabindex="-1"></a>):</span>
+<span id="cb11-72"><a href="#cb11-72" aria-hidden="true" tabindex="-1"></a>    pid <span class="op">=</span> tl.program_id(axis<span class="op">=</span><span class="dv">0</span>)</span>
+<span id="cb11-73"><a href="#cb11-73" aria-hidden="true" tabindex="-1"></a>    block_start <span class="op">=</span> pid <span class="op">*</span> BLOCK_SIZE</span>
+<span id="cb11-74"><a href="#cb11-74" aria-hidden="true" tabindex="-1"></a>    offsets <span class="op">=</span> block_start <span class="op">+</span> tl.arange(<span class="dv">0</span>, BLOCK_SIZE)</span>
+<span id="cb11-75"><a href="#cb11-75" aria-hidden="true" tabindex="-1"></a>    mask <span class="op">=</span> offsets <span class="op">&lt;</span> n_elements</span>
+<span id="cb11-76"><a href="#cb11-76" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-77"><a href="#cb11-77" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> tl.load(x_ptr <span class="op">+</span> offsets, mask<span class="op">=</span>mask)</span>
+<span id="cb11-78"><a href="#cb11-78" aria-hidden="true" tabindex="-1"></a>    y <span class="op">=</span> tl.load(y_ptr <span class="op">+</span> offsets, mask<span class="op">=</span>mask)</span>
+<span id="cb11-79"><a href="#cb11-79" aria-hidden="true" tabindex="-1"></a>    tl.store(out_ptr <span class="op">+</span> offsets, x <span class="op">+</span> y, mask<span class="op">=</span>mask)</span>
+<span id="cb11-80"><a href="#cb11-80" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-81"><a href="#cb11-81" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-82"><a href="#cb11-82" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> vector_add(x, y, BLOCK_SIZE<span class="op">=</span><span class="dv">1024</span>):</span>
+<span id="cb11-83"><a href="#cb11-83" aria-hidden="true" tabindex="-1"></a>    out <span class="op">=</span> torch.empty_like(x)</span>
+<span id="cb11-84"><a href="#cb11-84" aria-hidden="true" tabindex="-1"></a>    grid <span class="op">=</span> (triton.cdiv(x.numel(), BLOCK_SIZE),)</span>
+<span id="cb11-85"><a href="#cb11-85" aria-hidden="true" tabindex="-1"></a>    vector_add_kernel[grid](x, y, out, x.numel(), BLOCK_SIZE<span class="op">=</span>BLOCK_SIZE)</span>
+<span id="cb11-86"><a href="#cb11-86" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> out</span>
+<span id="cb11-87"><a href="#cb11-87" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb11-88"><a href="#cb11-88" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-89"><a href="#cb11-89" aria-hidden="true" tabindex="-1"></a>The launcher allocates the output, computes the grid as <span class="in">`ceil(n / BLOCK_SIZE)`</span>, and calls the kernel. Note that you pass <span class="in">`x`</span> (a <span class="in">`torch.Tensor`</span>) where the kernel expects a <span class="in">`*Pointer*`</span> — Triton extracts the data pointer automatically. The same is true for <span class="in">`y`</span> and <span class="in">`out`</span>.</span>
+<span id="cb11-90"><a href="#cb11-90" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-91"><a href="#cb11-91" aria-hidden="true" tabindex="-1"></a>The kernel body is five lines. <span class="in">`pid`</span> says which tile this program owns; <span class="in">`block_start`</span> is the first element index; <span class="in">`offsets`</span> is the vector <span class="in">`[block_start, block_start+1, ..., block_start+BLOCK_SIZE-1]`</span>. The mask kills the lanes that fall off the end of the tensor on the tail tile. Load, add, store.</span>
+<span id="cb11-92"><a href="#cb11-92" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-93"><a href="#cb11-93" aria-hidden="true" tabindex="-1"></a><span class="fu">### Shape trace</span></span>
+<span id="cb11-94"><a href="#cb11-94" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-95"><a href="#cb11-95" aria-hidden="true" tabindex="-1"></a>For <span class="in">`N = 1_048_576`</span>, <span class="in">`BLOCK_SIZE = 1024`</span>:</span>
+<span id="cb11-96"><a href="#cb11-96" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-97"><a href="#cb11-97" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb11-98"><a href="#cb11-98" aria-hidden="true" tabindex="-1"></a><span class="in">Input:                       x, y : (1_048_576,)    fp32</span></span>
+<span id="cb11-99"><a href="#cb11-99" aria-hidden="true" tabindex="-1"></a><span class="in">Grid:                        (1024,)</span></span>
+<span id="cb11-100"><a href="#cb11-100" aria-hidden="true" tabindex="-1"></a><span class="in">pid = tl.program_id(0)       scalar               int32   # 0 .. 1023</span></span>
+<span id="cb11-101"><a href="#cb11-101" aria-hidden="true" tabindex="-1"></a><span class="in">block_start = pid * 1024     scalar offset        int32</span></span>
+<span id="cb11-102"><a href="#cb11-102" aria-hidden="true" tabindex="-1"></a><span class="in">offsets = block_start +</span></span>
+<span id="cb11-103"><a href="#cb11-103" aria-hidden="true" tabindex="-1"></a><span class="in">          tl.arange(0, 1024) (1024,)              int32   # element indices</span></span>
+<span id="cb11-104"><a href="#cb11-104" aria-hidden="true" tabindex="-1"></a><span class="in">mask = offsets &lt; 1_048_576   (1024,)              bool    # all True here</span></span>
+<span id="cb11-105"><a href="#cb11-105" aria-hidden="true" tabindex="-1"></a><span class="in">x = tl.load(x_ptr + offsets) (1024,)              fp32</span></span>
+<span id="cb11-106"><a href="#cb11-106" aria-hidden="true" tabindex="-1"></a><span class="in">y = tl.load(y_ptr + offsets) (1024,)              fp32</span></span>
+<span id="cb11-107"><a href="#cb11-107" aria-hidden="true" tabindex="-1"></a><span class="in">out = x + y                  (1024,)              fp32</span></span>
+<span id="cb11-108"><a href="#cb11-108" aria-hidden="true" tabindex="-1"></a><span class="in">tl.store(out_ptr + offsets,</span></span>
+<span id="cb11-109"><a href="#cb11-109" aria-hidden="true" tabindex="-1"></a><span class="in">         out, mask=mask)</span></span>
+<span id="cb11-110"><a href="#cb11-110" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb11-111"><a href="#cb11-111" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-112"><a href="#cb11-112" aria-hidden="true" tabindex="-1"></a>For <span class="in">`N = 1_000_000`</span>, same <span class="in">`BLOCK_SIZE`</span>: the grid is <span class="in">`triton.cdiv(1_000_000, 1024) = 977`</span>. Programs 0 through 975 see <span class="in">`mask = all True`</span>. Program 976 sees <span class="in">`mask = offsets &lt; 1_000_000`</span> with exactly <span class="in">`976 * 1024 - 1_000_000 = -23552`</span>... wait, the math: <span class="in">`976 * 1024 = 999424`</span> and <span class="in">`977 * 1024 = 1000448`</span>, so the last program covers indices <span class="in">`[999424, 1000448)`</span> and the mask kills the last <span class="in">`1000448 - 1000000 = 448`</span> lanes.</span>
+<span id="cb11-113"><a href="#cb11-113" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-114"><a href="#cb11-114" aria-hidden="true" tabindex="-1"></a>Convince yourself by sliding the widget below to <span class="in">`N=17, BLOCK_SIZE=4`</span>. You should see exactly 5 programs, and the last one has 3 grey (masked) lanes.</span>
+<span id="cb11-115"><a href="#cb11-115" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-116"><a href="#cb11-116" aria-hidden="true" tabindex="-1"></a><span class="fu">## Interactive: how `BLOCK_SIZE` tiles a 1D tensor</span></span>
+<span id="cb11-117"><a href="#cb11-117" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-118"><a href="#cb11-118" aria-hidden="true" tabindex="-1"></a>Drag the sliders. The shaded portion of the last tile is what your mask saves you from clobbering.</span>
+<span id="cb11-119"><a href="#cb11-119" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-122"><a href="#cb11-122" aria-hidden="true" tabindex="-1"></a><span class="in">```{ojs}</span></span>
+<span id="cb11-123"><a href="#cb11-123" aria-hidden="true" tabindex="-1"></a><span class="in">//| echo: false</span></span>
+<span id="cb11-124"><a href="#cb11-124" aria-hidden="true" tabindex="-1"></a><span class="in">//| label: fig-vector-add-tiling</span></span>
+<span id="cb11-125"><a href="#cb11-125" aria-hidden="true" tabindex="-1"></a><span class="in">//| fig-cap: "Per-program tile coverage of a length-N 1D tensor by BLOCK_SIZE lanes. Steel-blue cells are in-bounds lanes (the kernel reads/writes them); light-gray cells are masked-off tail lanes that the kernel's mask must guard against. Numbers inside cells are global element indices; 'x' marks masked lanes."</span></span>
+<span id="cb11-126"><a href="#cb11-126" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-127"><a href="#cb11-127" aria-hidden="true" tabindex="-1"></a><span class="in">// --- Inputs -------------------------------------------------------------</span></span>
+<span id="cb11-128"><a href="#cb11-128" aria-hidden="true" tabindex="-1"></a><span class="in">viewof N = Inputs.range([1, 64], {value: 17, step: 1, label: "N (tensor length)"})</span></span>
+<span id="cb11-129"><a href="#cb11-129" aria-hidden="true" tabindex="-1"></a><span class="in">viewof BLOCK_SIZE = Inputs.range([1, 32], {value: 4, step: 1, label: "BLOCK_SIZE"})</span></span>
+<span id="cb11-130"><a href="#cb11-130" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-131"><a href="#cb11-131" aria-hidden="true" tabindex="-1"></a><span class="in">// --- Derived ------------------------------------------------------------</span></span>
+<span id="cb11-132"><a href="#cb11-132" aria-hidden="true" tabindex="-1"></a><span class="in">num_programs = Math.ceil(N / BLOCK_SIZE)</span></span>
+<span id="cb11-133"><a href="#cb11-133" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-134"><a href="#cb11-134" aria-hidden="true" tabindex="-1"></a><span class="in">tiles = {</span></span>
+<span id="cb11-135"><a href="#cb11-135" aria-hidden="true" tabindex="-1"></a><span class="in">  const out = [];</span></span>
+<span id="cb11-136"><a href="#cb11-136" aria-hidden="true" tabindex="-1"></a><span class="in">  for (let pid = 0; pid &lt; num_programs; pid++) {</span></span>
+<span id="cb11-137"><a href="#cb11-137" aria-hidden="true" tabindex="-1"></a><span class="in">    const start = pid * BLOCK_SIZE;</span></span>
+<span id="cb11-138"><a href="#cb11-138" aria-hidden="true" tabindex="-1"></a><span class="in">    for (let lane = 0; lane &lt; BLOCK_SIZE; lane++) {</span></span>
+<span id="cb11-139"><a href="#cb11-139" aria-hidden="true" tabindex="-1"></a><span class="in">      const idx = start + lane;</span></span>
+<span id="cb11-140"><a href="#cb11-140" aria-hidden="true" tabindex="-1"></a><span class="in">      out.push({</span></span>
+<span id="cb11-141"><a href="#cb11-141" aria-hidden="true" tabindex="-1"></a><span class="in">        pid: pid,</span></span>
+<span id="cb11-142"><a href="#cb11-142" aria-hidden="true" tabindex="-1"></a><span class="in">        lane: lane,</span></span>
+<span id="cb11-143"><a href="#cb11-143" aria-hidden="true" tabindex="-1"></a><span class="in">        index: idx,</span></span>
+<span id="cb11-144"><a href="#cb11-144" aria-hidden="true" tabindex="-1"></a><span class="in">        in_bounds: idx &lt; N,</span></span>
+<span id="cb11-145"><a href="#cb11-145" aria-hidden="true" tabindex="-1"></a><span class="in">        state: idx &lt; N ? "in-bounds" : "masked"</span></span>
+<span id="cb11-146"><a href="#cb11-146" aria-hidden="true" tabindex="-1"></a><span class="in">      });</span></span>
+<span id="cb11-147"><a href="#cb11-147" aria-hidden="true" tabindex="-1"></a><span class="in">    }</span></span>
+<span id="cb11-148"><a href="#cb11-148" aria-hidden="true" tabindex="-1"></a><span class="in">  }</span></span>
+<span id="cb11-149"><a href="#cb11-149" aria-hidden="true" tabindex="-1"></a><span class="in">  return out;</span></span>
+<span id="cb11-150"><a href="#cb11-150" aria-hidden="true" tabindex="-1"></a><span class="in">}</span></span>
+<span id="cb11-151"><a href="#cb11-151" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-152"><a href="#cb11-152" aria-hidden="true" tabindex="-1"></a><span class="in">Plot.plot({</span></span>
+<span id="cb11-153"><a href="#cb11-153" aria-hidden="true" tabindex="-1"></a><span class="in">  width: 720,</span></span>
+<span id="cb11-154"><a href="#cb11-154" aria-hidden="true" tabindex="-1"></a><span class="in">  height: 60 + num_programs * 32,</span></span>
+<span id="cb11-155"><a href="#cb11-155" aria-hidden="true" tabindex="-1"></a><span class="in">  x: {label: "lane within program", domain: [0, BLOCK_SIZE], ticks: d3.range(BLOCK_SIZE + 1)},</span></span>
+<span id="cb11-156"><a href="#cb11-156" aria-hidden="true" tabindex="-1"></a><span class="in">  y: {label: "program id (pid)", domain: [0, num_programs], ticks: d3.range(num_programs + 1), reverse: true},</span></span>
+<span id="cb11-157"><a href="#cb11-157" aria-hidden="true" tabindex="-1"></a><span class="in">  color: {legend: true, domain: ["in-bounds", "masked"], range: ["steelblue", "lightgray"]},</span></span>
+<span id="cb11-158"><a href="#cb11-158" aria-hidden="true" tabindex="-1"></a><span class="in">  marks: [</span></span>
+<span id="cb11-159"><a href="#cb11-159" aria-hidden="true" tabindex="-1"></a><span class="in">    Plot.rect(tiles, {</span></span>
+<span id="cb11-160"><a href="#cb11-160" aria-hidden="true" tabindex="-1"></a><span class="in">      x1: d =&gt; d.lane,</span></span>
+<span id="cb11-161"><a href="#cb11-161" aria-hidden="true" tabindex="-1"></a><span class="in">      x2: d =&gt; d.lane + 1,</span></span>
+<span id="cb11-162"><a href="#cb11-162" aria-hidden="true" tabindex="-1"></a><span class="in">      y1: d =&gt; d.pid,</span></span>
+<span id="cb11-163"><a href="#cb11-163" aria-hidden="true" tabindex="-1"></a><span class="in">      y2: d =&gt; d.pid + 1,</span></span>
+<span id="cb11-164"><a href="#cb11-164" aria-hidden="true" tabindex="-1"></a><span class="in">      fill: "state",</span></span>
+<span id="cb11-165"><a href="#cb11-165" aria-hidden="true" tabindex="-1"></a><span class="in">      stroke: "white",</span></span>
+<span id="cb11-166"><a href="#cb11-166" aria-hidden="true" tabindex="-1"></a><span class="in">      strokeWidth: 2,</span></span>
+<span id="cb11-167"><a href="#cb11-167" aria-hidden="true" tabindex="-1"></a><span class="in">      title: d =&gt; `pid=${d.pid} lane=${d.lane} index=${d.index} ${d.in_bounds ? "" : "(masked)"}`</span></span>
+<span id="cb11-168"><a href="#cb11-168" aria-hidden="true" tabindex="-1"></a><span class="in">    }),</span></span>
+<span id="cb11-169"><a href="#cb11-169" aria-hidden="true" tabindex="-1"></a><span class="in">    Plot.text(tiles, {</span></span>
+<span id="cb11-170"><a href="#cb11-170" aria-hidden="true" tabindex="-1"></a><span class="in">      x: d =&gt; d.lane + 0.5,</span></span>
+<span id="cb11-171"><a href="#cb11-171" aria-hidden="true" tabindex="-1"></a><span class="in">      y: d =&gt; d.pid + 0.5,</span></span>
+<span id="cb11-172"><a href="#cb11-172" aria-hidden="true" tabindex="-1"></a><span class="in">      text: d =&gt; d.in_bounds ? `${d.index}` : "x",</span></span>
+<span id="cb11-173"><a href="#cb11-173" aria-hidden="true" tabindex="-1"></a><span class="in">      fill: "white",</span></span>
+<span id="cb11-174"><a href="#cb11-174" aria-hidden="true" tabindex="-1"></a><span class="in">      fontSize: 11</span></span>
+<span id="cb11-175"><a href="#cb11-175" aria-hidden="true" tabindex="-1"></a><span class="in">    })</span></span>
+<span id="cb11-176"><a href="#cb11-176" aria-hidden="true" tabindex="-1"></a><span class="in">  ]</span></span>
+<span id="cb11-177"><a href="#cb11-177" aria-hidden="true" tabindex="-1"></a><span class="in">})</span></span>
+<span id="cb11-178"><a href="#cb11-178" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-179"><a href="#cb11-179" aria-hidden="true" tabindex="-1"></a><span class="in">md`**Grid size:** ${num_programs} program(s). **Masked lanes in last tile:** ${</span></span>
+<span id="cb11-180"><a href="#cb11-180" aria-hidden="true" tabindex="-1"></a><span class="in">  num_programs * BLOCK_SIZE - N</span></span>
+<span id="cb11-181"><a href="#cb11-181" aria-hidden="true" tabindex="-1"></a><span class="in">}.`</span></span>
+<span id="cb11-182"><a href="#cb11-182" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb11-183"><a href="#cb11-183" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-184"><a href="#cb11-184" aria-hidden="true" tabindex="-1"></a><span class="fu">### Pointer arithmetic and masks</span></span>
+<span id="cb11-185"><a href="#cb11-185" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-186"><a href="#cb11-186" aria-hidden="true" tabindex="-1"></a><span class="in">`x_ptr`</span> is a pointer to fp32 (when <span class="in">`x.dtype == torch.float32`</span>). Adding an integer offset advances the pointer in *element units*, not bytes. So <span class="in">`x_ptr + offsets`</span> is a <span class="in">`(BLOCK_SIZE,)`</span> tensor of pointers, each pointing at the corresponding element of <span class="in">`x`</span>. <span class="in">`tl.load`</span> takes a pointer (or a tile of pointers) and returns the value(s) at those addresses. The <span class="in">`mask`</span> argument suppresses loads on lanes where <span class="in">`mask`</span> is false — those lanes return <span class="in">`other=`</span> (defaulting to <span class="in">`0`</span>) and, crucially, do not perform the memory access. That last bit is the whole point of the mask: it prevents out-of-bounds reads on the tail tile.</span>
+<span id="cb11-187"><a href="#cb11-187" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-188"><a href="#cb11-188" aria-hidden="true" tabindex="-1"></a><span class="in">`tl.store`</span> is symmetric. Masked lanes simply do not write.</span>
+<span id="cb11-189"><a href="#cb11-189" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-190"><a href="#cb11-190" aria-hidden="true" tabindex="-1"></a><span class="in">`other=`</span> matters for reductions, not for elementwise. In Chapter 4 you will see why <span class="in">`other=0`</span> is right for sums and <span class="in">`other=-inf`</span> is right for maxes. For <span class="in">`vector_add`</span> the default <span class="in">`other=0`</span> is fine because we never read the masked lanes of the result.</span>
+<span id="cb11-191"><a href="#cb11-191" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-192"><a href="#cb11-192" aria-hidden="true" tabindex="-1"></a><span class="fu">### Correctness test</span></span>
+<span id="cb11-193"><a href="#cb11-193" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-194"><a href="#cb11-194" aria-hidden="true" tabindex="-1"></a>The full test module is in <span class="in">`tests/test_ch02_vector_add.py`</span>. The core of it:</span>
+<span id="cb11-195"><a href="#cb11-195" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-198"><a href="#cb11-198" aria-hidden="true" tabindex="-1"></a><span class="in">```{python}</span></span>
+<span id="cb11-199"><a href="#cb11-199" aria-hidden="true" tabindex="-1"></a><span class="co">#| eval: false</span></span>
+<span id="cb11-200"><a href="#cb11-200" aria-hidden="true" tabindex="-1"></a><span class="at">@pytest.mark.parametrize</span>(<span class="st">"n"</span>, [<span class="dv">7</span>, <span class="dv">1024</span>, <span class="dv">1023</span>, <span class="dv">1025</span>, <span class="dv">1_048_576</span>])</span>
+<span id="cb11-201"><a href="#cb11-201" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> test_vector_add_fp32(n):</span>
+<span id="cb11-202"><a href="#cb11-202" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> torch.randn(n, device<span class="op">=</span><span class="st">"cuda"</span>, dtype<span class="op">=</span>torch.float32)</span>
+<span id="cb11-203"><a href="#cb11-203" aria-hidden="true" tabindex="-1"></a>    y <span class="op">=</span> torch.randn(n, device<span class="op">=</span><span class="st">"cuda"</span>, dtype<span class="op">=</span>torch.float32)</span>
+<span id="cb11-204"><a href="#cb11-204" aria-hidden="true" tabindex="-1"></a>    out <span class="op">=</span> vector_add(x, y)</span>
+<span id="cb11-205"><a href="#cb11-205" aria-hidden="true" tabindex="-1"></a>    torch.testing.assert_close(out, x <span class="op">+</span> y, rtol<span class="op">=</span><span class="fl">1e-5</span>, atol<span class="op">=</span><span class="fl">1e-5</span>)</span>
+<span id="cb11-206"><a href="#cb11-206" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb11-207"><a href="#cb11-207" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-208"><a href="#cb11-208" aria-hidden="true" tabindex="-1"></a><span class="in">`n=7`</span> is small enough to step through by hand. <span class="in">`n=1023`</span> and <span class="in">`n=1025`</span> force the tail-mask path on either side of the <span class="in">`BLOCK_SIZE=1024`</span> boundary. <span class="in">`n=1_048_576`</span> is a round number for the benchmark below.</span>
+<span id="cb11-209"><a href="#cb11-209" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-210"><a href="#cb11-210" aria-hidden="true" tabindex="-1"></a><span class="fu">### Benchmark</span></span>
+<span id="cb11-211"><a href="#cb11-211" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-212"><a href="#cb11-212" aria-hidden="true" tabindex="-1"></a><span class="in">`triton.testing.do_bench`</span> runs the callable, warms up, syncs, and returns the median elapsed time in milliseconds. Use it.</span>
+<span id="cb11-213"><a href="#cb11-213" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-216"><a href="#cb11-216" aria-hidden="true" tabindex="-1"></a><span class="in">```{python}</span></span>
+<span id="cb11-217"><a href="#cb11-217" aria-hidden="true" tabindex="-1"></a><span class="co">#| eval: false</span></span>
+<span id="cb11-218"><a href="#cb11-218" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> triton</span>
+<span id="cb11-219"><a href="#cb11-219" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-220"><a href="#cb11-220" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> bench(x, y):</span>
+<span id="cb11-221"><a href="#cb11-221" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> triton.testing.do_bench(<span class="kw">lambda</span>: vector_add(x, y))</span>
+<span id="cb11-222"><a href="#cb11-222" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-223"><a href="#cb11-223" aria-hidden="true" tabindex="-1"></a><span class="co"># Effective bandwidth for fp32 vector_add:</span></span>
+<span id="cb11-224"><a href="#cb11-224" aria-hidden="true" tabindex="-1"></a><span class="co">#   2 loads + 1 store per element = 3 * N * 4 bytes</span></span>
+<span id="cb11-225"><a href="#cb11-225" aria-hidden="true" tabindex="-1"></a>ms <span class="op">=</span> bench(x, y)</span>
+<span id="cb11-226"><a href="#cb11-226" aria-hidden="true" tabindex="-1"></a>gbps <span class="op">=</span> <span class="dv">3</span> <span class="op">*</span> x.numel() <span class="op">*</span> <span class="dv">4</span> <span class="op">/</span> (ms <span class="op">*</span> <span class="fl">1e-3</span>) <span class="op">/</span> <span class="fl">1e9</span></span>
+<span id="cb11-227"><a href="#cb11-227" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb11-228"><a href="#cb11-228" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-229"><a href="#cb11-229" aria-hidden="true" tabindex="-1"></a>For a 2070 SUPER (~448 GB/s peak), expect to see ~390–420 GB/s on a 4 MB-or-larger working set. Anything dramatically lower means the kernel is launch-bound (try larger <span class="in">`N`</span>) or you forgot to warm up (<span class="in">`do_bench`</span> does this for you, so don't).</span>
+<span id="cb11-230"><a href="#cb11-230" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-231"><a href="#cb11-231" aria-hidden="true" tabindex="-1"></a>::: {.callout-warning appearance="simple"}</span>
+<span id="cb11-232"><a href="#cb11-232" aria-hidden="true" tabindex="-1"></a>**Placeholder data.** The numbers below are hardcoded illustrative values, not measurements. Replace with output from your own <span class="in">`triton.testing.do_bench`</span> run before drawing conclusions.</span>
+<span id="cb11-233"><a href="#cb11-233" aria-hidden="true" tabindex="-1"></a>:::</span>
+<span id="cb11-234"><a href="#cb11-234" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-237"><a href="#cb11-237" aria-hidden="true" tabindex="-1"></a><span class="in">```{ojs}</span></span>
+<span id="cb11-238"><a href="#cb11-238" aria-hidden="true" tabindex="-1"></a><span class="in">//| echo: false</span></span>
+<span id="cb11-239"><a href="#cb11-239" aria-hidden="true" tabindex="-1"></a><span class="in">//| label: fig-vector-add-bench</span></span>
+<span id="cb11-240"><a href="#cb11-240" aria-hidden="true" tabindex="-1"></a><span class="in">//| fig-cap: "Vector-add median latency vs tensor length N (log x-axis). Lower is better. Compares the Triton kernel (steelblue) against eager torch.add (orange)."</span></span>
+<span id="cb11-241"><a href="#cb11-241" aria-hidden="true" tabindex="-1"></a><span class="in">{</span></span>
+<span id="cb11-242"><a href="#cb11-242" aria-hidden="true" tabindex="-1"></a><span class="in">  const data = [</span></span>
+<span id="cb11-243"><a href="#cb11-243" aria-hidden="true" tabindex="-1"></a><span class="in">    {N: 4096,      triton_ms: 0.012, torch_ms: 0.015},</span></span>
+<span id="cb11-244"><a href="#cb11-244" aria-hidden="true" tabindex="-1"></a><span class="in">    {N: 65536,     triton_ms: 0.018, torch_ms: 0.022},</span></span>
+<span id="cb11-245"><a href="#cb11-245" aria-hidden="true" tabindex="-1"></a><span class="in">    {N: 1048576,   triton_ms: 0.085, torch_ms: 0.092},</span></span>
+<span id="cb11-246"><a href="#cb11-246" aria-hidden="true" tabindex="-1"></a><span class="in">    {N: 16777216,  triton_ms: 1.30,  torch_ms: 1.45},</span></span>
+<span id="cb11-247"><a href="#cb11-247" aria-hidden="true" tabindex="-1"></a><span class="in">  ];</span></span>
+<span id="cb11-248"><a href="#cb11-248" aria-hidden="true" tabindex="-1"></a><span class="in">  const long = data.flatMap(d =&gt; [</span></span>
+<span id="cb11-249"><a href="#cb11-249" aria-hidden="true" tabindex="-1"></a><span class="in">    {N: d.N, impl: "triton", ms: d.triton_ms},</span></span>
+<span id="cb11-250"><a href="#cb11-250" aria-hidden="true" tabindex="-1"></a><span class="in">    {N: d.N, impl: "torch",  ms: d.torch_ms}</span></span>
+<span id="cb11-251"><a href="#cb11-251" aria-hidden="true" tabindex="-1"></a><span class="in">  ]);</span></span>
+<span id="cb11-252"><a href="#cb11-252" aria-hidden="true" tabindex="-1"></a><span class="in">  return Plot.plot({</span></span>
+<span id="cb11-253"><a href="#cb11-253" aria-hidden="true" tabindex="-1"></a><span class="in">    color: {legend: true, domain: ["triton", "torch"], range: ["steelblue", "orange"]},</span></span>
+<span id="cb11-254"><a href="#cb11-254" aria-hidden="true" tabindex="-1"></a><span class="in">    x: {type: "log", label: "N (elements)"},</span></span>
+<span id="cb11-255"><a href="#cb11-255" aria-hidden="true" tabindex="-1"></a><span class="in">    y: {label: "median latency (ms) — lower is better"},</span></span>
+<span id="cb11-256"><a href="#cb11-256" aria-hidden="true" tabindex="-1"></a><span class="in">    marks: [</span></span>
+<span id="cb11-257"><a href="#cb11-257" aria-hidden="true" tabindex="-1"></a><span class="in">      Plot.line(long, {x: "N", y: "ms", stroke: "impl"}),</span></span>
+<span id="cb11-258"><a href="#cb11-258" aria-hidden="true" tabindex="-1"></a><span class="in">      Plot.dot(long,  {x: "N", y: "ms", fill: "impl"})</span></span>
+<span id="cb11-259"><a href="#cb11-259" aria-hidden="true" tabindex="-1"></a><span class="in">    ]</span></span>
+<span id="cb11-260"><a href="#cb11-260" aria-hidden="true" tabindex="-1"></a><span class="in">  });</span></span>
+<span id="cb11-261"><a href="#cb11-261" aria-hidden="true" tabindex="-1"></a><span class="in">}</span></span>
+<span id="cb11-262"><a href="#cb11-262" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb11-263"><a href="#cb11-263" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-264"><a href="#cb11-264" aria-hidden="true" tabindex="-1"></a><span class="fu">### Optimization discussion</span></span>
+<span id="cb11-265"><a href="#cb11-265" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-266"><a href="#cb11-266" aria-hidden="true" tabindex="-1"></a>The only knob in <span class="in">`vector_add`</span> is <span class="in">`BLOCK_SIZE`</span>. The benchmark script sweeps <span class="in">`[64, 128, 256, 1024, 4096]`</span>. The typical pattern on a modern NVIDIA GPU:</span>
+<span id="cb11-267"><a href="#cb11-267" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-268"><a href="#cb11-268" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span><span class="in">`BLOCK_SIZE=64`</span>: many small programs, launch overhead dominates at small <span class="in">`N`</span>, bandwidth flat at large <span class="in">`N`</span>.</span>
+<span id="cb11-269"><a href="#cb11-269" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span><span class="in">`BLOCK_SIZE=256`</span>: usually a good balance.</span>
+<span id="cb11-270"><a href="#cb11-270" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span><span class="in">`BLOCK_SIZE=1024`</span>: the default in this book for elementwise. It is the right answer often enough that you should start here and only deviate with a measurement to justify it.</span>
+<span id="cb11-271"><a href="#cb11-271" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span><span class="in">`BLOCK_SIZE=4096`</span>: more registers per program, fewer programs total, occupancy may drop, marginal change for elementwise.</span>
+<span id="cb11-272"><a href="#cb11-272" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-273"><a href="#cb11-273" aria-hidden="true" tabindex="-1"></a>The right answer depends on the GPU and on <span class="in">`N`</span>. For real production code use <span class="in">`triton.autotune`</span> (Chapter 26). For learning, a fixed default plus a manual sweep teaches you more.</span>
+<span id="cb11-274"><a href="#cb11-274" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-275"><a href="#cb11-275" aria-hidden="true" tabindex="-1"></a>The kernel is memory-bound. The compute (one add per element) is trivial; you are limited by how fast you can stream from HBM. The bound is the peak HBM bandwidth of your GPU times whatever fraction of it the access pattern can achieve. Coalesced, contiguous reads at <span class="in">`BLOCK_SIZE &gt;= 256`</span> typically hit 90 %+ of peak.</span>
+<span id="cb11-276"><a href="#cb11-276" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-277"><a href="#cb11-277" aria-hidden="true" tabindex="-1"></a><span class="fu">### Common bugs</span></span>
+<span id="cb11-278"><a href="#cb11-278" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-279"><a href="#cb11-279" aria-hidden="true" tabindex="-1"></a><span class="ss">1. </span>**Forgot the mask.** Without <span class="in">`mask=mask`</span> on <span class="in">`tl.load`</span>, the tail program reads past the end of the tensor. You may get garbage values or a memory fault depending on alignment. Always add the mask, even when you "know" <span class="in">`N`</span> is a multiple of <span class="in">`BLOCK_SIZE`</span> — production code does not know.</span>
+<span id="cb11-280"><a href="#cb11-280" aria-hidden="true" tabindex="-1"></a><span class="ss">2. </span>**`BLOCK_SIZE` not `tl.constexpr`.** Without the annotation, Triton cannot specialize the loop bounds at compile time and you get either a confusing compile error or, worse, a slow kernel. The annotation lives on the *parameter*, not on a Python variable inside the kernel.</span>
+<span id="cb11-281"><a href="#cb11-281" aria-hidden="true" tabindex="-1"></a><span class="ss">3. </span>**Passing a non-contiguous tensor without strides.** The kernel above assumes contiguous storage. If you pass <span class="in">`x.t()`</span> or <span class="in">`x[::2]`</span>, the data is no longer at consecutive addresses and <span class="in">`x_ptr + offsets`</span> walks into the wrong cells. Chapter 3 handles strides explicitly.</span>
+<span id="cb11-282"><a href="#cb11-282" aria-hidden="true" tabindex="-1"></a><span class="ss">4. </span>**Wrong grid math.** <span class="in">`(n_elements // BLOCK_SIZE,)`</span> drops the tail tile. Use <span class="in">`triton.cdiv(n, BLOCK_SIZE)`</span>.</span>
+<span id="cb11-283"><a href="#cb11-283" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-284"><a href="#cb11-284" aria-hidden="true" tabindex="-1"></a><span class="fu">### Exercises</span></span>
+<span id="cb11-285"><a href="#cb11-285" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-286"><a href="#cb11-286" aria-hidden="true" tabindex="-1"></a>See <span class="in">`exercises/ch02_exercises.md`</span> for the full text; here are the prompts in brief:</span>
+<span id="cb11-287"><a href="#cb11-287" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-288"><a href="#cb11-288" aria-hidden="true" tabindex="-1"></a>**Beginner:** (B1) <span class="in">`vector_sub`</span>. (B2) <span class="in">`scalar_mul(x, alpha)`</span>. (B3) Fused <span class="in">`fma(x, y, z) = x * y + z`</span>.</span>
+<span id="cb11-289"><a href="#cb11-289" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-290"><a href="#cb11-290" aria-hidden="true" tabindex="-1"></a>**Intermediate:** (I1) <span class="in">`clamp(x, lo, hi)`</span>. (I2) <span class="in">`where(cond, x, y)`</span> for a <span class="in">`torch.bool`</span> mask tensor.</span>
+<span id="cb11-291"><a href="#cb11-291" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-292"><a href="#cb11-292" aria-hidden="true" tabindex="-1"></a>**Advanced:** (A1) <span class="in">`vector_add_strided`</span> — accept non-contiguous 1-D inputs, pass strides as kernel args. A teaser for Chapter 3, where strides are first-class.</span>
+<span id="cb11-293"><a href="#cb11-293" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-294"><a href="#cb11-294" aria-hidden="true" tabindex="-1"></a>Worked solutions are in <span class="in">`solutions/ch02_solutions.py`</span>. Try them blind first.</span>
+</code><button title="Copy to Clipboard" class="code-copy-button" data-in-quarto-modal=""><i class="bi"></i></button></pre></div>
+</div></div></div></div></div>
+</div> <!-- /content -->
+
+
+
+
+</body></html>

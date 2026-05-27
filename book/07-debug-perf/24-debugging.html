@@ -1,0 +1,1379 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"><head>
+
+<meta charset="utf-8">
+<meta name="generator" content="quarto-1.5.57">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+
+<title>26&nbsp; Chapter 24: Debugging Triton Kernels – Learning Triton by Rebuilding Modern LLM Kernels</title>
+<style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+  width: 0.8em;
+  margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
+  vertical-align: middle;
+}
+/* CSS for syntax highlighting */
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { display: inline-block; text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+  { counter-reset: source-line 0; }
+pre.numberSource code > span
+  { position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+  { content: counter(source-line);
+    position: relative; left: -1em; text-align: right; vertical-align: baseline;
+    border: none; display: inline-block;
+    -webkit-touch-callout: none; -webkit-user-select: none;
+    -khtml-user-select: none; -moz-user-select: none;
+    -ms-user-select: none; user-select: none;
+    padding: 0 4px; width: 4em;
+  }
+pre.numberSource { margin-left: 3em;  padding-left: 4px; }
+div.sourceCode
+  {   }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+</style>
+
+
+<script src="../../site_libs/quarto-nav/quarto-nav.js"></script>
+<script src="../../site_libs/quarto-nav/headroom.min.js"></script>
+<script src="../../site_libs/clipboard/clipboard.min.js"></script>
+<script src="../../site_libs/quarto-search/autocomplete.umd.js"></script>
+<script src="../../site_libs/quarto-search/fuse.min.js"></script>
+<script src="../../site_libs/quarto-search/quarto-search.js"></script>
+<meta name="quarto:offset" content="../../">
+<link href="../../book/07-debug-perf/25-benchmarking.html" rel="next">
+<link href="../../book/06-quantization/23-dequant-matmul.html" rel="prev">
+<script src="../../site_libs/quarto-html/quarto.js"></script>
+<script src="../../site_libs/quarto-html/popper.min.js"></script>
+<script src="../../site_libs/quarto-html/tippy.umd.min.js"></script>
+<script src="../../site_libs/quarto-html/anchor.min.js"></script>
+<link href="../../site_libs/quarto-html/tippy.css" rel="stylesheet">
+<link href="../../site_libs/quarto-html/quarto-syntax-highlighting.css" rel="stylesheet" id="quarto-text-highlighting-styles">
+<script src="../../site_libs/bootstrap/bootstrap.min.js"></script>
+<link href="../../site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
+<link href="../../site_libs/bootstrap/bootstrap.min.css" rel="stylesheet" id="quarto-bootstrap" data-mode="light">
+<script id="quarto-search-options" type="application/json">{
+  "location": "sidebar",
+  "copy-button": false,
+  "collapse-after": 3,
+  "panel-placement": "start",
+  "type": "textbox",
+  "limit": 50,
+  "keyboard-shortcut": [
+    "f",
+    "/",
+    "s"
+  ],
+  "show-item-context": false,
+  "language": {
+    "search-no-results-text": "No results",
+    "search-matching-documents-text": "matching documents",
+    "search-copy-link-title": "Copy link to search",
+    "search-hide-matches-text": "Hide additional matches",
+    "search-more-match-text": "more match in this document",
+    "search-more-matches-text": "more matches in this document",
+    "search-clear-button-title": "Clear",
+    "search-text-placeholder": "",
+    "search-detached-cancel-button-title": "Cancel",
+    "search-submit-button-title": "Submit",
+    "search-label": "Search"
+  }
+}</script>
+
+
+</head>
+
+<body class="nav-sidebar floating">
+
+<div id="quarto-search-results"></div>
+  <header id="quarto-header" class="headroom fixed-top">
+  <nav class="quarto-secondary-nav">
+    <div class="container-fluid d-flex">
+      <button type="button" class="quarto-btn-toggle btn" data-bs-toggle="collapse" role="button" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">
+        <i class="bi bi-layout-text-sidebar-reverse"></i>
+      </button>
+        <nav class="quarto-page-breadcrumbs" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="../../book/07-debug-perf/24-debugging.html">Part 7: Debugging, Testing, Profiling, Optimization</a></li><li class="breadcrumb-item"><a href="../../book/07-debug-perf/24-debugging.html"><span class="chapter-number">26</span>&nbsp; <span class="chapter-title">Chapter 24: Debugging Triton Kernels</span></a></li></ol></nav>
+        <a class="flex-grow-1" role="navigation" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">      
+        </a>
+      <button type="button" class="btn quarto-search-button" aria-label="Search" onclick="window.quartoOpenSearch();">
+        <i class="bi bi-search"></i>
+      </button>
+    </div>
+  </nav>
+</header>
+<!-- content -->
+<div id="quarto-content" class="quarto-container page-columns page-rows-contents page-layout-article">
+<!-- sidebar -->
+  <nav id="quarto-sidebar" class="sidebar collapse collapse-horizontal quarto-sidebar-collapse-item sidebar-navigation floating overflow-auto">
+    <div class="pt-lg-2 mt-2 text-left sidebar-header">
+    <div class="sidebar-title mb-0 py-0">
+      <a href="../../">Learning Triton by Rebuilding Modern LLM Kernels</a> 
+    </div>
+      </div>
+        <div class="mt-2 flex-shrink-0 align-items-center">
+        <div class="sidebar-search">
+        <div id="quarto-search" class="" title="Search"></div>
+        </div>
+        </div>
+    <div class="sidebar-menu-container"> 
+    <ul class="list-unstyled mt-1">
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../index.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">1</span>&nbsp; <span class="chapter-title">Learning Triton by Rebuilding Modern LLM Kernels</span></span></a>
+  </div>
+</li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-1" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 0: Orientation</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-1" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-1" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/00-orientation/00-why-triton.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">2</span>&nbsp; <span class="chapter-title">Chapter 00: Why Triton Exists</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/00-orientation/01-setup.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">3</span>&nbsp; <span class="chapter-title">Chapter 01: Environment Setup</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-2" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 1: Triton Fundamentals</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-2" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-2" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/01-fundamentals/02-mental-model.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">4</span>&nbsp; <span class="chapter-title">Chapter 2: The Triton Mental Model</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/01-fundamentals/03-memory-pointers-strides.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">5</span>&nbsp; <span class="chapter-title">Chapter 3: Memory, Pointers, Strides, and Masks</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/01-fundamentals/04-reductions.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">6</span>&nbsp; <span class="chapter-title">Chapter 4: Reductions</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-3" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 2: Basic Neural Network Kernels</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-3" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-3" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/02-basic-nn/05-fused-softmax.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">7</span>&nbsp; <span class="chapter-title">Chapter 5: Fused Softmax</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/02-basic-nn/06-layernorm.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">8</span>&nbsp; <span class="chapter-title">Chapter 6: LayerNorm</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/02-basic-nn/07-rmsnorm.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">9</span>&nbsp; <span class="chapter-title">Chapter 7: RMSNorm</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/02-basic-nn/08-activations-swiglu.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">10</span>&nbsp; <span class="chapter-title">Chapter 8: Activation Functions and Gated MLPs</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-4" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 3: Matrix Multiplication</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-4" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-4" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/03-matmul/09-matmul.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">11</span>&nbsp; <span class="chapter-title">Chapter 9: Matmul From Scratch</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/03-matmul/10-batched-matmul-linear.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">12</span>&nbsp; <span class="chapter-title">Chapter 10: Batched Matmul and Linear Layers</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/03-matmul/11-persistent-matmul.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">13</span>&nbsp; <span class="chapter-title">Chapter 11: Persistent Matmul and Advanced Matmul Concepts</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-5" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 4: Attention and Transformer Kernels</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-5" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-5" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/12-attention-math.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">14</span>&nbsp; <span class="chapter-title">Chapter 12: Attention Math Refresher for Kernel Writers</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/13-naive-attention.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">15</span>&nbsp; <span class="chapter-title">Chapter 13: Naive Attention in PyTorch and Triton Pieces</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/14-flashattention-fwd.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">16</span>&nbsp; <span class="chapter-title">Chapter 14: FlashAttention Forward in Triton</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/15-attention-backward.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">17</span>&nbsp; <span class="chapter-title">Chapter 15: Attention Backward — Conceptual and Optional Implementation</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/16-rope-alibi.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">18</span>&nbsp; <span class="chapter-title">Chapter 16: Rotary Positional Embeddings, ALiBi, and Position Kernels</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/17-kv-cache.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">19</span>&nbsp; <span class="chapter-title">Chapter 17: KV Cache Kernels for Inference</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-6" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 5: Modern LLM Layer Fusion</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-6" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-6" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/05-llm-fusion/18-residual-rmsnorm.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">20</span>&nbsp; <span class="chapter-title">Chapter 18: Residual Add + RMSNorm Fusion</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/05-llm-fusion/19-fused-bias-act-gate.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">21</span>&nbsp; <span class="chapter-title">Chapter 19: Fused Bias + Activation + Gate</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/05-llm-fusion/20-cross-entropy.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">22</span>&nbsp; <span class="chapter-title">Chapter 20: Cross Entropy and Logits Kernels</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/05-llm-fusion/21-sampling.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">23</span>&nbsp; <span class="chapter-title">Chapter 21: Sampling Kernels for Inference</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-7" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 6: Quantization-Oriented Kernels</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-7" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-7" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/06-quantization/22-low-precision.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">24</span>&nbsp; <span class="chapter-title">Chapter 22: Low Precision Basics</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/06-quantization/23-dequant-matmul.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">25</span>&nbsp; <span class="chapter-title">Chapter 23: Int8 / FP8 Style Dequant + Matmul Concepts</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-8" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 7: Debugging, Testing, Profiling, Optimization</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-8" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-8" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/07-debug-perf/24-debugging.html" class="sidebar-item-text sidebar-link active">
+ <span class="menu-text"><span class="chapter-number">26</span>&nbsp; <span class="chapter-title">Chapter 24: Debugging Triton Kernels</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/07-debug-perf/25-benchmarking.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">27</span>&nbsp; <span class="chapter-title">Chapter 25: Benchmarking Correctly</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/07-debug-perf/26-autotuning.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">28</span>&nbsp; <span class="chapter-title">Chapter 26: Autotuning</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/07-debug-perf/27-perf-tuning.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">29</span>&nbsp; <span class="chapter-title">Chapter 27: Performance Tuning Mental Model</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-9" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 8: Capstone Projects</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-9" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-9" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/08-capstone/28-mini-library.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">30</span>&nbsp; <span class="chapter-title">Chapter 28: Build a Mini Triton LLM Kernel Library</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/08-capstone/29-replace-transformer-pieces.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">31</span>&nbsp; <span class="chapter-title">Chapter 29: Replace Pieces of a Tiny Transformer</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/08-capstone/30-design-playbook.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">32</span>&nbsp; <span class="chapter-title">Chapter 30: Final Kernel Design Playbook</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/appendix-study-plan.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">33</span>&nbsp; <span class="chapter-title">Appendix: Study Plan, Memory Kernels, and the Capstone Challenge</span></span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../kernel_checklist.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">34</span>&nbsp; <span class="chapter-title">Triton Kernel Design Checklist</span></span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../llm_kernel_map.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">35</span>&nbsp; <span class="chapter-title">LLM Component → Triton Kernel Map</span></span></a>
+  </div>
+</li>
+    </ul>
+    </div>
+</nav>
+<div id="quarto-sidebar-glass" class="quarto-sidebar-collapse-item" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item"></div>
+<!-- margin-sidebar -->
+    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar">
+        <nav id="TOC" role="doc-toc" class="toc-active">
+    <h2 id="toc-title">Table of contents</h2>
+   
+  <ul>
+  <li><a href="#the-two-tools-that-matter" id="toc-the-two-tools-that-matter" class="nav-link active" data-scroll-target="#the-two-tools-that-matter"><span class="header-section-number">26.1</span> The two tools that matter</a>
+  <ul class="collapse">
+  <li><a href="#triton_interpret1" id="toc-triton_interpret1" class="nav-link" data-scroll-target="#triton_interpret1"><span class="header-section-number">26.1.1</span> <code>TRITON_INTERPRET=1</code></a></li>
+  <li><a href="#tl.device_print" id="toc-tl.device_print" class="nav-link" data-scroll-target="#tl.device_print"><span class="header-section-number">26.1.2</span> <code>tl.device_print</code></a></li>
+  </ul></li>
+  <li><a href="#the-debugging-workflow" id="toc-the-debugging-workflow" class="nav-link" data-scroll-target="#the-debugging-workflow"><span class="header-section-number">26.2</span> The debugging workflow</a></li>
+  <li><a href="#bug-class-catalog" id="toc-bug-class-catalog" class="nav-link" data-scroll-target="#bug-class-catalog"><span class="header-section-number">26.3</span> Bug class catalog</a>
+  <ul class="collapse">
+  <li><a href="#shape-bugs" id="toc-shape-bugs" class="nav-link" data-scroll-target="#shape-bugs"><span class="header-section-number">26.3.1</span> Shape bugs</a></li>
+  <li><a href="#mask-bugs" id="toc-mask-bugs" class="nav-link" data-scroll-target="#mask-bugs"><span class="header-section-number">26.3.2</span> Mask bugs</a></li>
+  <li><a href="#stride-bugs" id="toc-stride-bugs" class="nav-link" data-scroll-target="#stride-bugs"><span class="header-section-number">26.3.3</span> Stride bugs</a></li>
+  <li><a href="#dtype-bugs" id="toc-dtype-bugs" class="nav-link" data-scroll-target="#dtype-bugs"><span class="header-section-number">26.3.4</span> Dtype bugs</a></li>
+  <li><a href="#nan-bugs" id="toc-nan-bugs" class="nav-link" data-scroll-target="#nan-bugs"><span class="header-section-number">26.3.5</span> NaN bugs</a></li>
+  <li><a href="#oob-bugs" id="toc-oob-bugs" class="nav-link" data-scroll-target="#oob-bugs"><span class="header-section-number">26.3.6</span> OOB bugs</a></li>
+  <li><a href="#race-bugs" id="toc-race-bugs" class="nav-link" data-scroll-target="#race-bugs"><span class="header-section-number">26.3.7</span> Race bugs</a></li>
+  </ul></li>
+  <li><a href="#symptom-to-bug-class-table" id="toc-symptom-to-bug-class-table" class="nav-link" data-scroll-target="#symptom-to-bug-class-table"><span class="header-section-number">26.4</span> Symptom-to-bug-class table</a></li>
+  <li><a href="#a-worked-find-and-fix" id="toc-a-worked-find-and-fix" class="nav-link" data-scroll-target="#a-worked-find-and-fix"><span class="header-section-number">26.5</span> A worked find-and-fix</a></li>
+  <li><a href="#reducing-problem-size" id="toc-reducing-problem-size" class="nav-link" data-scroll-target="#reducing-problem-size"><span class="header-section-number">26.6</span> Reducing problem size</a></li>
+  <li><a href="#testing-one-program-at-a-time" id="toc-testing-one-program-at-a-time" class="nav-link" data-scroll-target="#testing-one-program-at-a-time"><span class="header-section-number">26.7</span> Testing one program at a time</a></li>
+  <li><a href="#common-gotchas" id="toc-common-gotchas" class="nav-link" data-scroll-target="#common-gotchas"><span class="header-section-number">26.8</span> Common gotchas</a></li>
+  <li><a href="#exercises" id="toc-exercises" class="nav-link" data-scroll-target="#exercises"><span class="header-section-number">26.9</span> Exercises</a></li>
+  </ul>
+</nav>
+    </div>
+<!-- main -->
+<main class="content" id="quarto-document-content">
+
+<header id="title-block-header" class="quarto-title-block default"><nav class="quarto-page-breadcrumbs quarto-title-breadcrumbs d-none d-lg-block" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="../../book/07-debug-perf/24-debugging.html">Part 7: Debugging, Testing, Profiling, Optimization</a></li><li class="breadcrumb-item"><a href="../../book/07-debug-perf/24-debugging.html"><span class="chapter-number">26</span>&nbsp; <span class="chapter-title">Chapter 24: Debugging Triton Kernels</span></a></li></ol></nav>
+<div class="quarto-title">
+<div class="quarto-title-block"><div><h1 class="title"><span class="chapter-number">26</span>&nbsp; <span class="chapter-title">Chapter 24: Debugging Triton Kernels</span></h1><button type="button" class="btn code-tools-button" id="quarto-code-tools-source"><i class="bi"></i> Code</button></div></div>
+</div>
+
+
+
+<div class="quarto-title-meta">
+
+    
+  
+    
+  </div>
+  
+
+
+</header>
+
+
+<p>By this point you have written many kernels and at least one of them has produced garbage and you did not immediately know why. This chapter is the field guide. It is dense on purpose — you will return to it. Read once linearly, then keep it open the next time a kernel goes wrong.</p>
+<p>Triton is harder to debug than PyTorch because the kernel runs on the device, you cannot step through it, and the symptoms (wrong numbers, NaNs, OOB writes, silent corruption of neighboring tensors) often look the same from the outside. The fix is to bring the kernel back to ground where you <strong>can</strong> see what it does: small shapes, deterministic inputs, the interpreter, and <code>tl.device_print</code>.</p>
+<section id="the-two-tools-that-matter" class="level2" data-number="26.1">
+<h2 data-number="26.1" class="anchored" data-anchor-id="the-two-tools-that-matter"><span class="header-section-number">26.1</span> The two tools that matter</h2>
+<section id="triton_interpret1" class="level3" data-number="26.1.1">
+<h3 data-number="26.1.1" class="anchored" data-anchor-id="triton_interpret1"><span class="header-section-number">26.1.1</span> <code>TRITON_INTERPRET=1</code></h3>
+<p>Set this environment variable before importing <code>triton</code>, and Triton runs your kernel in pure Python. <code>tl.load</code> becomes a numpy slice. <code>tl.dot</code> becomes <code>numpy.matmul</code>. <code>print()</code> works. You can put a <code>breakpoint()</code> inside the kernel and the debugger will stop there. It is far slower than the compiled version — call it on shapes of 32 or 64, never 4096 — but it is ground truth for shape, mask, and stride bugs.</p>
+<div class="sourceCode" id="cb1"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> os</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a>os.environ[<span class="st">"TRITON_INTERPRET"</span>] <span class="op">=</span> <span class="st">"1"</span></span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> triton, triton.language <span class="im">as</span> tl</span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch</span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.jit</span></span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> my_kernel(x_ptr, out_ptr, N, BLOCK: tl.constexpr):</span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a>    pid <span class="op">=</span> tl.program_id(<span class="dv">0</span>)</span>
+<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a>    offs <span class="op">=</span> pid <span class="op">*</span> BLOCK <span class="op">+</span> tl.arange(<span class="dv">0</span>, BLOCK)</span>
+<span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a>    mask <span class="op">=</span> offs <span class="op">&lt;</span> N</span>
+<span id="cb1-11"><a href="#cb1-11" aria-hidden="true" tabindex="-1"></a>    <span class="bu">print</span>(<span class="ss">f"pid=</span><span class="sc">{</span>pid<span class="sc">}</span><span class="ss"> offs=</span><span class="sc">{</span>offs<span class="sc">}</span><span class="ss"> mask=</span><span class="sc">{</span>mask<span class="sc">}</span><span class="ss">"</span>)   <span class="co"># works under TRITON_INTERPRET</span></span>
+<span id="cb1-12"><a href="#cb1-12" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> tl.load(x_ptr <span class="op">+</span> offs, mask<span class="op">=</span>mask, other<span class="op">=</span><span class="fl">0.0</span>)</span>
+<span id="cb1-13"><a href="#cb1-13" aria-hidden="true" tabindex="-1"></a>    tl.store(out_ptr <span class="op">+</span> offs, x <span class="op">*</span> <span class="fl">2.0</span>, mask<span class="op">=</span>mask)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<p>The kernel runs serially, one program at a time, on the CPU. Race conditions vanish. The price is speed: factors of 100 to 10000 slowdown, depending on the kernel.</p>
+</section>
+<section id="tl.device_print" class="level3" data-number="26.1.2">
+<h3 data-number="26.1.2" class="anchored" data-anchor-id="tl.device_print"><span class="header-section-number">26.1.2</span> <code>tl.device_print</code></h3>
+<p>This is the in-kernel print that works in <strong>compiled</strong> mode. It buffers prints on the device and flushes them to stdout when the launch completes. Inside the kernel:</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a>tl.device_print(<span class="st">"offs"</span>, offs)</span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>tl.device_print(<span class="st">"acc_norm"</span>, tl.<span class="bu">sum</span>(acc <span class="op">*</span> acc))</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<p>Limitations: every program prints its own line, so for a grid of 10000 programs you will be drowning in output. Restrict the print with a guard: <code>if pid == 0: tl.device_print(...)</code>. The output appears after the kernel finishes — if your kernel hangs, you see nothing.</p>
+</section>
+</section>
+<section id="the-debugging-workflow" class="level2" data-number="26.2">
+<h2 data-number="26.2" class="anchored" data-anchor-id="the-debugging-workflow"><span class="header-section-number">26.2</span> The debugging workflow</h2>
+<p>For every new kernel:</p>
+<ol type="1">
+<li><strong>Start tiny.</strong> N=8 or N=BLOCK. Make the shape exactly representable in your head.</li>
+<li><strong>Use deterministic inputs.</strong> <code>torch.arange(N, dtype=torch.float32)</code> instead of <code>torch.randn</code>. When the output is wrong, you can read off which input element ended up where.</li>
+<li><strong>Compare against a PyTorch reference</strong> with strict tolerances. Even on a fp16 kernel, run the reference in fp32 and let the kernel pick its dtype; the difference exposes real bugs and not just precision noise.</li>
+<li><strong>If wrong, switch to <code>TRITON_INTERPRET=1</code>.</strong> Add <code>print</code> statements on <code>offs</code>, <code>mask</code>, and any intermediate tile. Run with a single program (<code>grid=(1,)</code>) until that one program is right.</li>
+<li><strong>Stay deterministic.</strong> Do not bring back <code>randn</code> until correctness is established on <code>arange</code>.</li>
+<li><strong>Test boundary cases.</strong> N=1, N=BLOCK, N=BLOCK+1, N=BLOCK-1, non-power-of-two. These are the inputs that exercise the mask.</li>
+<li><strong>Test dtype variants.</strong> Every dtype the kernel claims to support, including the ones you “definitely already handled”.</li>
+<li><strong>Test non-contiguous inputs</strong> if the kernel claims to support them. <code>x = torch.randn(N, M).t()</code> is the test that catches stride bugs.</li>
+<li><strong>Only then benchmark.</strong> A fast wrong kernel is worthless.</li>
+</ol>
+</section>
+<section id="bug-class-catalog" class="level2" data-number="26.3">
+<h2 data-number="26.3" class="anchored" data-anchor-id="bug-class-catalog"><span class="header-section-number">26.3</span> Bug class catalog</h2>
+<p>The bugs in Triton kernels fall into seven recurring buckets. Knowing the bucket from the symptom shortens the fix from hours to minutes.</p>
+<section id="shape-bugs" class="level3" data-number="26.3.1">
+<h3 data-number="26.3.1" class="anchored" data-anchor-id="shape-bugs"><span class="header-section-number">26.3.1</span> Shape bugs</h3>
+<p><code>tl.dot</code> requires specific shapes (multiples of 16 for the inner dim, typically). Broadcast mismatches between <code>(BLOCK_M,)</code> and <code>(BLOCK_M, BLOCK_N)</code> produce confusing compile errors or silently wrong arithmetic.</p>
+<ul>
+<li><strong>Symptom:</strong> compile error mentioning unexpected shape; or a tile that should be <code>(M, N)</code> is <code>(N, M)</code>.</li>
+<li><strong>Fix:</strong> print <code>tensor.shape</code> under <code>TRITON_INTERPRET</code>. Add <code>[:, None]</code> and <code>[None, :]</code> until the broadcast is what you intended.</li>
+</ul>
+</section>
+<section id="mask-bugs" class="level3" data-number="26.3.2">
+<h3 data-number="26.3.2" class="anchored" data-anchor-id="mask-bugs"><span class="header-section-number">26.3.2</span> Mask bugs</h3>
+<p>The mask is the most common bug source. You forgot it. You used <code>other=0</code> where you needed <code>other=-inf</code>. You masked on the wrong axis.</p>
+<ul>
+<li><strong>Symptom:</strong> output is correct except on the last block, OR output is correct only when N is a multiple of BLOCK, OR neighboring tensors get corrupted between runs.</li>
+<li><strong>Fix:</strong> check every <code>tl.load</code> and <code>tl.store</code> has a <code>mask=</code>. For reductions where <code>other</code> matters, use <code>-inf</code> for max and <code>0</code> for sum. For <code>tl.store</code>, no <code>other</code> argument exists — <code>mask=</code> alone is enough.</li>
+</ul>
+<p>The OOB-store bug deserves its own warning. A masked <code>tl.load</code> with no mask reads garbage but at least lives in the kernel’s allocated buffers (usually). A <code>tl.store</code> with no mask <strong>writes</strong> garbage to memory that belongs to other tensors. The symptom is that some unrelated tensor changes value between runs. The fix is <code>mask=</code> on every store.</p>
+</section>
+<section id="stride-bugs" class="level3" data-number="26.3.3">
+<h3 data-number="26.3.3" class="anchored" data-anchor-id="stride-bugs"><span class="header-section-number">26.3.3</span> Stride bugs</h3>
+<p>You assumed a tensor is contiguous, but the caller passes a view (<code>.t()</code>, <code>.transpose(0, 1)</code>, a slice). Or you computed strides in bytes when Triton expects elements (or vice versa). Or your multi-dimensional offset arithmetic forgot a <code>* stride_m</code> somewhere.</p>
+<ul>
+<li><strong>Symptom:</strong> kernel is correct for <code>x.contiguous()</code>, wrong for <code>x.t()</code>.</li>
+<li><strong>Fix:</strong> pass strides explicitly from the launcher (<code>x.stride(0)</code>, <code>x.stride(1)</code>) and use them in the offset math. Never write <code>pid * N + offs</code>; always write <code>pid * stride_m + offs * stride_n</code>. Triton strides are in <strong>elements</strong>, not bytes.</li>
+</ul>
+</section>
+<section id="dtype-bugs" class="level3" data-number="26.3.4">
+<h3 data-number="26.3.4" class="anchored" data-anchor-id="dtype-bugs"><span class="header-section-number">26.3.4</span> Dtype bugs</h3>
+<p>The accumulator is fp16 instead of fp32. You cast back to fp16 before you should. You compared fp16 outputs against fp32 references with fp32 tolerances.</p>
+<ul>
+<li><strong>Symptom:</strong> correct in fp32, wrong in fp16 (large absolute error). Or the kernel works for K=64 and is wrong for K=2048.</li>
+<li><strong>Fix:</strong> accumulator dtype is <strong>always</strong> fp32 unless you have a specific reason otherwise. Loosen test tolerances per the chapter conventions: fp16 gets <code>rtol=atol=1e-2</code>. Cast to output dtype only at the <code>tl.store</code>.</li>
+</ul>
+</section>
+<section id="nan-bugs" class="level3" data-number="26.3.5">
+<h3 data-number="26.3.5" class="anchored" data-anchor-id="nan-bugs"><span class="header-section-number">26.3.5</span> NaN bugs</h3>
+<p>Almost always one of: forgot max-subtract in a softmax, divided by zero in a normalize, took <code>sqrt</code> of a small negative due to fp16 noise, accumulated in fp16 and overflowed.</p>
+<ul>
+<li><strong>Symptom:</strong> output is all NaN, or NaN appears only for large N, or NaN appears only in fp16.</li>
+<li><strong>Fix:</strong> for softmax, subtract the row max before <code>exp</code>. For variance, clamp <code>var = max(var, 0)</code> before <code>sqrt</code>. For divisions, add a small epsilon and verify the epsilon is in the right dtype (don’t add <code>1e-12</code> to an fp16 tensor — it underflows). For accumulator overflow, cast to fp32.</li>
+</ul>
+</section>
+<section id="oob-bugs" class="level3" data-number="26.3.6">
+<h3 data-number="26.3.6" class="anchored" data-anchor-id="oob-bugs"><span class="header-section-number">26.3.6</span> OOB bugs</h3>
+<p>Reading or writing past the end of the buffer. Often a stride bug in disguise.</p>
+<ul>
+<li><strong>Symptom:</strong> <code>CUDA error: an illegal memory access was encountered</code>. Sometimes silent — the OOB write happens to land in a buffer you don’t read.</li>
+<li><strong>Fix:</strong> drop to <code>TRITON_INTERPRET=1</code> and print every offset and mask. If <code>offs</code> ever exceeds the tensor extent without a corresponding <code>mask</code>, that is the bug. Triton’s interpreter is strict about OOB access and will raise immediately.</li>
+</ul>
+</section>
+<section id="race-bugs" class="level3" data-number="26.3.7">
+<h3 data-number="26.3.7" class="anchored" data-anchor-id="race-bugs"><span class="header-section-number">26.3.7</span> Race bugs</h3>
+<p>You wrote to overlapping memory locations from multiple programs. Triton does not provide atomic adds by default; if two programs accumulate into the same output element, you lose one of the updates.</p>
+<ul>
+<li><strong>Symptom:</strong> output is non-deterministic across runs even for the same input.</li>
+<li><strong>Fix:</strong> redesign the grid so each output element is owned by exactly one program. If you really need atomic adds, use <code>tl.atomic_add</code> (slow but correct).</li>
+</ul>
+</section>
+</section>
+<section id="symptom-to-bug-class-table" class="level2" data-number="26.4">
+<h2 data-number="26.4" class="anchored" data-anchor-id="symptom-to-bug-class-table"><span class="header-section-number">26.4</span> Symptom-to-bug-class table</h2>
+<table class="caption-top table">
+<colgroup>
+<col style="width: 75%">
+<col style="width: 24%">
+</colgroup>
+<thead>
+<tr class="header">
+<th>Symptom</th>
+<th>Likely bug class</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Wrong only on last block</td>
+<td>Mask</td>
+</tr>
+<tr class="even">
+<td>Wrong only when N is not a multiple of BLOCK</td>
+<td>Mask</td>
+</tr>
+<tr class="odd">
+<td>All NaN in softmax-like reduction</td>
+<td>Missing max-subtract</td>
+</tr>
+<tr class="even">
+<td>All NaN only in fp16</td>
+<td>fp16 overflow → fp32 accumulator</td>
+</tr>
+<tr class="odd">
+<td>Correct for contiguous, wrong for <code>.t()</code></td>
+<td>Stride</td>
+</tr>
+<tr class="even">
+<td>Correct in fp32, wrong in fp16 with large error</td>
+<td>Dtype (accumulator)</td>
+</tr>
+<tr class="odd">
+<td>Neighboring tensor changes between runs</td>
+<td>OOB write (mask on store)</td>
+</tr>
+<tr class="even">
+<td><code>illegal memory access</code></td>
+<td>OOB load or store</td>
+</tr>
+<tr class="odd">
+<td>Non-deterministic output</td>
+<td>Race / atomic</td>
+</tr>
+<tr class="even">
+<td>Compile error mentioning shape</td>
+<td>Shape / broadcast</td>
+</tr>
+</tbody>
+</table>
+</section>
+<section id="a-worked-find-and-fix" class="level2" data-number="26.5">
+<h2 data-number="26.5" class="anchored" data-anchor-id="a-worked-find-and-fix"><span class="header-section-number">26.5</span> A worked find-and-fix</h2>
+<p>The repository ships a deliberately buggy <code>add_with_mask_bug</code> kernel in <code>src/ch24_debugging/debug_demo.py</code>. Here is the kernel:</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.jit</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> _add_buggy_kernel(x_ptr, y_ptr, out_ptr, n_elements, BLOCK: tl.constexpr):</span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>    pid <span class="op">=</span> tl.program_id(<span class="dv">0</span>)</span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>    offs <span class="op">=</span> pid <span class="op">*</span> BLOCK <span class="op">+</span> tl.arange(<span class="dv">0</span>, BLOCK)</span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a>    mask <span class="op">=</span> offs <span class="op">&lt;</span> n_elements</span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> tl.load(x_ptr <span class="op">+</span> offs, mask<span class="op">=</span>mask, other<span class="op">=</span><span class="fl">0.0</span>)</span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a>    y <span class="op">=</span> tl.load(y_ptr <span class="op">+</span> offs, mask<span class="op">=</span>mask, other<span class="op">=</span><span class="fl">0.0</span>)</span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a>    out <span class="op">=</span> x <span class="op">+</span> y</span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a>    tl.store(out_ptr <span class="op">+</span> offs, out)              <span class="co"># </span><span class="al">BUG</span><span class="co">: missing mask</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<p>Run it with <code>n=1000, BLOCK=128</code>. The output looks fine because the trailing 24 elements of the last program write past the end of <code>out</code>, but <code>out</code> is the last allocation so the writes land in unused heap. Now allocate a second tensor right after:</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a>z <span class="op">=</span> torch.zeros(<span class="dv">2048</span>, device<span class="op">=</span><span class="st">"cuda"</span>)</span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>result <span class="op">=</span> add_with_mask_bug(x, y)   <span class="co"># n=1000</span></span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a><span class="bu">print</span>(z.<span class="bu">sum</span>())   <span class="co"># not zero — z got corrupted</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<p>The corruption of <code>z</code> is the smoking gun. Switch to <code>TRITON_INTERPRET=1</code>, add <code>tl.device_print("offs", offs)</code> and run with <code>n=1000, BLOCK=128, grid=(8,)</code>. The last program prints <code>offs = [896, 897, ..., 1023]</code>, all of which are <code>&gt;= n_elements=1000</code> for the last 24 entries. The store writes those 24 entries unmasked. Fix: add <code>mask=mask</code> to the store. The fixed version is <code>add_fixed</code> in the same file.</p>
+</section>
+<section id="reducing-problem-size" class="level2" data-number="26.6">
+<h2 data-number="26.6" class="anchored" data-anchor-id="reducing-problem-size"><span class="header-section-number">26.6</span> Reducing problem size</h2>
+<p>When a kernel fails on <code>(2048, 2048)</code> and works on <code>(64, 64)</code>, the bug is almost always a mask or a tail-handling problem. Shrink the failing case until you can write the expected output by hand. For matmul, <code>M=N=K=BLOCK_K</code> produces a single program with a single K iteration — read it in the interpreter, print every tile, compare to a <code>torch.arange</code> reference. This shrinks bugs from “wrong somewhere in a 4M-element tensor” to “wrong in this 64-element row”.</p>
+</section>
+<section id="testing-one-program-at-a-time" class="level2" data-number="26.7">
+<h2 data-number="26.7" class="anchored" data-anchor-id="testing-one-program-at-a-time"><span class="header-section-number">26.7</span> Testing one program at a time</h2>
+<p>Set <code>grid=(1,)</code> (or <code>(1, 1)</code> for 2-D grids) and skip the rest. The single program runs on a single tile; everything you print is from that one program. Combined with <code>TRITON_INTERPRET=1</code>, this is your microscope.</p>
+</section>
+<section id="common-gotchas" class="level2" data-number="26.8">
+<h2 data-number="26.8" class="anchored" data-anchor-id="common-gotchas"><span class="header-section-number">26.8</span> Common gotchas</h2>
+<ul>
+<li><strong><code>tl.device_print</code> in compiled mode buffers and may not flush</strong> if the kernel crashes. If you see no output and you suspect a hang, switch to <code>TRITON_INTERPRET=1</code>.</li>
+<li><strong><code>print()</code> inside a <code>@triton.jit</code> function only works under <code>TRITON_INTERPRET</code>.</strong> In compiled mode it is a no-op (or raises). Use <code>tl.device_print</code> for compiled-mode prints.</li>
+<li><strong><code>if pid == 0</code> guards a print, but the condition must be a scalar.</strong> Compare <code>tl.program_id(0)</code> directly, not after arithmetic that produces a tensor.</li>
+<li><strong>Strides are in elements, not bytes.</strong> A common bug for people coming from CUDA, where strides are bytes.</li>
+<li><strong>The <code>other</code> argument is not optional for masked loads in reductions.</strong> <code>tl.load(..., mask=m)</code> defaults <code>other</code> to 0, which is wrong for a max reduction. Use <code>other=-float("inf")</code> for max, <code>other=0.0</code> for sum.</li>
+</ul>
+</section>
+<section id="exercises" class="level2" data-number="26.9">
+<h2 data-number="26.9" class="anchored" data-anchor-id="exercises"><span class="header-section-number">26.9</span> Exercises</h2>
+<p>The chapter exercises are a set of debugging puzzles — small broken kernels you fix and explain. See <code>exercises/ch24_exercises.md</code>. Worked fixes in <code>solutions/ch24_solutions.py</code>. There is no benchmark or correctness suite for this chapter; the exercises are the practice.</p>
+
+
+<!-- -->
+
+</section>
+
+</main> <!-- /main -->
+<script id="quarto-html-after-body" type="application/javascript">
+window.document.addEventListener("DOMContentLoaded", function (event) {
+  const toggleBodyColorMode = (bsSheetEl) => {
+    const mode = bsSheetEl.getAttribute("data-mode");
+    const bodyEl = window.document.querySelector("body");
+    if (mode === "dark") {
+      bodyEl.classList.add("quarto-dark");
+      bodyEl.classList.remove("quarto-light");
+    } else {
+      bodyEl.classList.add("quarto-light");
+      bodyEl.classList.remove("quarto-dark");
+    }
+  }
+  const toggleBodyColorPrimary = () => {
+    const bsSheetEl = window.document.querySelector("link#quarto-bootstrap");
+    if (bsSheetEl) {
+      toggleBodyColorMode(bsSheetEl);
+    }
+  }
+  toggleBodyColorPrimary();  
+  const icon = "";
+  const anchorJS = new window.AnchorJS();
+  anchorJS.options = {
+    placement: 'right',
+    icon: icon
+  };
+  anchorJS.add('.anchored');
+  const isCodeAnnotation = (el) => {
+    for (const clz of el.classList) {
+      if (clz.startsWith('code-annotation-')) {                     
+        return true;
+      }
+    }
+    return false;
+  }
+  const onCopySuccess = function(e) {
+    // button target
+    const button = e.trigger;
+    // don't keep focus
+    button.blur();
+    // flash "checked"
+    button.classList.add('code-copy-button-checked');
+    var currentTitle = button.getAttribute("title");
+    button.setAttribute("title", "Copied!");
+    let tooltip;
+    if (window.bootstrap) {
+      button.setAttribute("data-bs-toggle", "tooltip");
+      button.setAttribute("data-bs-placement", "left");
+      button.setAttribute("data-bs-title", "Copied!");
+      tooltip = new bootstrap.Tooltip(button, 
+        { trigger: "manual", 
+          customClass: "code-copy-button-tooltip",
+          offset: [0, -8]});
+      tooltip.show();    
+    }
+    setTimeout(function() {
+      if (tooltip) {
+        tooltip.hide();
+        button.removeAttribute("data-bs-title");
+        button.removeAttribute("data-bs-toggle");
+        button.removeAttribute("data-bs-placement");
+      }
+      button.setAttribute("title", currentTitle);
+      button.classList.remove('code-copy-button-checked');
+    }, 1000);
+    // clear code selection
+    e.clearSelection();
+  }
+  const getTextToCopy = function(trigger) {
+      const codeEl = trigger.previousElementSibling.cloneNode(true);
+      for (const childEl of codeEl.children) {
+        if (isCodeAnnotation(childEl)) {
+          childEl.remove();
+        }
+      }
+      return codeEl.innerText;
+  }
+  const clipboard = new window.ClipboardJS('.code-copy-button:not([data-in-quarto-modal])', {
+    text: getTextToCopy
+  });
+  clipboard.on('success', onCopySuccess);
+  if (window.document.getElementById('quarto-embedded-source-code-modal')) {
+    // For code content inside modals, clipBoardJS needs to be initialized with a container option
+    // TODO: Check when it could be a function (https://github.com/zenorocha/clipboard.js/issues/860)
+    const clipboardModal = new window.ClipboardJS('.code-copy-button[data-in-quarto-modal]', {
+      text: getTextToCopy,
+      container: window.document.getElementById('quarto-embedded-source-code-modal')
+    });
+    clipboardModal.on('success', onCopySuccess);
+  }
+  const viewSource = window.document.getElementById('quarto-view-source') ||
+                     window.document.getElementById('quarto-code-tools-source');
+  if (viewSource) {
+    const sourceUrl = viewSource.getAttribute("data-quarto-source-url");
+    viewSource.addEventListener("click", function(e) {
+      if (sourceUrl) {
+        // rstudio viewer pane
+        if (/\bcapabilities=\b/.test(window.location)) {
+          window.open(sourceUrl);
+        } else {
+          window.location.href = sourceUrl;
+        }
+      } else {
+        const modal = new bootstrap.Modal(document.getElementById('quarto-embedded-source-code-modal'));
+        modal.show();
+      }
+      return false;
+    });
+  }
+  function toggleCodeHandler(show) {
+    return function(e) {
+      const detailsSrc = window.document.querySelectorAll(".cell > details > .sourceCode");
+      for (let i=0; i<detailsSrc.length; i++) {
+        const details = detailsSrc[i].parentElement;
+        if (show) {
+          details.open = true;
+        } else {
+          details.removeAttribute("open");
+        }
+      }
+      const cellCodeDivs = window.document.querySelectorAll(".cell > .sourceCode");
+      const fromCls = show ? "hidden" : "unhidden";
+      const toCls = show ? "unhidden" : "hidden";
+      for (let i=0; i<cellCodeDivs.length; i++) {
+        const codeDiv = cellCodeDivs[i];
+        if (codeDiv.classList.contains(fromCls)) {
+          codeDiv.classList.remove(fromCls);
+          codeDiv.classList.add(toCls);
+        } 
+      }
+      return false;
+    }
+  }
+  const hideAllCode = window.document.getElementById("quarto-hide-all-code");
+  if (hideAllCode) {
+    hideAllCode.addEventListener("click", toggleCodeHandler(false));
+  }
+  const showAllCode = window.document.getElementById("quarto-show-all-code");
+  if (showAllCode) {
+    showAllCode.addEventListener("click", toggleCodeHandler(true));
+  }
+    var localhostRegex = new RegExp(/^(?:http|https):\/\/localhost\:?[0-9]*\//);
+    var mailtoRegex = new RegExp(/^mailto:/);
+      var filterRegex = new RegExp('/' + window.location.host + '/');
+    var isInternal = (href) => {
+        return filterRegex.test(href) || localhostRegex.test(href) || mailtoRegex.test(href);
+    }
+    // Inspect non-navigation links and adorn them if external
+ 	var links = window.document.querySelectorAll('a[href]:not(.nav-link):not(.navbar-brand):not(.toc-action):not(.sidebar-link):not(.sidebar-item-toggle):not(.pagination-link):not(.no-external):not([aria-hidden]):not(.dropdown-item):not(.quarto-navigation-tool):not(.about-link)');
+    for (var i=0; i<links.length; i++) {
+      const link = links[i];
+      if (!isInternal(link.href)) {
+        // undo the damage that might have been done by quarto-nav.js in the case of
+        // links that we want to consider external
+        if (link.dataset.originalHref !== undefined) {
+          link.href = link.dataset.originalHref;
+        }
+      }
+    }
+  function tippyHover(el, contentFn, onTriggerFn, onUntriggerFn) {
+    const config = {
+      allowHTML: true,
+      maxWidth: 500,
+      delay: 100,
+      arrow: false,
+      appendTo: function(el) {
+          return el.parentElement;
+      },
+      interactive: true,
+      interactiveBorder: 10,
+      theme: 'quarto',
+      placement: 'bottom-start',
+    };
+    if (contentFn) {
+      config.content = contentFn;
+    }
+    if (onTriggerFn) {
+      config.onTrigger = onTriggerFn;
+    }
+    if (onUntriggerFn) {
+      config.onUntrigger = onUntriggerFn;
+    }
+    window.tippy(el, config); 
+  }
+  const noterefs = window.document.querySelectorAll('a[role="doc-noteref"]');
+  for (var i=0; i<noterefs.length; i++) {
+    const ref = noterefs[i];
+    tippyHover(ref, function() {
+      // use id or data attribute instead here
+      let href = ref.getAttribute('data-footnote-href') || ref.getAttribute('href');
+      try { href = new URL(href).hash; } catch {}
+      const id = href.replace(/^#\/?/, "");
+      const note = window.document.getElementById(id);
+      if (note) {
+        return note.innerHTML;
+      } else {
+        return "";
+      }
+    });
+  }
+  const xrefs = window.document.querySelectorAll('a.quarto-xref');
+  const processXRef = (id, note) => {
+    // Strip column container classes
+    const stripColumnClz = (el) => {
+      el.classList.remove("page-full", "page-columns");
+      if (el.children) {
+        for (const child of el.children) {
+          stripColumnClz(child);
+        }
+      }
+    }
+    stripColumnClz(note)
+    if (id === null || id.startsWith('sec-')) {
+      // Special case sections, only their first couple elements
+      const container = document.createElement("div");
+      if (note.children && note.children.length > 2) {
+        container.appendChild(note.children[0].cloneNode(true));
+        for (let i = 1; i < note.children.length; i++) {
+          const child = note.children[i];
+          if (child.tagName === "P" && child.innerText === "") {
+            continue;
+          } else {
+            container.appendChild(child.cloneNode(true));
+            break;
+          }
+        }
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(container);
+        }
+        return container.innerHTML
+      } else {
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(note);
+        }
+        return note.innerHTML;
+      }
+    } else {
+      // Remove any anchor links if they are present
+      const anchorLink = note.querySelector('a.anchorjs-link');
+      if (anchorLink) {
+        anchorLink.remove();
+      }
+      if (window.Quarto?.typesetMath) {
+        window.Quarto.typesetMath(note);
+      }
+      // TODO in 1.5, we should make sure this works without a callout special case
+      if (note.classList.contains("callout")) {
+        return note.outerHTML;
+      } else {
+        return note.innerHTML;
+      }
+    }
+  }
+  for (var i=0; i<xrefs.length; i++) {
+    const xref = xrefs[i];
+    tippyHover(xref, undefined, function(instance) {
+      instance.disable();
+      let url = xref.getAttribute('href');
+      let hash = undefined; 
+      if (url.startsWith('#')) {
+        hash = url;
+      } else {
+        try { hash = new URL(url).hash; } catch {}
+      }
+      if (hash) {
+        const id = hash.replace(/^#\/?/, "");
+        const note = window.document.getElementById(id);
+        if (note !== null) {
+          try {
+            const html = processXRef(id, note.cloneNode(true));
+            instance.setContent(html);
+          } finally {
+            instance.enable();
+            instance.show();
+          }
+        } else {
+          // See if we can fetch this
+          fetch(url.split('#')[0])
+          .then(res => res.text())
+          .then(html => {
+            const parser = new DOMParser();
+            const htmlDoc = parser.parseFromString(html, "text/html");
+            const note = htmlDoc.getElementById(id);
+            if (note !== null) {
+              const html = processXRef(id, note);
+              instance.setContent(html);
+            } 
+          }).finally(() => {
+            instance.enable();
+            instance.show();
+          });
+        }
+      } else {
+        // See if we can fetch a full url (with no hash to target)
+        // This is a special case and we should probably do some content thinning / targeting
+        fetch(url)
+        .then(res => res.text())
+        .then(html => {
+          const parser = new DOMParser();
+          const htmlDoc = parser.parseFromString(html, "text/html");
+          const note = htmlDoc.querySelector('main.content');
+          if (note !== null) {
+            // This should only happen for chapter cross references
+            // (since there is no id in the URL)
+            // remove the first header
+            if (note.children.length > 0 && note.children[0].tagName === "HEADER") {
+              note.children[0].remove();
+            }
+            const html = processXRef(null, note);
+            instance.setContent(html);
+          } 
+        }).finally(() => {
+          instance.enable();
+          instance.show();
+        });
+      }
+    }, function(instance) {
+    });
+  }
+      let selectedAnnoteEl;
+      const selectorForAnnotation = ( cell, annotation) => {
+        let cellAttr = 'data-code-cell="' + cell + '"';
+        let lineAttr = 'data-code-annotation="' +  annotation + '"';
+        const selector = 'span[' + cellAttr + '][' + lineAttr + ']';
+        return selector;
+      }
+      const selectCodeLines = (annoteEl) => {
+        const doc = window.document;
+        const targetCell = annoteEl.getAttribute("data-target-cell");
+        const targetAnnotation = annoteEl.getAttribute("data-target-annotation");
+        const annoteSpan = window.document.querySelector(selectorForAnnotation(targetCell, targetAnnotation));
+        const lines = annoteSpan.getAttribute("data-code-lines").split(",");
+        const lineIds = lines.map((line) => {
+          return targetCell + "-" + line;
+        })
+        let top = null;
+        let height = null;
+        let parent = null;
+        if (lineIds.length > 0) {
+            //compute the position of the single el (top and bottom and make a div)
+            const el = window.document.getElementById(lineIds[0]);
+            top = el.offsetTop;
+            height = el.offsetHeight;
+            parent = el.parentElement.parentElement;
+          if (lineIds.length > 1) {
+            const lastEl = window.document.getElementById(lineIds[lineIds.length - 1]);
+            const bottom = lastEl.offsetTop + lastEl.offsetHeight;
+            height = bottom - top;
+          }
+          if (top !== null && height !== null && parent !== null) {
+            // cook up a div (if necessary) and position it 
+            let div = window.document.getElementById("code-annotation-line-highlight");
+            if (div === null) {
+              div = window.document.createElement("div");
+              div.setAttribute("id", "code-annotation-line-highlight");
+              div.style.position = 'absolute';
+              parent.appendChild(div);
+            }
+            div.style.top = top - 2 + "px";
+            div.style.height = height + 4 + "px";
+            div.style.left = 0;
+            let gutterDiv = window.document.getElementById("code-annotation-line-highlight-gutter");
+            if (gutterDiv === null) {
+              gutterDiv = window.document.createElement("div");
+              gutterDiv.setAttribute("id", "code-annotation-line-highlight-gutter");
+              gutterDiv.style.position = 'absolute';
+              const codeCell = window.document.getElementById(targetCell);
+              const gutter = codeCell.querySelector('.code-annotation-gutter');
+              gutter.appendChild(gutterDiv);
+            }
+            gutterDiv.style.top = top - 2 + "px";
+            gutterDiv.style.height = height + 4 + "px";
+          }
+          selectedAnnoteEl = annoteEl;
+        }
+      };
+      const unselectCodeLines = () => {
+        const elementsIds = ["code-annotation-line-highlight", "code-annotation-line-highlight-gutter"];
+        elementsIds.forEach((elId) => {
+          const div = window.document.getElementById(elId);
+          if (div) {
+            div.remove();
+          }
+        });
+        selectedAnnoteEl = undefined;
+      };
+        // Handle positioning of the toggle
+    window.addEventListener(
+      "resize",
+      throttle(() => {
+        elRect = undefined;
+        if (selectedAnnoteEl) {
+          selectCodeLines(selectedAnnoteEl);
+        }
+      }, 10)
+    );
+    function throttle(fn, ms) {
+    let throttle = false;
+    let timer;
+      return (...args) => {
+        if(!throttle) { // first call gets through
+            fn.apply(this, args);
+            throttle = true;
+        } else { // all the others get throttled
+            if(timer) clearTimeout(timer); // cancel #2
+            timer = setTimeout(() => {
+              fn.apply(this, args);
+              timer = throttle = false;
+            }, ms);
+        }
+      };
+    }
+      // Attach click handler to the DT
+      const annoteDls = window.document.querySelectorAll('dt[data-target-cell]');
+      for (const annoteDlNode of annoteDls) {
+        annoteDlNode.addEventListener('click', (event) => {
+          const clickedEl = event.target;
+          if (clickedEl !== selectedAnnoteEl) {
+            unselectCodeLines();
+            const activeEl = window.document.querySelector('dt[data-target-cell].code-annotation-active');
+            if (activeEl) {
+              activeEl.classList.remove('code-annotation-active');
+            }
+            selectCodeLines(clickedEl);
+            clickedEl.classList.add('code-annotation-active');
+          } else {
+            // Unselect the line
+            unselectCodeLines();
+            clickedEl.classList.remove('code-annotation-active');
+          }
+        });
+      }
+  const findCites = (el) => {
+    const parentEl = el.parentElement;
+    if (parentEl) {
+      const cites = parentEl.dataset.cites;
+      if (cites) {
+        return {
+          el,
+          cites: cites.split(' ')
+        };
+      } else {
+        return findCites(el.parentElement)
+      }
+    } else {
+      return undefined;
+    }
+  };
+  var bibliorefs = window.document.querySelectorAll('a[role="doc-biblioref"]');
+  for (var i=0; i<bibliorefs.length; i++) {
+    const ref = bibliorefs[i];
+    const citeInfo = findCites(ref);
+    if (citeInfo) {
+      tippyHover(citeInfo.el, function() {
+        var popup = window.document.createElement('div');
+        citeInfo.cites.forEach(function(cite) {
+          var citeDiv = window.document.createElement('div');
+          citeDiv.classList.add('hanging-indent');
+          citeDiv.classList.add('csl-entry');
+          var biblioDiv = window.document.getElementById('ref-' + cite);
+          if (biblioDiv) {
+            citeDiv.innerHTML = biblioDiv.innerHTML;
+          }
+          popup.appendChild(citeDiv);
+        });
+        return popup.innerHTML;
+      });
+    }
+  }
+});
+</script>
+<nav class="page-navigation">
+  <div class="nav-page nav-page-previous">
+      <a href="../../book/06-quantization/23-dequant-matmul.html" class="pagination-link" aria-label="Chapter 23: Int8 / FP8 Style Dequant + Matmul Concepts">
+        <i class="bi bi-arrow-left-short"></i> <span class="nav-page-text"><span class="chapter-number">25</span>&nbsp; <span class="chapter-title">Chapter 23: Int8 / FP8 Style Dequant + Matmul Concepts</span></span>
+      </a>          
+  </div>
+  <div class="nav-page nav-page-next">
+      <a href="../../book/07-debug-perf/25-benchmarking.html" class="pagination-link" aria-label="Chapter 25: Benchmarking Correctly">
+        <span class="nav-page-text"><span class="chapter-number">27</span>&nbsp; <span class="chapter-title">Chapter 25: Benchmarking Correctly</span></span> <i class="bi bi-arrow-right-short"></i>
+      </a>
+  </div>
+</nav><div class="modal fade" id="quarto-embedded-source-code-modal" tabindex="-1" aria-labelledby="quarto-embedded-source-code-modal-label" aria-hidden="true"><div class="modal-dialog modal-dialog-scrollable"><div class="modal-content"><div class="modal-header"><h5 class="modal-title" id="quarto-embedded-source-code-modal-label">Source Code</h5><button class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><div class="">
+<div class="sourceCode" id="cb5" data-shortcodes="false"><pre class="sourceCode markdown code-with-copy"><code class="sourceCode markdown"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="co">---</span></span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a><span class="an">title:</span><span class="co"> "Chapter 24: Debugging Triton Kernels"</span></span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a><span class="co">---</span></span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a>By this point you have written many kernels and at least one of them has produced garbage and you did not immediately know why. This chapter is the field guide. It is dense on purpose — you will return to it. Read once linearly, then keep it open the next time a kernel goes wrong.</span>
+<span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-7"><a href="#cb5-7" aria-hidden="true" tabindex="-1"></a>Triton is harder to debug than PyTorch because the kernel runs on the device, you cannot step through it, and the symptoms (wrong numbers, NaNs, OOB writes, silent corruption of neighboring tensors) often look the same from the outside. The fix is to bring the kernel back to ground where you **can** see what it does: small shapes, deterministic inputs, the interpreter, and <span class="in">`tl.device_print`</span>.</span>
+<span id="cb5-8"><a href="#cb5-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-9"><a href="#cb5-9" aria-hidden="true" tabindex="-1"></a><span class="fu">## The two tools that matter</span></span>
+<span id="cb5-10"><a href="#cb5-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-11"><a href="#cb5-11" aria-hidden="true" tabindex="-1"></a><span class="fu">### `TRITON_INTERPRET=1`</span></span>
+<span id="cb5-12"><a href="#cb5-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-13"><a href="#cb5-13" aria-hidden="true" tabindex="-1"></a>Set this environment variable before importing <span class="in">`triton`</span>, and Triton runs your kernel in pure Python. <span class="in">`tl.load`</span> becomes a numpy slice. <span class="in">`tl.dot`</span> becomes <span class="in">`numpy.matmul`</span>. <span class="in">`print()`</span> works. You can put a <span class="in">`breakpoint()`</span> inside the kernel and the debugger will stop there. It is far slower than the compiled version — call it on shapes of 32 or 64, never 4096 — but it is ground truth for shape, mask, and stride bugs.</span>
+<span id="cb5-14"><a href="#cb5-14" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-15"><a href="#cb5-15" aria-hidden="true" tabindex="-1"></a><span class="in">```python</span></span>
+<span id="cb5-16"><a href="#cb5-16" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> os</span>
+<span id="cb5-17"><a href="#cb5-17" aria-hidden="true" tabindex="-1"></a>os.environ[<span class="st">"TRITON_INTERPRET"</span>] <span class="op">=</span> <span class="st">"1"</span></span>
+<span id="cb5-18"><a href="#cb5-18" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> triton, triton.language <span class="im">as</span> tl</span>
+<span id="cb5-19"><a href="#cb5-19" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch</span>
+<span id="cb5-20"><a href="#cb5-20" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-21"><a href="#cb5-21" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.jit</span></span>
+<span id="cb5-22"><a href="#cb5-22" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> my_kernel(x_ptr, out_ptr, N, BLOCK: tl.constexpr):</span>
+<span id="cb5-23"><a href="#cb5-23" aria-hidden="true" tabindex="-1"></a>    pid <span class="op">=</span> tl.program_id(<span class="dv">0</span>)</span>
+<span id="cb5-24"><a href="#cb5-24" aria-hidden="true" tabindex="-1"></a>    offs <span class="op">=</span> pid <span class="op">*</span> BLOCK <span class="op">+</span> tl.arange(<span class="dv">0</span>, BLOCK)</span>
+<span id="cb5-25"><a href="#cb5-25" aria-hidden="true" tabindex="-1"></a>    mask <span class="op">=</span> offs <span class="op">&lt;</span> N</span>
+<span id="cb5-26"><a href="#cb5-26" aria-hidden="true" tabindex="-1"></a>    <span class="bu">print</span>(<span class="ss">f"pid=</span><span class="sc">{</span>pid<span class="sc">}</span><span class="ss"> offs=</span><span class="sc">{</span>offs<span class="sc">}</span><span class="ss"> mask=</span><span class="sc">{</span>mask<span class="sc">}</span><span class="ss">"</span>)   <span class="co"># works under TRITON_INTERPRET</span></span>
+<span id="cb5-27"><a href="#cb5-27" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> tl.load(x_ptr <span class="op">+</span> offs, mask<span class="op">=</span>mask, other<span class="op">=</span><span class="fl">0.0</span>)</span>
+<span id="cb5-28"><a href="#cb5-28" aria-hidden="true" tabindex="-1"></a>    tl.store(out_ptr <span class="op">+</span> offs, x <span class="op">*</span> <span class="fl">2.0</span>, mask<span class="op">=</span>mask)</span>
+<span id="cb5-29"><a href="#cb5-29" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb5-30"><a href="#cb5-30" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-31"><a href="#cb5-31" aria-hidden="true" tabindex="-1"></a>The kernel runs serially, one program at a time, on the CPU. Race conditions vanish. The price is speed: factors of 100 to 10000 slowdown, depending on the kernel.</span>
+<span id="cb5-32"><a href="#cb5-32" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-33"><a href="#cb5-33" aria-hidden="true" tabindex="-1"></a><span class="fu">### `tl.device_print`</span></span>
+<span id="cb5-34"><a href="#cb5-34" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-35"><a href="#cb5-35" aria-hidden="true" tabindex="-1"></a>This is the in-kernel print that works in **compiled** mode. It buffers prints on the device and flushes them to stdout when the launch completes. Inside the kernel:</span>
+<span id="cb5-36"><a href="#cb5-36" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-37"><a href="#cb5-37" aria-hidden="true" tabindex="-1"></a><span class="in">```python</span></span>
+<span id="cb5-38"><a href="#cb5-38" aria-hidden="true" tabindex="-1"></a>tl.device_print(<span class="st">"offs"</span>, offs)</span>
+<span id="cb5-39"><a href="#cb5-39" aria-hidden="true" tabindex="-1"></a>tl.device_print(<span class="st">"acc_norm"</span>, tl.<span class="bu">sum</span>(acc <span class="op">*</span> acc))</span>
+<span id="cb5-40"><a href="#cb5-40" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb5-41"><a href="#cb5-41" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-42"><a href="#cb5-42" aria-hidden="true" tabindex="-1"></a>Limitations: every program prints its own line, so for a grid of 10000 programs you will be drowning in output. Restrict the print with a guard: <span class="in">`if pid == 0: tl.device_print(...)`</span>. The output appears after the kernel finishes — if your kernel hangs, you see nothing.</span>
+<span id="cb5-43"><a href="#cb5-43" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-44"><a href="#cb5-44" aria-hidden="true" tabindex="-1"></a><span class="fu">## The debugging workflow</span></span>
+<span id="cb5-45"><a href="#cb5-45" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-46"><a href="#cb5-46" aria-hidden="true" tabindex="-1"></a>For every new kernel:</span>
+<span id="cb5-47"><a href="#cb5-47" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-48"><a href="#cb5-48" aria-hidden="true" tabindex="-1"></a><span class="ss">1. </span>**Start tiny.** N=8 or N=BLOCK. Make the shape exactly representable in your head.</span>
+<span id="cb5-49"><a href="#cb5-49" aria-hidden="true" tabindex="-1"></a><span class="ss">2. </span>**Use deterministic inputs.** <span class="in">`torch.arange(N, dtype=torch.float32)`</span> instead of <span class="in">`torch.randn`</span>. When the output is wrong, you can read off which input element ended up where.</span>
+<span id="cb5-50"><a href="#cb5-50" aria-hidden="true" tabindex="-1"></a><span class="ss">3. </span>**Compare against a PyTorch reference** with strict tolerances. Even on a fp16 kernel, run the reference in fp32 and let the kernel pick its dtype; the difference exposes real bugs and not just precision noise.</span>
+<span id="cb5-51"><a href="#cb5-51" aria-hidden="true" tabindex="-1"></a><span class="ss">4. </span>**If wrong, switch to `TRITON_INTERPRET=1`.** Add <span class="in">`print`</span> statements on <span class="in">`offs`</span>, <span class="in">`mask`</span>, and any intermediate tile. Run with a single program (<span class="in">`grid=(1,)`</span>) until that one program is right.</span>
+<span id="cb5-52"><a href="#cb5-52" aria-hidden="true" tabindex="-1"></a><span class="ss">5. </span>**Stay deterministic.** Do not bring back <span class="in">`randn`</span> until correctness is established on <span class="in">`arange`</span>.</span>
+<span id="cb5-53"><a href="#cb5-53" aria-hidden="true" tabindex="-1"></a><span class="ss">6. </span>**Test boundary cases.** N=1, N=BLOCK, N=BLOCK+1, N=BLOCK-1, non-power-of-two. These are the inputs that exercise the mask.</span>
+<span id="cb5-54"><a href="#cb5-54" aria-hidden="true" tabindex="-1"></a><span class="ss">7. </span>**Test dtype variants.** Every dtype the kernel claims to support, including the ones you "definitely already handled".</span>
+<span id="cb5-55"><a href="#cb5-55" aria-hidden="true" tabindex="-1"></a><span class="ss">8. </span>**Test non-contiguous inputs** if the kernel claims to support them. <span class="in">`x = torch.randn(N, M).t()`</span> is the test that catches stride bugs.</span>
+<span id="cb5-56"><a href="#cb5-56" aria-hidden="true" tabindex="-1"></a><span class="ss">9. </span>**Only then benchmark.** A fast wrong kernel is worthless.</span>
+<span id="cb5-57"><a href="#cb5-57" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-58"><a href="#cb5-58" aria-hidden="true" tabindex="-1"></a><span class="fu">## Bug class catalog</span></span>
+<span id="cb5-59"><a href="#cb5-59" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-60"><a href="#cb5-60" aria-hidden="true" tabindex="-1"></a>The bugs in Triton kernels fall into seven recurring buckets. Knowing the bucket from the symptom shortens the fix from hours to minutes.</span>
+<span id="cb5-61"><a href="#cb5-61" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-62"><a href="#cb5-62" aria-hidden="true" tabindex="-1"></a><span class="fu">### Shape bugs</span></span>
+<span id="cb5-63"><a href="#cb5-63" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-64"><a href="#cb5-64" aria-hidden="true" tabindex="-1"></a><span class="in">`tl.dot`</span> requires specific shapes (multiples of 16 for the inner dim, typically). Broadcast mismatches between <span class="in">`(BLOCK_M,)`</span> and <span class="in">`(BLOCK_M, BLOCK_N)`</span> produce confusing compile errors or silently wrong arithmetic.</span>
+<span id="cb5-65"><a href="#cb5-65" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-66"><a href="#cb5-66" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**Symptom:** compile error mentioning unexpected shape; or a tile that should be <span class="in">`(M, N)`</span> is <span class="in">`(N, M)`</span>.</span>
+<span id="cb5-67"><a href="#cb5-67" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**Fix:** print <span class="in">`tensor.shape`</span> under <span class="in">`TRITON_INTERPRET`</span>. Add <span class="in">`[:, None]`</span> and <span class="in">`[None, :]`</span> until the broadcast is what you intended.</span>
+<span id="cb5-68"><a href="#cb5-68" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-69"><a href="#cb5-69" aria-hidden="true" tabindex="-1"></a><span class="fu">### Mask bugs</span></span>
+<span id="cb5-70"><a href="#cb5-70" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-71"><a href="#cb5-71" aria-hidden="true" tabindex="-1"></a>The mask is the most common bug source. You forgot it. You used <span class="in">`other=0`</span> where you needed <span class="in">`other=-inf`</span>. You masked on the wrong axis.</span>
+<span id="cb5-72"><a href="#cb5-72" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-73"><a href="#cb5-73" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**Symptom:** output is correct except on the last block, OR output is correct only when N is a multiple of BLOCK, OR neighboring tensors get corrupted between runs.</span>
+<span id="cb5-74"><a href="#cb5-74" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**Fix:** check every <span class="in">`tl.load`</span> and <span class="in">`tl.store`</span> has a <span class="in">`mask=`</span>. For reductions where <span class="in">`other`</span> matters, use <span class="in">`-inf`</span> for max and <span class="in">`0`</span> for sum. For <span class="in">`tl.store`</span>, no <span class="in">`other`</span> argument exists — <span class="in">`mask=`</span> alone is enough.</span>
+<span id="cb5-75"><a href="#cb5-75" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-76"><a href="#cb5-76" aria-hidden="true" tabindex="-1"></a>The OOB-store bug deserves its own warning. A masked <span class="in">`tl.load`</span> with no mask reads garbage but at least lives in the kernel's allocated buffers (usually). A <span class="in">`tl.store`</span> with no mask **writes** garbage to memory that belongs to other tensors. The symptom is that some unrelated tensor changes value between runs. The fix is <span class="in">`mask=`</span> on every store.</span>
+<span id="cb5-77"><a href="#cb5-77" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-78"><a href="#cb5-78" aria-hidden="true" tabindex="-1"></a><span class="fu">### Stride bugs</span></span>
+<span id="cb5-79"><a href="#cb5-79" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-80"><a href="#cb5-80" aria-hidden="true" tabindex="-1"></a>You assumed a tensor is contiguous, but the caller passes a view (<span class="in">`.t()`</span>, <span class="in">`.transpose(0, 1)`</span>, a slice). Or you computed strides in bytes when Triton expects elements (or vice versa). Or your multi-dimensional offset arithmetic forgot a <span class="in">`* stride_m`</span> somewhere.</span>
+<span id="cb5-81"><a href="#cb5-81" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-82"><a href="#cb5-82" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**Symptom:** kernel is correct for <span class="in">`x.contiguous()`</span>, wrong for <span class="in">`x.t()`</span>.</span>
+<span id="cb5-83"><a href="#cb5-83" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**Fix:** pass strides explicitly from the launcher (`x.stride(0)`, `x.stride(1)`) and use them in the offset math. Never write `pid * N + offs`; always write `pid * stride_m + offs * stride_n`. Triton strides are in **elements**, not bytes.</span>
+<span id="cb5-84"><a href="#cb5-84" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-85"><a href="#cb5-85" aria-hidden="true" tabindex="-1"></a><span class="fu">### Dtype bugs</span></span>
+<span id="cb5-86"><a href="#cb5-86" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-87"><a href="#cb5-87" aria-hidden="true" tabindex="-1"></a>The accumulator is fp16 instead of fp32. You cast back to fp16 before you should. You compared fp16 outputs against fp32 references with fp32 tolerances.</span>
+<span id="cb5-88"><a href="#cb5-88" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-89"><a href="#cb5-89" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**Symptom:** correct in fp32, wrong in fp16 (large absolute error). Or the kernel works for K=64 and is wrong for K=2048.</span>
+<span id="cb5-90"><a href="#cb5-90" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**Fix:** accumulator dtype is **always** fp32 unless you have a specific reason otherwise. Loosen test tolerances per the chapter conventions: fp16 gets <span class="in">`rtol=atol=1e-2`</span>. Cast to output dtype only at the <span class="in">`tl.store`</span>.</span>
+<span id="cb5-91"><a href="#cb5-91" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-92"><a href="#cb5-92" aria-hidden="true" tabindex="-1"></a><span class="fu">### NaN bugs</span></span>
+<span id="cb5-93"><a href="#cb5-93" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-94"><a href="#cb5-94" aria-hidden="true" tabindex="-1"></a>Almost always one of: forgot max-subtract in a softmax, divided by zero in a normalize, took <span class="in">`sqrt`</span> of a small negative due to fp16 noise, accumulated in fp16 and overflowed.</span>
+<span id="cb5-95"><a href="#cb5-95" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-96"><a href="#cb5-96" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**Symptom:** output is all NaN, or NaN appears only for large N, or NaN appears only in fp16.</span>
+<span id="cb5-97"><a href="#cb5-97" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**Fix:** for softmax, subtract the row max before <span class="in">`exp`</span>. For variance, clamp <span class="in">`var = max(var, 0)`</span> before <span class="in">`sqrt`</span>. For divisions, add a small epsilon and verify the epsilon is in the right dtype (don't add <span class="in">`1e-12`</span> to an fp16 tensor — it underflows). For accumulator overflow, cast to fp32.</span>
+<span id="cb5-98"><a href="#cb5-98" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-99"><a href="#cb5-99" aria-hidden="true" tabindex="-1"></a><span class="fu">### OOB bugs</span></span>
+<span id="cb5-100"><a href="#cb5-100" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-101"><a href="#cb5-101" aria-hidden="true" tabindex="-1"></a>Reading or writing past the end of the buffer. Often a stride bug in disguise.</span>
+<span id="cb5-102"><a href="#cb5-102" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-103"><a href="#cb5-103" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**Symptom:** <span class="in">`CUDA error: an illegal memory access was encountered`</span>. Sometimes silent — the OOB write happens to land in a buffer you don't read.</span>
+<span id="cb5-104"><a href="#cb5-104" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**Fix:** drop to <span class="in">`TRITON_INTERPRET=1`</span> and print every offset and mask. If <span class="in">`offs`</span> ever exceeds the tensor extent without a corresponding <span class="in">`mask`</span>, that is the bug. Triton's interpreter is strict about OOB access and will raise immediately.</span>
+<span id="cb5-105"><a href="#cb5-105" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-106"><a href="#cb5-106" aria-hidden="true" tabindex="-1"></a><span class="fu">### Race bugs</span></span>
+<span id="cb5-107"><a href="#cb5-107" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-108"><a href="#cb5-108" aria-hidden="true" tabindex="-1"></a>You wrote to overlapping memory locations from multiple programs. Triton does not provide atomic adds by default; if two programs accumulate into the same output element, you lose one of the updates.</span>
+<span id="cb5-109"><a href="#cb5-109" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-110"><a href="#cb5-110" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**Symptom:** output is non-deterministic across runs even for the same input.</span>
+<span id="cb5-111"><a href="#cb5-111" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**Fix:** redesign the grid so each output element is owned by exactly one program. If you really need atomic adds, use <span class="in">`tl.atomic_add`</span> (slow but correct).</span>
+<span id="cb5-112"><a href="#cb5-112" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-113"><a href="#cb5-113" aria-hidden="true" tabindex="-1"></a><span class="fu">## Symptom-to-bug-class table</span></span>
+<span id="cb5-114"><a href="#cb5-114" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-115"><a href="#cb5-115" aria-hidden="true" tabindex="-1"></a>| Symptom                                                         | Likely bug class    |</span>
+<span id="cb5-116"><a href="#cb5-116" aria-hidden="true" tabindex="-1"></a>|----------------------------------------------------------------|---------------------|</span>
+<span id="cb5-117"><a href="#cb5-117" aria-hidden="true" tabindex="-1"></a>| Wrong only on last block                                       | Mask                |</span>
+<span id="cb5-118"><a href="#cb5-118" aria-hidden="true" tabindex="-1"></a>| Wrong only when N is not a multiple of BLOCK                   | Mask                |</span>
+<span id="cb5-119"><a href="#cb5-119" aria-hidden="true" tabindex="-1"></a>| All NaN in softmax-like reduction                              | Missing max-subtract|</span>
+<span id="cb5-120"><a href="#cb5-120" aria-hidden="true" tabindex="-1"></a>| All NaN only in fp16                                           | fp16 overflow → fp32 accumulator |</span>
+<span id="cb5-121"><a href="#cb5-121" aria-hidden="true" tabindex="-1"></a>| Correct for contiguous, wrong for <span class="in">`.t()`</span>                       | Stride              |</span>
+<span id="cb5-122"><a href="#cb5-122" aria-hidden="true" tabindex="-1"></a>| Correct in fp32, wrong in fp16 with large error                | Dtype (accumulator) |</span>
+<span id="cb5-123"><a href="#cb5-123" aria-hidden="true" tabindex="-1"></a>| Neighboring tensor changes between runs                        | OOB write (mask on store) |</span>
+<span id="cb5-124"><a href="#cb5-124" aria-hidden="true" tabindex="-1"></a>| <span class="in">`illegal memory access`</span>                                        | OOB load or store   |</span>
+<span id="cb5-125"><a href="#cb5-125" aria-hidden="true" tabindex="-1"></a>| Non-deterministic output                                       | Race / atomic       |</span>
+<span id="cb5-126"><a href="#cb5-126" aria-hidden="true" tabindex="-1"></a>| Compile error mentioning shape                                 | Shape / broadcast   |</span>
+<span id="cb5-127"><a href="#cb5-127" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-128"><a href="#cb5-128" aria-hidden="true" tabindex="-1"></a><span class="fu">## A worked find-and-fix</span></span>
+<span id="cb5-129"><a href="#cb5-129" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-130"><a href="#cb5-130" aria-hidden="true" tabindex="-1"></a>The repository ships a deliberately buggy <span class="in">`add_with_mask_bug`</span> kernel in <span class="in">`src/ch24_debugging/debug_demo.py`</span>. Here is the kernel:</span>
+<span id="cb5-131"><a href="#cb5-131" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-132"><a href="#cb5-132" aria-hidden="true" tabindex="-1"></a><span class="in">```python</span></span>
+<span id="cb5-133"><a href="#cb5-133" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.jit</span></span>
+<span id="cb5-134"><a href="#cb5-134" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> _add_buggy_kernel(x_ptr, y_ptr, out_ptr, n_elements, BLOCK: tl.constexpr):</span>
+<span id="cb5-135"><a href="#cb5-135" aria-hidden="true" tabindex="-1"></a>    pid <span class="op">=</span> tl.program_id(<span class="dv">0</span>)</span>
+<span id="cb5-136"><a href="#cb5-136" aria-hidden="true" tabindex="-1"></a>    offs <span class="op">=</span> pid <span class="op">*</span> BLOCK <span class="op">+</span> tl.arange(<span class="dv">0</span>, BLOCK)</span>
+<span id="cb5-137"><a href="#cb5-137" aria-hidden="true" tabindex="-1"></a>    mask <span class="op">=</span> offs <span class="op">&lt;</span> n_elements</span>
+<span id="cb5-138"><a href="#cb5-138" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> tl.load(x_ptr <span class="op">+</span> offs, mask<span class="op">=</span>mask, other<span class="op">=</span><span class="fl">0.0</span>)</span>
+<span id="cb5-139"><a href="#cb5-139" aria-hidden="true" tabindex="-1"></a>    y <span class="op">=</span> tl.load(y_ptr <span class="op">+</span> offs, mask<span class="op">=</span>mask, other<span class="op">=</span><span class="fl">0.0</span>)</span>
+<span id="cb5-140"><a href="#cb5-140" aria-hidden="true" tabindex="-1"></a>    out <span class="op">=</span> x <span class="op">+</span> y</span>
+<span id="cb5-141"><a href="#cb5-141" aria-hidden="true" tabindex="-1"></a>    tl.store(out_ptr <span class="op">+</span> offs, out)              <span class="co"># </span><span class="al">BUG</span><span class="co">: missing mask</span></span>
+<span id="cb5-142"><a href="#cb5-142" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb5-143"><a href="#cb5-143" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-144"><a href="#cb5-144" aria-hidden="true" tabindex="-1"></a>Run it with <span class="in">`n=1000, BLOCK=128`</span>. The output looks fine because the trailing 24 elements of the last program write past the end of <span class="in">`out`</span>, but <span class="in">`out`</span> is the last allocation so the writes land in unused heap. Now allocate a second tensor right after:</span>
+<span id="cb5-145"><a href="#cb5-145" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-146"><a href="#cb5-146" aria-hidden="true" tabindex="-1"></a><span class="in">```python</span></span>
+<span id="cb5-147"><a href="#cb5-147" aria-hidden="true" tabindex="-1"></a>z <span class="op">=</span> torch.zeros(<span class="dv">2048</span>, device<span class="op">=</span><span class="st">"cuda"</span>)</span>
+<span id="cb5-148"><a href="#cb5-148" aria-hidden="true" tabindex="-1"></a>result <span class="op">=</span> add_with_mask_bug(x, y)   <span class="co"># n=1000</span></span>
+<span id="cb5-149"><a href="#cb5-149" aria-hidden="true" tabindex="-1"></a><span class="bu">print</span>(z.<span class="bu">sum</span>())   <span class="co"># not zero — z got corrupted</span></span>
+<span id="cb5-150"><a href="#cb5-150" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb5-151"><a href="#cb5-151" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-152"><a href="#cb5-152" aria-hidden="true" tabindex="-1"></a>The corruption of <span class="in">`z`</span> is the smoking gun. Switch to <span class="in">`TRITON_INTERPRET=1`</span>, add <span class="in">`tl.device_print("offs", offs)`</span> and run with <span class="in">`n=1000, BLOCK=128, grid=(8,)`</span>. The last program prints <span class="in">`offs = [896, 897, ..., 1023]`</span>, all of which are <span class="in">`&gt;= n_elements=1000`</span> for the last 24 entries. The store writes those 24 entries unmasked. Fix: add <span class="in">`mask=mask`</span> to the store. The fixed version is <span class="in">`add_fixed`</span> in the same file.</span>
+<span id="cb5-153"><a href="#cb5-153" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-154"><a href="#cb5-154" aria-hidden="true" tabindex="-1"></a><span class="fu">## Reducing problem size</span></span>
+<span id="cb5-155"><a href="#cb5-155" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-156"><a href="#cb5-156" aria-hidden="true" tabindex="-1"></a>When a kernel fails on <span class="in">`(2048, 2048)`</span> and works on <span class="in">`(64, 64)`</span>, the bug is almost always a mask or a tail-handling problem. Shrink the failing case until you can write the expected output by hand. For matmul, <span class="in">`M=N=K=BLOCK_K`</span> produces a single program with a single K iteration — read it in the interpreter, print every tile, compare to a <span class="in">`torch.arange`</span> reference. This shrinks bugs from "wrong somewhere in a 4M-element tensor" to "wrong in this 64-element row".</span>
+<span id="cb5-157"><a href="#cb5-157" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-158"><a href="#cb5-158" aria-hidden="true" tabindex="-1"></a><span class="fu">## Testing one program at a time</span></span>
+<span id="cb5-159"><a href="#cb5-159" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-160"><a href="#cb5-160" aria-hidden="true" tabindex="-1"></a>Set <span class="in">`grid=(1,)`</span> (or <span class="in">`(1, 1)`</span> for 2-D grids) and skip the rest. The single program runs on a single tile; everything you print is from that one program. Combined with <span class="in">`TRITON_INTERPRET=1`</span>, this is your microscope.</span>
+<span id="cb5-161"><a href="#cb5-161" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-162"><a href="#cb5-162" aria-hidden="true" tabindex="-1"></a><span class="fu">## Common gotchas</span></span>
+<span id="cb5-163"><a href="#cb5-163" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-164"><a href="#cb5-164" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**`tl.device_print` in compiled mode buffers and may not flush** if the kernel crashes. If you see no output and you suspect a hang, switch to <span class="in">`TRITON_INTERPRET=1`</span>.</span>
+<span id="cb5-165"><a href="#cb5-165" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**`print()` inside a `@triton.jit` function only works under `TRITON_INTERPRET`.** In compiled mode it is a no-op (or raises). Use <span class="in">`tl.device_print`</span> for compiled-mode prints.</span>
+<span id="cb5-166"><a href="#cb5-166" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**`if pid == 0` guards a print, but the condition must be a scalar.** Compare <span class="in">`tl.program_id(0)`</span> directly, not after arithmetic that produces a tensor.</span>
+<span id="cb5-167"><a href="#cb5-167" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**Strides are in elements, not bytes.** A common bug for people coming from CUDA, where strides are bytes.</span>
+<span id="cb5-168"><a href="#cb5-168" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**The `other` argument is not optional for masked loads in reductions.** <span class="in">`tl.load(..., mask=m)`</span> defaults <span class="in">`other`</span> to 0, which is wrong for a max reduction. Use <span class="in">`other=-float("inf")`</span> for max, <span class="in">`other=0.0`</span> for sum.</span>
+<span id="cb5-169"><a href="#cb5-169" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-170"><a href="#cb5-170" aria-hidden="true" tabindex="-1"></a><span class="fu">## Exercises</span></span>
+<span id="cb5-171"><a href="#cb5-171" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-172"><a href="#cb5-172" aria-hidden="true" tabindex="-1"></a>The chapter exercises are a set of debugging puzzles — small broken kernels you fix and explain. See <span class="in">`exercises/ch24_exercises.md`</span>. Worked fixes in <span class="in">`solutions/ch24_solutions.py`</span>. There is no benchmark or correctness suite for this chapter; the exercises are the practice.</span></code><button title="Copy to Clipboard" class="code-copy-button" data-in-quarto-modal=""><i class="bi"></i></button></pre></div>
+</div></div></div></div></div>
+</div> <!-- /content -->
+
+
+
+
+</body></html>

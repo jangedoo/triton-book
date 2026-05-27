@@ -1,0 +1,1749 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"><head>
+
+<meta charset="utf-8">
+<meta name="generator" content="quarto-1.5.57">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+
+<title>7&nbsp; Chapter 5: Fused Softmax – Learning Triton by Rebuilding Modern LLM Kernels</title>
+<style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+  width: 0.8em;
+  margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
+  vertical-align: middle;
+}
+/* CSS for syntax highlighting */
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { display: inline-block; text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+  { counter-reset: source-line 0; }
+pre.numberSource code > span
+  { position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+  { content: counter(source-line);
+    position: relative; left: -1em; text-align: right; vertical-align: baseline;
+    border: none; display: inline-block;
+    -webkit-touch-callout: none; -webkit-user-select: none;
+    -khtml-user-select: none; -moz-user-select: none;
+    -ms-user-select: none; user-select: none;
+    padding: 0 4px; width: 4em;
+  }
+pre.numberSource { margin-left: 3em;  padding-left: 4px; }
+div.sourceCode
+  {   }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+</style>
+
+
+<script src="../../site_libs/quarto-nav/quarto-nav.js"></script>
+<script src="../../site_libs/quarto-nav/headroom.min.js"></script>
+<script src="../../site_libs/clipboard/clipboard.min.js"></script>
+<script src="../../site_libs/quarto-search/autocomplete.umd.js"></script>
+<script src="../../site_libs/quarto-search/fuse.min.js"></script>
+<script src="../../site_libs/quarto-search/quarto-search.js"></script>
+<meta name="quarto:offset" content="../../">
+<link href="../../book/02-basic-nn/06-layernorm.html" rel="next">
+<link href="../../book/01-fundamentals/04-reductions.html" rel="prev">
+<script src="../../site_libs/quarto-html/quarto.js"></script>
+<script src="../../site_libs/quarto-html/popper.min.js"></script>
+<script src="../../site_libs/quarto-html/tippy.umd.min.js"></script>
+<script src="../../site_libs/quarto-html/anchor.min.js"></script>
+<link href="../../site_libs/quarto-html/tippy.css" rel="stylesheet">
+<link href="../../site_libs/quarto-html/quarto-syntax-highlighting.css" rel="stylesheet" id="quarto-text-highlighting-styles">
+<script src="../../site_libs/bootstrap/bootstrap.min.js"></script>
+<link href="../../site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
+<link href="../../site_libs/bootstrap/bootstrap.min.css" rel="stylesheet" id="quarto-bootstrap" data-mode="light">
+<script id="quarto-search-options" type="application/json">{
+  "location": "sidebar",
+  "copy-button": false,
+  "collapse-after": 3,
+  "panel-placement": "start",
+  "type": "textbox",
+  "limit": 50,
+  "keyboard-shortcut": [
+    "f",
+    "/",
+    "s"
+  ],
+  "show-item-context": false,
+  "language": {
+    "search-no-results-text": "No results",
+    "search-matching-documents-text": "matching documents",
+    "search-copy-link-title": "Copy link to search",
+    "search-hide-matches-text": "Hide additional matches",
+    "search-more-match-text": "more match in this document",
+    "search-more-matches-text": "more matches in this document",
+    "search-clear-button-title": "Clear",
+    "search-text-placeholder": "",
+    "search-detached-cancel-button-title": "Cancel",
+    "search-submit-button-title": "Submit",
+    "search-label": "Search"
+  }
+}</script>
+<script type="module" src="../../site_libs/quarto-ojs/quarto-ojs-runtime.js"></script>
+<link href="../../site_libs/quarto-ojs/quarto-ojs.css" rel="stylesheet">
+
+  <script src="https://cdnjs.cloudflare.com/polyfill/v3/polyfill.min.js?features=es6"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml-full.js" type="text/javascript"></script>
+
+<script type="text/javascript">
+const typesetMath = (el) => {
+  if (window.MathJax) {
+    // MathJax Typeset
+    window.MathJax.typeset([el]);
+  } else if (window.katex) {
+    // KaTeX Render
+    var mathElements = el.getElementsByClassName("math");
+    var macros = [];
+    for (var i = 0; i < mathElements.length; i++) {
+      var texText = mathElements[i].firstChild;
+      if (mathElements[i].tagName == "SPAN") {
+        window.katex.render(texText.data, mathElements[i], {
+          displayMode: mathElements[i].classList.contains('display'),
+          throwOnError: false,
+          macros: macros,
+          fleqn: false
+        });
+      }
+    }
+  }
+}
+window.Quarto = {
+  typesetMath
+};
+</script>
+
+</head>
+
+<body class="nav-sidebar floating">
+
+<div id="quarto-search-results"></div>
+  <header id="quarto-header" class="headroom fixed-top">
+  <nav class="quarto-secondary-nav">
+    <div class="container-fluid d-flex">
+      <button type="button" class="quarto-btn-toggle btn" data-bs-toggle="collapse" role="button" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">
+        <i class="bi bi-layout-text-sidebar-reverse"></i>
+      </button>
+        <nav class="quarto-page-breadcrumbs" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="../../book/02-basic-nn/05-fused-softmax.html">Part 2: Basic Neural Network Kernels</a></li><li class="breadcrumb-item"><a href="../../book/02-basic-nn/05-fused-softmax.html"><span class="chapter-number">7</span>&nbsp; <span class="chapter-title">Chapter 5: Fused Softmax</span></a></li></ol></nav>
+        <a class="flex-grow-1" role="navigation" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">      
+        </a>
+      <button type="button" class="btn quarto-search-button" aria-label="Search" onclick="window.quartoOpenSearch();">
+        <i class="bi bi-search"></i>
+      </button>
+    </div>
+  </nav>
+</header>
+<!-- content -->
+<div id="quarto-content" class="quarto-container page-columns page-rows-contents page-layout-article">
+<!-- sidebar -->
+  <nav id="quarto-sidebar" class="sidebar collapse collapse-horizontal quarto-sidebar-collapse-item sidebar-navigation floating overflow-auto">
+    <div class="pt-lg-2 mt-2 text-left sidebar-header">
+    <div class="sidebar-title mb-0 py-0">
+      <a href="../../">Learning Triton by Rebuilding Modern LLM Kernels</a> 
+    </div>
+      </div>
+        <div class="mt-2 flex-shrink-0 align-items-center">
+        <div class="sidebar-search">
+        <div id="quarto-search" class="" title="Search"></div>
+        </div>
+        </div>
+    <div class="sidebar-menu-container"> 
+    <ul class="list-unstyled mt-1">
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../index.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">1</span>&nbsp; <span class="chapter-title">Learning Triton by Rebuilding Modern LLM Kernels</span></span></a>
+  </div>
+</li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-1" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 0: Orientation</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-1" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-1" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/00-orientation/00-why-triton.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">2</span>&nbsp; <span class="chapter-title">Chapter 00: Why Triton Exists</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/00-orientation/01-setup.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">3</span>&nbsp; <span class="chapter-title">Chapter 01: Environment Setup</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-2" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 1: Triton Fundamentals</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-2" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-2" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/01-fundamentals/02-mental-model.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">4</span>&nbsp; <span class="chapter-title">Chapter 2: The Triton Mental Model</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/01-fundamentals/03-memory-pointers-strides.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">5</span>&nbsp; <span class="chapter-title">Chapter 3: Memory, Pointers, Strides, and Masks</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/01-fundamentals/04-reductions.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">6</span>&nbsp; <span class="chapter-title">Chapter 4: Reductions</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-3" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 2: Basic Neural Network Kernels</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-3" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-3" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/02-basic-nn/05-fused-softmax.html" class="sidebar-item-text sidebar-link active">
+ <span class="menu-text"><span class="chapter-number">7</span>&nbsp; <span class="chapter-title">Chapter 5: Fused Softmax</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/02-basic-nn/06-layernorm.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">8</span>&nbsp; <span class="chapter-title">Chapter 6: LayerNorm</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/02-basic-nn/07-rmsnorm.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">9</span>&nbsp; <span class="chapter-title">Chapter 7: RMSNorm</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/02-basic-nn/08-activations-swiglu.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">10</span>&nbsp; <span class="chapter-title">Chapter 8: Activation Functions and Gated MLPs</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-4" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 3: Matrix Multiplication</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-4" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-4" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/03-matmul/09-matmul.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">11</span>&nbsp; <span class="chapter-title">Chapter 9: Matmul From Scratch</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/03-matmul/10-batched-matmul-linear.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">12</span>&nbsp; <span class="chapter-title">Chapter 10: Batched Matmul and Linear Layers</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/03-matmul/11-persistent-matmul.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">13</span>&nbsp; <span class="chapter-title">Chapter 11: Persistent Matmul and Advanced Matmul Concepts</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-5" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 4: Attention and Transformer Kernels</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-5" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-5" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/12-attention-math.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">14</span>&nbsp; <span class="chapter-title">Chapter 12: Attention Math Refresher for Kernel Writers</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/13-naive-attention.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">15</span>&nbsp; <span class="chapter-title">Chapter 13: Naive Attention in PyTorch and Triton Pieces</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/14-flashattention-fwd.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">16</span>&nbsp; <span class="chapter-title">Chapter 14: FlashAttention Forward in Triton</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/15-attention-backward.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">17</span>&nbsp; <span class="chapter-title">Chapter 15: Attention Backward — Conceptual and Optional Implementation</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/16-rope-alibi.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">18</span>&nbsp; <span class="chapter-title">Chapter 16: Rotary Positional Embeddings, ALiBi, and Position Kernels</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/17-kv-cache.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">19</span>&nbsp; <span class="chapter-title">Chapter 17: KV Cache Kernels for Inference</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-6" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 5: Modern LLM Layer Fusion</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-6" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-6" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/05-llm-fusion/18-residual-rmsnorm.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">20</span>&nbsp; <span class="chapter-title">Chapter 18: Residual Add + RMSNorm Fusion</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/05-llm-fusion/19-fused-bias-act-gate.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">21</span>&nbsp; <span class="chapter-title">Chapter 19: Fused Bias + Activation + Gate</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/05-llm-fusion/20-cross-entropy.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">22</span>&nbsp; <span class="chapter-title">Chapter 20: Cross Entropy and Logits Kernels</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/05-llm-fusion/21-sampling.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">23</span>&nbsp; <span class="chapter-title">Chapter 21: Sampling Kernels for Inference</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-7" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 6: Quantization-Oriented Kernels</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-7" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-7" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/06-quantization/22-low-precision.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">24</span>&nbsp; <span class="chapter-title">Chapter 22: Low Precision Basics</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/06-quantization/23-dequant-matmul.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">25</span>&nbsp; <span class="chapter-title">Chapter 23: Int8 / FP8 Style Dequant + Matmul Concepts</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-8" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 7: Debugging, Testing, Profiling, Optimization</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-8" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-8" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/07-debug-perf/24-debugging.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">26</span>&nbsp; <span class="chapter-title">Chapter 24: Debugging Triton Kernels</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/07-debug-perf/25-benchmarking.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">27</span>&nbsp; <span class="chapter-title">Chapter 25: Benchmarking Correctly</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/07-debug-perf/26-autotuning.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">28</span>&nbsp; <span class="chapter-title">Chapter 26: Autotuning</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/07-debug-perf/27-perf-tuning.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">29</span>&nbsp; <span class="chapter-title">Chapter 27: Performance Tuning Mental Model</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-9" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 8: Capstone Projects</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-9" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-9" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/08-capstone/28-mini-library.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">30</span>&nbsp; <span class="chapter-title">Chapter 28: Build a Mini Triton LLM Kernel Library</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/08-capstone/29-replace-transformer-pieces.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">31</span>&nbsp; <span class="chapter-title">Chapter 29: Replace Pieces of a Tiny Transformer</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/08-capstone/30-design-playbook.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">32</span>&nbsp; <span class="chapter-title">Chapter 30: Final Kernel Design Playbook</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/appendix-study-plan.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">33</span>&nbsp; <span class="chapter-title">Appendix: Study Plan, Memory Kernels, and the Capstone Challenge</span></span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../kernel_checklist.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">34</span>&nbsp; <span class="chapter-title">Triton Kernel Design Checklist</span></span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../llm_kernel_map.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">35</span>&nbsp; <span class="chapter-title">LLM Component → Triton Kernel Map</span></span></a>
+  </div>
+</li>
+    </ul>
+    </div>
+</nav>
+<div id="quarto-sidebar-glass" class="quarto-sidebar-collapse-item" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item"></div>
+<!-- margin-sidebar -->
+    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar">
+        <nav id="TOC" role="doc-toc" class="toc-active">
+    <h2 id="toc-title">Table of contents</h2>
+   
+  <ul>
+  <li><a href="#what-softmax-actually-does" id="toc-what-softmax-actually-does" class="nav-link active" data-scroll-target="#what-softmax-actually-does"><span class="header-section-number">7.1</span> What softmax actually does</a></li>
+  <li><a href="#why-this-kernel-is-memory-bound" id="toc-why-this-kernel-is-memory-bound" class="nav-link" data-scroll-target="#why-this-kernel-is-memory-bound"><span class="header-section-number">7.2</span> Why this kernel is memory-bound</a>
+  <ul class="collapse">
+  <li><a href="#pytorch-reference" id="toc-pytorch-reference" class="nav-link" data-scroll-target="#pytorch-reference"><span class="header-section-number">7.2.1</span> PyTorch reference</a></li>
+  <li><a href="#triton-implementation" id="toc-triton-implementation" class="nav-link" data-scroll-target="#triton-implementation"><span class="header-section-number">7.2.2</span> Triton implementation</a></li>
+  <li><a href="#shape-trace" id="toc-shape-trace" class="nav-link" data-scroll-target="#shape-trace"><span class="header-section-number">7.2.3</span> Shape trace</a></li>
+  <li><a href="#pointer-arithmetic-and-masks" id="toc-pointer-arithmetic-and-masks" class="nav-link" data-scroll-target="#pointer-arithmetic-and-masks"><span class="header-section-number">7.2.4</span> Pointer arithmetic and masks</a></li>
+  <li><a href="#correctness-test" id="toc-correctness-test" class="nav-link" data-scroll-target="#correctness-test"><span class="header-section-number">7.2.5</span> Correctness test</a></li>
+  <li><a href="#benchmark" id="toc-benchmark" class="nav-link" data-scroll-target="#benchmark"><span class="header-section-number">7.2.6</span> Benchmark</a></li>
+  <li><a href="#interactive-stepping-through-the-online-accumulator" id="toc-interactive-stepping-through-the-online-accumulator" class="nav-link" data-scroll-target="#interactive-stepping-through-the-online-accumulator"><span class="header-section-number">7.2.7</span> Interactive: stepping through the online accumulator</a></li>
+  <li><a href="#optimization-discussion" id="toc-optimization-discussion" class="nav-link" data-scroll-target="#optimization-discussion"><span class="header-section-number">7.2.8</span> Optimization discussion</a></li>
+  <li><a href="#common-bugs" id="toc-common-bugs" class="nav-link" data-scroll-target="#common-bugs"><span class="header-section-number">7.2.9</span> Common bugs</a></li>
+  <li><a href="#exercises" id="toc-exercises" class="nav-link" data-scroll-target="#exercises"><span class="header-section-number">7.2.10</span> Exercises</a></li>
+  </ul></li>
+  </ul>
+</nav>
+    </div>
+<!-- main -->
+<main class="content" id="quarto-document-content">
+
+<header id="title-block-header" class="quarto-title-block default"><nav class="quarto-page-breadcrumbs quarto-title-breadcrumbs d-none d-lg-block" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="../../book/02-basic-nn/05-fused-softmax.html">Part 2: Basic Neural Network Kernels</a></li><li class="breadcrumb-item"><a href="../../book/02-basic-nn/05-fused-softmax.html"><span class="chapter-number">7</span>&nbsp; <span class="chapter-title">Chapter 5: Fused Softmax</span></a></li></ol></nav>
+<div class="quarto-title">
+<div class="quarto-title-block"><div><h1 class="title"><span class="chapter-number">7</span>&nbsp; <span class="chapter-title">Chapter 5: Fused Softmax</span></h1><button type="button" class="btn code-tools-button" id="quarto-code-tools-source"><i class="bi"></i> Code</button></div></div>
+</div>
+
+
+
+<div class="quarto-title-meta">
+
+    
+  
+    
+  </div>
+  
+
+
+</header>
+
+
+<p>Softmax is the first kernel where naive correctness is not the hard part — <em>staying correct under fp16</em> is. It is also the first kernel where you have to think carefully about reductions inside a single program. Get this chapter right and LayerNorm, RMSNorm, and (eventually) FlashAttention all follow the same pattern.</p>
+<section id="what-softmax-actually-does" class="level2" data-number="7.1">
+<h2 data-number="7.1" class="anchored" data-anchor-id="what-softmax-actually-does"><span class="header-section-number">7.1</span> What softmax actually does</h2>
+<p>For a single row <span class="math inline">\(x \in \mathbb{R}^N\)</span>:</p>
+<p><span class="math display">\[
+\text{softmax}(x)_i = \frac{e^{x_i}}{\sum_{j=1}^{N} e^{x_j}}
+\]</span></p>
+<p>In a transformer you call this on the attention score matrix, on classifier logits, and on routing logits in mixture-of-experts. The shape is almost always <code>(batch * heads * seq, seq)</code> or <code>(batch * seq, vocab)</code> — many rows, each row reduced along its last dimension.</p>
+</section>
+<section id="why-this-kernel-is-memory-bound" class="level2" data-number="7.2">
+<h2 data-number="7.2" class="anchored" data-anchor-id="why-this-kernel-is-memory-bound"><span class="header-section-number">7.2</span> Why this kernel is memory-bound</h2>
+<p>Per row we read <span class="math inline">\(N\)</span> values and write <span class="math inline">\(N\)</span> values. The arithmetic is one <code>max</code>, <span class="math inline">\(N\)</span> <code>exp</code>s, one <code>sum</code>, and <span class="math inline">\(N\)</span> divides — roughly <span class="math inline">\(3N\)</span> ops vs <span class="math inline">\(2N\)</span> memory accesses. On any modern GPU the read/write dominates. Concretely, a 2070 SUPER has ~448 GB/s of memory bandwidth and ~9 TFLOPs of fp32; even allocating the exps and divides as fp32 ops, we cannot saturate compute. The job of the Triton kernel is to read every byte of <code>x</code> exactly once and write every byte of <code>y</code> exactly once, with no intermediate trip to HBM.</p>
+<p>That last sentence is why we fuse. Calling <code>torch.exp(x - x.max(dim=-1, keepdim=True).values)</code> then <code>.sum(dim=-1)</code> then a division writes three full-row-sized intermediates to HBM. The Triton kernel keeps everything in registers.</p>
+<section id="pytorch-reference" class="level3" data-number="7.2.1">
+<h3 data-number="7.2.1" class="anchored" data-anchor-id="pytorch-reference"><span class="header-section-number">7.2.1</span> PyTorch reference</h3>
+<div class="sourceCode" id="cb1"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> pytorch_softmax(x: torch.Tensor) <span class="op">-&gt;</span> torch.Tensor:</span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a>    <span class="co"># x: (M, N), reduce along the last dim.</span></span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> torch.softmax(x, dim<span class="op">=-</span><span class="dv">1</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<p>This is the oracle. It already does the max-subtraction trick internally.</p>
+</section>
+<section id="triton-implementation" class="level3" data-number="7.2.2">
+<h3 data-number="7.2.2" class="anchored" data-anchor-id="triton-implementation"><span class="header-section-number">7.2.2</span> Triton implementation</h3>
+<p>We start with the wrong-on-purpose version so the numerical hazard is visible. Then we fix it. Then we extend it to rows that do not fit in one tile.</p>
+<section id="naive-one-tile-per-row-no-max-subtraction" class="level4" data-number="7.2.2.1">
+<h4 data-number="7.2.2.1" class="anchored" data-anchor-id="naive-one-tile-per-row-no-max-subtraction"><span class="header-section-number">7.2.2.1</span> Naive: one tile per row, no max subtraction</h4>
+<div class="sourceCode" id="cb2"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch</span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> triton</span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> triton.language <span class="im">as</span> tl</span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.jit</span></span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> _naive_softmax_kernel(</span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a>    x_ptr, y_ptr,</span>
+<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a>    row_stride,</span>
+<span id="cb2-9"><a href="#cb2-9" aria-hidden="true" tabindex="-1"></a>    n_cols,</span>
+<span id="cb2-10"><a href="#cb2-10" aria-hidden="true" tabindex="-1"></a>    BLOCK_SIZE: tl.constexpr,</span>
+<span id="cb2-11"><a href="#cb2-11" aria-hidden="true" tabindex="-1"></a>):</span>
+<span id="cb2-12"><a href="#cb2-12" aria-hidden="true" tabindex="-1"></a>    row_idx <span class="op">=</span> tl.program_id(axis<span class="op">=</span><span class="dv">0</span>)</span>
+<span id="cb2-13"><a href="#cb2-13" aria-hidden="true" tabindex="-1"></a>    row_start_ptr <span class="op">=</span> x_ptr <span class="op">+</span> row_idx <span class="op">*</span> row_stride</span>
+<span id="cb2-14"><a href="#cb2-14" aria-hidden="true" tabindex="-1"></a>    col_offs <span class="op">=</span> tl.arange(<span class="dv">0</span>, BLOCK_SIZE)</span>
+<span id="cb2-15"><a href="#cb2-15" aria-hidden="true" tabindex="-1"></a>    mask <span class="op">=</span> col_offs <span class="op">&lt;</span> n_cols</span>
+<span id="cb2-16"><a href="#cb2-16" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> tl.load(row_start_ptr <span class="op">+</span> col_offs, mask<span class="op">=</span>mask, other<span class="op">=</span><span class="fl">0.0</span>)</span>
+<span id="cb2-17"><a href="#cb2-17" aria-hidden="true" tabindex="-1"></a>    e <span class="op">=</span> tl.exp(x.to(tl.float32))</span>
+<span id="cb2-18"><a href="#cb2-18" aria-hidden="true" tabindex="-1"></a>    e <span class="op">=</span> tl.where(mask, e, <span class="fl">0.0</span>)</span>
+<span id="cb2-19"><a href="#cb2-19" aria-hidden="true" tabindex="-1"></a>    denom <span class="op">=</span> tl.<span class="bu">sum</span>(e, axis<span class="op">=</span><span class="dv">0</span>)</span>
+<span id="cb2-20"><a href="#cb2-20" aria-hidden="true" tabindex="-1"></a>    y <span class="op">=</span> e <span class="op">/</span> denom</span>
+<span id="cb2-21"><a href="#cb2-21" aria-hidden="true" tabindex="-1"></a>    tl.store(y_ptr <span class="op">+</span> row_idx <span class="op">*</span> row_stride <span class="op">+</span> col_offs, y.to(x.dtype), mask<span class="op">=</span>mask)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<p>Try this with fp16 inputs whose row max sits around 20. <code>exp(20) ~= 4.85e8</code>, well below the fp32 ceiling, so the intermediate <code>e</code> is fine — but when we cast back to fp16 the per-element ratio can land outside fp16’s representable range (or underflow to zero). Even one row with a genuine <code>inf</code> poisons the divide. You will not detect this on <code>torch.randn</code>-style inputs, which is exactly why this bug ships.</p>
+</section>
+<section id="stable-subtract-the-row-max" class="level4" data-number="7.2.2.2">
+<h4 data-number="7.2.2.2" class="anchored" data-anchor-id="stable-subtract-the-row-max"><span class="header-section-number">7.2.2.2</span> Stable: subtract the row max</h4>
+<div class="sourceCode" id="cb3"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.jit</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> _stable_softmax_kernel(</span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>    x_ptr, y_ptr, row_stride, n_cols,</span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>    BLOCK_SIZE: tl.constexpr,</span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a>):</span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a>    row_idx <span class="op">=</span> tl.program_id(axis<span class="op">=</span><span class="dv">0</span>)</span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a>    row_start_ptr <span class="op">=</span> x_ptr <span class="op">+</span> row_idx <span class="op">*</span> row_stride</span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a>    col_offs <span class="op">=</span> tl.arange(<span class="dv">0</span>, BLOCK_SIZE)</span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a>    mask <span class="op">=</span> col_offs <span class="op">&lt;</span> n_cols</span>
+<span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a>    <span class="co"># other=-inf so masked lanes do not poison the max.</span></span>
+<span id="cb3-11"><a href="#cb3-11" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> tl.load(row_start_ptr <span class="op">+</span> col_offs, mask<span class="op">=</span>mask, other<span class="op">=-</span><span class="bu">float</span>(<span class="st">"inf"</span>))</span>
+<span id="cb3-12"><a href="#cb3-12" aria-hidden="true" tabindex="-1"></a>    x_f32 <span class="op">=</span> x.to(tl.float32)</span>
+<span id="cb3-13"><a href="#cb3-13" aria-hidden="true" tabindex="-1"></a>    m <span class="op">=</span> tl.<span class="bu">max</span>(x_f32, axis<span class="op">=</span><span class="dv">0</span>)</span>
+<span id="cb3-14"><a href="#cb3-14" aria-hidden="true" tabindex="-1"></a>    e <span class="op">=</span> tl.exp(x_f32 <span class="op">-</span> m)</span>
+<span id="cb3-15"><a href="#cb3-15" aria-hidden="true" tabindex="-1"></a>    e <span class="op">=</span> tl.where(mask, e, <span class="fl">0.0</span>)</span>
+<span id="cb3-16"><a href="#cb3-16" aria-hidden="true" tabindex="-1"></a>    denom <span class="op">=</span> tl.<span class="bu">sum</span>(e, axis<span class="op">=</span><span class="dv">0</span>)</span>
+<span id="cb3-17"><a href="#cb3-17" aria-hidden="true" tabindex="-1"></a>    y <span class="op">=</span> e <span class="op">/</span> denom</span>
+<span id="cb3-18"><a href="#cb3-18" aria-hidden="true" tabindex="-1"></a>    tl.store(y_ptr <span class="op">+</span> row_idx <span class="op">*</span> row_stride <span class="op">+</span> col_offs, y.to(x.dtype), mask<span class="op">=</span>mask)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<p>The change is one line: <code>tl.exp(x_f32 - m)</code> instead of <code>tl.exp(x_f32)</code>. Mathematically the max cancels in the numerator and denominator, so the result is identical. Numerically, every argument to <code>exp</code> is now <code>&lt;= 0</code>, so the largest possible value of <code>exp(x - m)</code> is <code>1.0</code>. Overflow is gone.</p>
+<p><code>x_f32 = x.to(tl.float32)</code> is the second non-obvious choice. We do the reduction and the exp in fp32 even when the input is fp16, because summing thousands of small fp16 values catastrophically loses precision. Cast back to fp16 only at the store. This is the standard pattern; you will see it again in LayerNorm, RMSNorm, and softmax-in-attention.</p>
+</section>
+<section id="wide-rows-streaming-with-a-running-max" class="level4" data-number="7.2.2.3">
+<h4 data-number="7.2.2.3" class="anchored" data-anchor-id="wide-rows-streaming-with-a-running-max"><span class="header-section-number">7.2.2.3</span> Wide rows: streaming with a running max</h4>
+<p>The single-tile kernel requires <code>BLOCK_SIZE &gt;= n_cols</code>. Triton compiles to a single tile so the row must fit in registers — a few thousand elements on consumer GPUs, up to ~16k on big ones. For wider rows (long-context vocabularies, attention scores over very long sequences) you have to stream:</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.jit</span></span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> _online_softmax_kernel(</span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>    x_ptr, y_ptr, row_stride, n_cols,</span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a>    BLOCK_SIZE: tl.constexpr,</span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a>):</span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a>    row_idx <span class="op">=</span> tl.program_id(axis<span class="op">=</span><span class="dv">0</span>)</span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a>    row_start <span class="op">=</span> x_ptr <span class="op">+</span> row_idx <span class="op">*</span> row_stride</span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-9"><a href="#cb4-9" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Pass 1: streaming max + sum-of-exps.</span></span>
+<span id="cb4-10"><a href="#cb4-10" aria-hidden="true" tabindex="-1"></a>    m <span class="op">=</span> <span class="op">-</span><span class="bu">float</span>(<span class="st">"inf"</span>)</span>
+<span id="cb4-11"><a href="#cb4-11" aria-hidden="true" tabindex="-1"></a>    l <span class="op">=</span> <span class="fl">0.0</span></span>
+<span id="cb4-12"><a href="#cb4-12" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> tile_start <span class="kw">in</span> <span class="bu">range</span>(<span class="dv">0</span>, n_cols, BLOCK_SIZE):</span>
+<span id="cb4-13"><a href="#cb4-13" aria-hidden="true" tabindex="-1"></a>        col_offs <span class="op">=</span> tile_start <span class="op">+</span> tl.arange(<span class="dv">0</span>, BLOCK_SIZE)</span>
+<span id="cb4-14"><a href="#cb4-14" aria-hidden="true" tabindex="-1"></a>        mask <span class="op">=</span> col_offs <span class="op">&lt;</span> n_cols</span>
+<span id="cb4-15"><a href="#cb4-15" aria-hidden="true" tabindex="-1"></a>        x <span class="op">=</span> tl.load(row_start <span class="op">+</span> col_offs, mask<span class="op">=</span>mask, other<span class="op">=-</span><span class="bu">float</span>(<span class="st">"inf"</span>)).to(tl.float32)</span>
+<span id="cb4-16"><a href="#cb4-16" aria-hidden="true" tabindex="-1"></a>        m_new <span class="op">=</span> tl.maximum(m, tl.<span class="bu">max</span>(x, axis<span class="op">=</span><span class="dv">0</span>))</span>
+<span id="cb4-17"><a href="#cb4-17" aria-hidden="true" tabindex="-1"></a>        alpha <span class="op">=</span> tl.exp(m <span class="op">-</span> m_new)</span>
+<span id="cb4-18"><a href="#cb4-18" aria-hidden="true" tabindex="-1"></a>        tile_sum <span class="op">=</span> tl.<span class="bu">sum</span>(tl.exp(x <span class="op">-</span> m_new), axis<span class="op">=</span><span class="dv">0</span>)</span>
+<span id="cb4-19"><a href="#cb4-19" aria-hidden="true" tabindex="-1"></a>        l <span class="op">=</span> alpha <span class="op">*</span> l <span class="op">+</span> tile_sum</span>
+<span id="cb4-20"><a href="#cb4-20" aria-hidden="true" tabindex="-1"></a>        m <span class="op">=</span> m_new</span>
+<span id="cb4-21"><a href="#cb4-21" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb4-22"><a href="#cb4-22" aria-hidden="true" tabindex="-1"></a>    <span class="co"># Pass 2: write normalized output.</span></span>
+<span id="cb4-23"><a href="#cb4-23" aria-hidden="true" tabindex="-1"></a>    <span class="cf">for</span> tile_start <span class="kw">in</span> <span class="bu">range</span>(<span class="dv">0</span>, n_cols, BLOCK_SIZE):</span>
+<span id="cb4-24"><a href="#cb4-24" aria-hidden="true" tabindex="-1"></a>        col_offs <span class="op">=</span> tile_start <span class="op">+</span> tl.arange(<span class="dv">0</span>, BLOCK_SIZE)</span>
+<span id="cb4-25"><a href="#cb4-25" aria-hidden="true" tabindex="-1"></a>        mask <span class="op">=</span> col_offs <span class="op">&lt;</span> n_cols</span>
+<span id="cb4-26"><a href="#cb4-26" aria-hidden="true" tabindex="-1"></a>        x <span class="op">=</span> tl.load(row_start <span class="op">+</span> col_offs, mask<span class="op">=</span>mask, other<span class="op">=-</span><span class="bu">float</span>(<span class="st">"inf"</span>)).to(tl.float32)</span>
+<span id="cb4-27"><a href="#cb4-27" aria-hidden="true" tabindex="-1"></a>        y <span class="op">=</span> tl.exp(x <span class="op">-</span> m) <span class="op">/</span> l</span>
+<span id="cb4-28"><a href="#cb4-28" aria-hidden="true" tabindex="-1"></a>        tl.store(y_ptr <span class="op">+</span> row_idx <span class="op">*</span> row_stride <span class="op">+</span> col_offs, y, mask<span class="op">=</span>mask)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<p><code>alpha = exp(m - m_new)</code> is the rescaling factor: when the new tile raises the running max from <code>m</code> to <code>m_new</code>, every contribution to <code>l</code> accumulated under the old pivot needs to be multiplied by <code>alpha</code> to be on the new pivot. The first iteration has <code>m = -inf</code>, so <code>alpha = exp(-inf) = 0</code> and <code>l</code> starts fresh from the first tile’s sum. This is the exact accumulator FlashAttention uses; we treat it gently here and revisit it formally in Chapter 14.</p>
+</section>
+</section>
+<section id="shape-trace" class="level3" data-number="7.2.3">
+<h3 data-number="7.2.3" class="anchored" data-anchor-id="shape-trace"><span class="header-section-number">7.2.3</span> Shape trace</h3>
+<p>For the stable single-tile kernel with <code>x: (M, N)</code> in fp16, one program per row:</p>
+<pre><code>Input:                       x   : (M, N)         fp16
+Output:                      y   : (M, N)         fp16
+Program owns:                one row of x          (axis=0 grid, size M)
+pid = tl.program_id(0)       scalar               int32  # row index
+row_start = pid * row_stride scalar offset        int64
+col_offs = tl.arange(0, BN)  (BN,)                int32  # BN = next_pow2(N), constexpr
+mask = col_offs &lt; N          (BN,)                bool
+x = tl.load(x_ptr + row_start + col_offs,
+            mask, other=-inf) (BN,)               fp16
+x_f32 = x.to(tl.float32)     (BN,)                fp32
+m = tl.max(x_f32, axis=0)    scalar               fp32
+e = tl.exp(x_f32 - m)        (BN,)                fp32
+e = tl.where(mask, e, 0.0)   (BN,)                fp32
+denom = tl.sum(e, axis=0)    scalar               fp32
+y = (e / denom).to(fp16)     (BN,)                fp16
+tl.store(y_ptr + row_start + col_offs, y, mask)</code></pre>
+</section>
+<section id="pointer-arithmetic-and-masks" class="level3" data-number="7.2.4">
+<h3 data-number="7.2.4" class="anchored" data-anchor-id="pointer-arithmetic-and-masks"><span class="header-section-number">7.2.4</span> Pointer arithmetic and masks</h3>
+<p>The whole row lives at <code>x_ptr + pid * row_stride</code>. We add a vector <code>col_offs = tl.arange(0, BLOCK_SIZE)</code> to get one pointer per column. <code>row_stride</code> comes from the launcher (<code>x.stride(0)</code>) — never hardcode it as <code>N</code>, because a caller might pass a transposed or sliced tensor with a different leading stride.</p>
+<p>The mask is <code>col_offs &lt; n_cols</code>. Two <code>other=</code> values matter:</p>
+<ul>
+<li>The load uses <code>other=-float("inf")</code> so masked lanes do not change the row max.</li>
+<li>The <code>tl.where(mask, e, 0.0)</code> zeroes masked lanes before the sum.</li>
+</ul>
+<p>If you swap those — <code>other=0.0</code> on the load and no re-mask on <code>e</code> — you get two bugs at once. The masked-off lanes load as zero, <code>exp(0 - m)</code> is <code>exp(-m)</code> (which is large when <code>m</code> is negative), and the sum is now wrong.</p>
+</section>
+<section id="correctness-test" class="level3" data-number="7.2.5">
+<h3 data-number="7.2.5" class="anchored" data-anchor-id="correctness-test"><span class="header-section-number">7.2.5</span> Correctness test</h3>
+<div class="sourceCode" id="cb6"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pytest</span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch</span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> src.ch05_softmax <span class="im">import</span> stable_softmax</span>
+<span id="cb6-4"><a href="#cb6-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-5"><a href="#cb6-5" aria-hidden="true" tabindex="-1"></a>pytestmark <span class="op">=</span> pytest.mark.skipif(<span class="kw">not</span> torch.cuda.is_available(), reason<span class="op">=</span><span class="st">"cuda only"</span>)</span>
+<span id="cb6-6"><a href="#cb6-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-7"><a href="#cb6-7" aria-hidden="true" tabindex="-1"></a><span class="at">@pytest.mark.parametrize</span>(<span class="st">"shape"</span>, [(<span class="dv">3</span>, <span class="dv">7</span>), (<span class="dv">1</span>, <span class="dv">1024</span>), (<span class="dv">512</span>, <span class="dv">1024</span>), (<span class="dv">64</span>, <span class="dv">31</span>)])</span>
+<span id="cb6-8"><a href="#cb6-8" aria-hidden="true" tabindex="-1"></a><span class="at">@pytest.mark.parametrize</span>(<span class="st">"dtype"</span>, [torch.float32, torch.float16])</span>
+<span id="cb6-9"><a href="#cb6-9" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> test_stable_softmax(shape, dtype):</span>
+<span id="cb6-10"><a href="#cb6-10" aria-hidden="true" tabindex="-1"></a>    torch.manual_seed(<span class="dv">0</span>)</span>
+<span id="cb6-11"><a href="#cb6-11" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> torch.randn(<span class="op">*</span>shape, device<span class="op">=</span><span class="st">"cuda"</span>, dtype<span class="op">=</span>dtype)</span>
+<span id="cb6-12"><a href="#cb6-12" aria-hidden="true" tabindex="-1"></a>    out <span class="op">=</span> stable_softmax(x)</span>
+<span id="cb6-13"><a href="#cb6-13" aria-hidden="true" tabindex="-1"></a>    ref <span class="op">=</span> torch.softmax(x, dim<span class="op">=-</span><span class="dv">1</span>)</span>
+<span id="cb6-14"><a href="#cb6-14" aria-hidden="true" tabindex="-1"></a>    rtol, atol <span class="op">=</span> (<span class="fl">1e-5</span>, <span class="fl">1e-5</span>) <span class="cf">if</span> dtype <span class="op">==</span> torch.float32 <span class="cf">else</span> (<span class="fl">5e-3</span>, <span class="fl">5e-3</span>)</span>
+<span id="cb6-15"><a href="#cb6-15" aria-hidden="true" tabindex="-1"></a>    torch.testing.assert_close(out, ref, rtol<span class="op">=</span>rtol, atol<span class="op">=</span>atol)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<p>The non-power-of-two shape <code>(64, 31)</code> exercises the mask. The fp16 tolerance is loose because the fp16 round-trip on the divide is not bit-identical to PyTorch’s internal path.</p>
+</section>
+<section id="benchmark" class="level3" data-number="7.2.6">
+<h3 data-number="7.2.6" class="anchored" data-anchor-id="benchmark"><span class="header-section-number">7.2.6</span> Benchmark</h3>
+<div class="sourceCode" id="cb7"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch, triton</span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> src.ch05_softmax <span class="im">import</span> stable_softmax</span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a>x <span class="op">=</span> torch.randn(<span class="dv">4096</span>, <span class="dv">4096</span>, device<span class="op">=</span><span class="st">"cuda"</span>, dtype<span class="op">=</span>torch.float16)</span>
+<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a>ms_triton <span class="op">=</span> triton.testing.do_bench(<span class="kw">lambda</span>: stable_softmax(x))</span>
+<span id="cb7-6"><a href="#cb7-6" aria-hidden="true" tabindex="-1"></a>ms_torch  <span class="op">=</span> triton.testing.do_bench(<span class="kw">lambda</span>: torch.softmax(x, dim<span class="op">=-</span><span class="dv">1</span>))</span>
+<span id="cb7-7"><a href="#cb7-7" aria-hidden="true" tabindex="-1"></a>compiled <span class="op">=</span> torch.<span class="bu">compile</span>(<span class="kw">lambda</span> t: torch.softmax(t, dim<span class="op">=-</span><span class="dv">1</span>))<span class="op">;</span> compiled(x)<span class="op">;</span> torch.cuda.synchronize()</span>
+<span id="cb7-8"><a href="#cb7-8" aria-hidden="true" tabindex="-1"></a>ms_compiled <span class="op">=</span> triton.testing.do_bench(<span class="kw">lambda</span>: compiled(x))</span>
+<span id="cb7-9"><a href="#cb7-9" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb7-10"><a href="#cb7-10" aria-hidden="true" tabindex="-1"></a>bytes_moved <span class="op">=</span> <span class="dv">2</span> <span class="op">*</span> <span class="dv">4096</span> <span class="op">*</span> <span class="dv">4096</span> <span class="op">*</span> <span class="dv">2</span>  <span class="co"># read+write, fp16</span></span>
+<span id="cb7-11"><a href="#cb7-11" aria-hidden="true" tabindex="-1"></a>gbps <span class="op">=</span> <span class="kw">lambda</span> ms: bytes_moved <span class="op">/</span> (ms<span class="op">*</span><span class="fl">1e-3</span>) <span class="op">/</span> <span class="fl">1e9</span></span>
+<span id="cb7-12"><a href="#cb7-12" aria-hidden="true" tabindex="-1"></a><span class="bu">print</span>(<span class="ss">f"triton </span><span class="sc">{</span>ms_triton<span class="sc">:.3f}</span><span class="ss">ms (</span><span class="sc">{</span>gbps(ms_triton)<span class="sc">:.0f}</span><span class="ss"> GB/s)"</span>)</span>
+<span id="cb7-13"><a href="#cb7-13" aria-hidden="true" tabindex="-1"></a><span class="bu">print</span>(<span class="ss">f"torch  </span><span class="sc">{</span>ms_torch<span class="sc">:.3f}</span><span class="ss">ms (</span><span class="sc">{</span>gbps(ms_torch)<span class="sc">:.0f}</span><span class="ss"> GB/s)"</span>)</span>
+<span id="cb7-14"><a href="#cb7-14" aria-hidden="true" tabindex="-1"></a><span class="bu">print</span>(<span class="ss">f"compile</span><span class="sc">{</span>ms_compiled<span class="sc">:.3f}</span><span class="ss">ms (</span><span class="sc">{</span>gbps(ms_compiled)<span class="sc">:.0f}</span><span class="ss"> GB/s)"</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="callout callout-style-simple callout-warning">
+<div class="callout-body d-flex">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-body-container">
+<p><strong>Placeholder data.</strong> The numbers below are hardcoded illustrative values, not measurements. Replace with output from your own <code>triton.testing.do_bench</code> run before drawing conclusions.</p>
+</div>
+</div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code hidden" id="cb8" data-startfrom="213" data-source-offset="0"><pre class="sourceCode js code-with-copy"><code class="sourceCode javascript" style="counter-reset: source-line 212;"><span id="cb8-213"><a href="#cb8-213" aria-hidden="true" tabindex="-1"></a>{</span>
+<span id="cb8-214"><a href="#cb8-214" aria-hidden="true" tabindex="-1"></a>  <span class="kw">const</span> data <span class="op">=</span> [</span>
+<span id="cb8-215"><a href="#cb8-215" aria-hidden="true" tabindex="-1"></a>    {<span class="dt">N</span><span class="op">:</span> <span class="dv">256</span><span class="op">,</span>   <span class="dt">triton_ms</span><span class="op">:</span> <span class="fl">0.04</span><span class="op">,</span> <span class="dt">torch_ms</span><span class="op">:</span> <span class="fl">0.10</span><span class="op">,</span> <span class="dt">compiled_ms</span><span class="op">:</span> <span class="fl">0.05</span>}<span class="op">,</span></span>
+<span id="cb8-216"><a href="#cb8-216" aria-hidden="true" tabindex="-1"></a>    {<span class="dt">N</span><span class="op">:</span> <span class="dv">1024</span><span class="op">,</span>  <span class="dt">triton_ms</span><span class="op">:</span> <span class="fl">0.09</span><span class="op">,</span> <span class="dt">torch_ms</span><span class="op">:</span> <span class="fl">0.20</span><span class="op">,</span> <span class="dt">compiled_ms</span><span class="op">:</span> <span class="fl">0.10</span>}<span class="op">,</span></span>
+<span id="cb8-217"><a href="#cb8-217" aria-hidden="true" tabindex="-1"></a>    {<span class="dt">N</span><span class="op">:</span> <span class="dv">4096</span><span class="op">,</span>  <span class="dt">triton_ms</span><span class="op">:</span> <span class="fl">0.30</span><span class="op">,</span> <span class="dt">torch_ms</span><span class="op">:</span> <span class="fl">0.55</span><span class="op">,</span> <span class="dt">compiled_ms</span><span class="op">:</span> <span class="fl">0.32</span>}<span class="op">,</span></span>
+<span id="cb8-218"><a href="#cb8-218" aria-hidden="true" tabindex="-1"></a>    {<span class="dt">N</span><span class="op">:</span> <span class="dv">8192</span><span class="op">,</span>  <span class="dt">triton_ms</span><span class="op">:</span> <span class="fl">0.60</span><span class="op">,</span> <span class="dt">torch_ms</span><span class="op">:</span> <span class="fl">1.10</span><span class="op">,</span> <span class="dt">compiled_ms</span><span class="op">:</span> <span class="fl">0.65</span>}<span class="op">,</span></span>
+<span id="cb8-219"><a href="#cb8-219" aria-hidden="true" tabindex="-1"></a>    {<span class="dt">N</span><span class="op">:</span> <span class="dv">16384</span><span class="op">,</span> <span class="dt">triton_ms</span><span class="op">:</span> <span class="fl">1.20</span><span class="op">,</span> <span class="dt">torch_ms</span><span class="op">:</span> <span class="fl">2.20</span><span class="op">,</span> <span class="dt">compiled_ms</span><span class="op">:</span> <span class="fl">1.28</span>}<span class="op">,</span></span>
+<span id="cb8-220"><a href="#cb8-220" aria-hidden="true" tabindex="-1"></a>  ]<span class="op">;</span></span>
+<span id="cb8-221"><a href="#cb8-221" aria-hidden="true" tabindex="-1"></a>  <span class="kw">const</span> long <span class="op">=</span> data<span class="op">.</span><span class="fu">flatMap</span>(d <span class="kw">=&gt;</span> [</span>
+<span id="cb8-222"><a href="#cb8-222" aria-hidden="true" tabindex="-1"></a>    {<span class="dt">N</span><span class="op">:</span> d<span class="op">.</span><span class="at">N</span><span class="op">,</span> <span class="dt">impl</span><span class="op">:</span> <span class="st">"triton"</span><span class="op">,</span>   <span class="dt">ms</span><span class="op">:</span> d<span class="op">.</span><span class="at">triton_ms</span>}<span class="op">,</span></span>
+<span id="cb8-223"><a href="#cb8-223" aria-hidden="true" tabindex="-1"></a>    {<span class="dt">N</span><span class="op">:</span> d<span class="op">.</span><span class="at">N</span><span class="op">,</span> <span class="dt">impl</span><span class="op">:</span> <span class="st">"torch"</span><span class="op">,</span>    <span class="dt">ms</span><span class="op">:</span> d<span class="op">.</span><span class="at">torch_ms</span>}<span class="op">,</span></span>
+<span id="cb8-224"><a href="#cb8-224" aria-hidden="true" tabindex="-1"></a>    {<span class="dt">N</span><span class="op">:</span> d<span class="op">.</span><span class="at">N</span><span class="op">,</span> <span class="dt">impl</span><span class="op">:</span> <span class="st">"compiled"</span><span class="op">,</span> <span class="dt">ms</span><span class="op">:</span> d<span class="op">.</span><span class="at">compiled_ms</span>}</span>
+<span id="cb8-225"><a href="#cb8-225" aria-hidden="true" tabindex="-1"></a>  ])<span class="op">;</span></span>
+<span id="cb8-226"><a href="#cb8-226" aria-hidden="true" tabindex="-1"></a>  <span class="cf">return</span> Plot<span class="op">.</span><span class="fu">plot</span>({</span>
+<span id="cb8-227"><a href="#cb8-227" aria-hidden="true" tabindex="-1"></a>    <span class="dt">color</span><span class="op">:</span> {<span class="dt">legend</span><span class="op">:</span> <span class="kw">true</span><span class="op">,</span> <span class="dt">domain</span><span class="op">:</span> [<span class="st">"triton"</span><span class="op">,</span> <span class="st">"torch"</span><span class="op">,</span> <span class="st">"compiled"</span>]<span class="op">,</span> <span class="dt">range</span><span class="op">:</span> [<span class="st">"steelblue"</span><span class="op">,</span> <span class="st">"orange"</span><span class="op">,</span> <span class="st">"seagreen"</span>]}<span class="op">,</span></span>
+<span id="cb8-228"><a href="#cb8-228" aria-hidden="true" tabindex="-1"></a>    <span class="dt">y</span><span class="op">:</span> {<span class="dt">label</span><span class="op">:</span> <span class="st">"median latency (ms, M=4096) — lower is better"</span>}<span class="op">,</span></span>
+<span id="cb8-229"><a href="#cb8-229" aria-hidden="true" tabindex="-1"></a>    <span class="dt">x</span><span class="op">:</span> {<span class="dt">label</span><span class="op">:</span> <span class="st">"N (row width, elements)"</span><span class="op">,</span> <span class="dt">type</span><span class="op">:</span> <span class="st">"log"</span>}<span class="op">,</span></span>
+<span id="cb8-230"><a href="#cb8-230" aria-hidden="true" tabindex="-1"></a>    <span class="dt">marks</span><span class="op">:</span> [</span>
+<span id="cb8-231"><a href="#cb8-231" aria-hidden="true" tabindex="-1"></a>      Plot<span class="op">.</span><span class="fu">line</span>(long<span class="op">,</span> {<span class="dt">x</span><span class="op">:</span> <span class="st">"N"</span><span class="op">,</span> <span class="dt">y</span><span class="op">:</span> <span class="st">"ms"</span><span class="op">,</span> <span class="dt">stroke</span><span class="op">:</span> <span class="st">"impl"</span>})<span class="op">,</span></span>
+<span id="cb8-232"><a href="#cb8-232" aria-hidden="true" tabindex="-1"></a>      Plot<span class="op">.</span><span class="fu">dot</span>(long<span class="op">,</span>  {<span class="dt">x</span><span class="op">:</span> <span class="st">"N"</span><span class="op">,</span> <span class="dt">y</span><span class="op">:</span> <span class="st">"ms"</span><span class="op">,</span> <span class="dt">fill</span><span class="op">:</span> <span class="st">"impl"</span>})<span class="op">,</span></span>
+<span id="cb8-233"><a href="#cb8-233" aria-hidden="true" tabindex="-1"></a>    ]</span>
+<span id="cb8-234"><a href="#cb8-234" aria-hidden="true" tabindex="-1"></a>  })<span class="op">;</span></span>
+<span id="cb8-235"><a href="#cb8-235" aria-hidden="true" tabindex="-1"></a>}</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div id="fig-softmax-bench" class="cell-output cell-output-display quarto-float quarto-figure quarto-figure-center anchored">
+<figure class="quarto-float quarto-float-fig figure">
+<div aria-describedby="fig-softmax-bench-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+<div id="ojs-cell-1" data-nodetype="expression">
+
+</div>
+</div>
+<figcaption class="quarto-float-caption-bottom quarto-float-caption quarto-float-fig" id="fig-softmax-bench-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+Figure&nbsp;7.1: Fused-softmax median latency vs row width N (log x-axis, M=4096). Lower is better. Triton kernel vs eager torch.softmax vs torch.compile(torch.softmax).
+</figcaption>
+</figure>
+</div>
+</div>
+<p>Expect Triton to roughly tie <code>torch.compile</code> and to comfortably beat eager <code>torch.softmax</code>, because eager dispatches separate kernels for max / sub / exp / sum / div. The compiled path also fuses, so the contest is mostly even — the win comes from owning the kernel for downstream fusion (you cannot fuse <code>torch.compile</code>’s softmax with your custom causal mask without a graph rewrite).</p>
+</section>
+<section id="interactive-stepping-through-the-online-accumulator" class="level3" data-number="7.2.7">
+<h3 data-number="7.2.7" class="anchored" data-anchor-id="interactive-stepping-through-the-online-accumulator"><span class="header-section-number">7.2.7</span> Interactive: stepping through the online accumulator</h3>
+<p>This widget walks through the online softmax recurrence on the row <code>[3, 1, 4, 1, 5, 9, 2, 6]</code> with <code>BLOCK_SIZE = 2</code>. Drag the slider to advance one tile at a time and watch <code>m</code> (running max), <code>l</code> (running denominator), and <code>alpha</code> (the rescaling factor that keeps <code>l</code> consistent when the max jumps).</p>
+<div class="cell">
+<div class="sourceCode cell-code hidden" id="cb9" data-startfrom="248" data-source-offset="-1"><pre class="sourceCode js code-with-copy"><code class="sourceCode javascript" style="counter-reset: source-line 247;"><span id="cb9-248"><a href="#cb9-248" aria-hidden="true" tabindex="-1"></a>scores <span class="op">=</span> [<span class="dv">3</span><span class="op">,</span> <span class="dv">1</span><span class="op">,</span> <span class="dv">4</span><span class="op">,</span> <span class="dv">1</span><span class="op">,</span> <span class="dv">5</span><span class="op">,</span> <span class="dv">9</span><span class="op">,</span> <span class="dv">2</span><span class="op">,</span> <span class="dv">6</span>]</span>
+<span id="cb9-249"><a href="#cb9-249" aria-hidden="true" tabindex="-1"></a>BLOCK_K <span class="op">=</span> <span class="dv">2</span></span>
+<span id="cb9-250"><a href="#cb9-250" aria-hidden="true" tabindex="-1"></a>num_blocks <span class="op">=</span> <span class="bu">Math</span><span class="op">.</span><span class="fu">ceil</span>(scores<span class="op">.</span><span class="at">length</span> <span class="op">/</span> BLOCK_K)</span>
+<span id="cb9-251"><a href="#cb9-251" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-252"><a href="#cb9-252" aria-hidden="true" tabindex="-1"></a>viewof step <span class="op">=</span> Inputs<span class="op">.</span><span class="fu">range</span>([<span class="dv">0</span><span class="op">,</span> num_blocks]<span class="op">,</span> {<span class="dt">value</span><span class="op">:</span> num_blocks<span class="op">,</span> <span class="dt">step</span><span class="op">:</span> <span class="dv">1</span><span class="op">,</span> <span class="dt">label</span><span class="op">:</span> <span class="st">"tiles processed"</span>})</span>
+<span id="cb9-253"><a href="#cb9-253" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-254"><a href="#cb9-254" aria-hidden="true" tabindex="-1"></a>rows <span class="op">=</span> {</span>
+<span id="cb9-255"><a href="#cb9-255" aria-hidden="true" tabindex="-1"></a>  <span class="kw">const</span> out <span class="op">=</span> []<span class="op">;</span></span>
+<span id="cb9-256"><a href="#cb9-256" aria-hidden="true" tabindex="-1"></a>  <span class="kw">let</span> m <span class="op">=</span> <span class="op">-</span><span class="kw">Infinity</span><span class="op">;</span></span>
+<span id="cb9-257"><a href="#cb9-257" aria-hidden="true" tabindex="-1"></a>  <span class="kw">let</span> l <span class="op">=</span> <span class="fl">0.0</span><span class="op">;</span></span>
+<span id="cb9-258"><a href="#cb9-258" aria-hidden="true" tabindex="-1"></a>  <span class="cf">for</span> (<span class="kw">let</span> b <span class="op">=</span> <span class="dv">0</span><span class="op">;</span> b <span class="op">&lt;</span> step<span class="op">;</span> b<span class="op">++</span>) {</span>
+<span id="cb9-259"><a href="#cb9-259" aria-hidden="true" tabindex="-1"></a>    <span class="kw">const</span> start <span class="op">=</span> b <span class="op">*</span> BLOCK_K<span class="op">;</span></span>
+<span id="cb9-260"><a href="#cb9-260" aria-hidden="true" tabindex="-1"></a>    <span class="kw">const</span> block <span class="op">=</span> scores<span class="op">.</span><span class="fu">slice</span>(start<span class="op">,</span> start <span class="op">+</span> BLOCK_K)<span class="op">;</span></span>
+<span id="cb9-261"><a href="#cb9-261" aria-hidden="true" tabindex="-1"></a>    <span class="kw">const</span> block_max <span class="op">=</span> <span class="bu">Math</span><span class="op">.</span><span class="fu">max</span>(<span class="op">...</span>block)<span class="op">;</span></span>
+<span id="cb9-262"><a href="#cb9-262" aria-hidden="true" tabindex="-1"></a>    <span class="kw">const</span> m_new <span class="op">=</span> <span class="bu">Math</span><span class="op">.</span><span class="fu">max</span>(m<span class="op">,</span> block_max)<span class="op">;</span></span>
+<span id="cb9-263"><a href="#cb9-263" aria-hidden="true" tabindex="-1"></a>    <span class="kw">const</span> alpha <span class="op">=</span> <span class="pp">isFinite</span>(m) <span class="op">?</span> <span class="bu">Math</span><span class="op">.</span><span class="fu">exp</span>(m <span class="op">-</span> m_new) <span class="op">:</span> <span class="fl">0.0</span><span class="op">;</span></span>
+<span id="cb9-264"><a href="#cb9-264" aria-hidden="true" tabindex="-1"></a>    <span class="kw">const</span> block_sum <span class="op">=</span> block<span class="op">.</span><span class="fu">reduce</span>((s<span class="op">,</span> v) <span class="kw">=&gt;</span> s <span class="op">+</span> <span class="bu">Math</span><span class="op">.</span><span class="fu">exp</span>(v <span class="op">-</span> m_new)<span class="op">,</span> <span class="fl">0.0</span>)<span class="op">;</span></span>
+<span id="cb9-265"><a href="#cb9-265" aria-hidden="true" tabindex="-1"></a>    <span class="kw">const</span> l_new <span class="op">=</span> alpha <span class="op">*</span> l <span class="op">+</span> block_sum<span class="op">;</span></span>
+<span id="cb9-266"><a href="#cb9-266" aria-hidden="true" tabindex="-1"></a>    out<span class="op">.</span><span class="fu">push</span>({</span>
+<span id="cb9-267"><a href="#cb9-267" aria-hidden="true" tabindex="-1"></a>      <span class="dt">tile</span><span class="op">:</span> b<span class="op">,</span></span>
+<span id="cb9-268"><a href="#cb9-268" aria-hidden="true" tabindex="-1"></a>      <span class="dt">tile_values</span><span class="op">:</span> block<span class="op">.</span><span class="fu">join</span>(<span class="st">", "</span>)<span class="op">,</span></span>
+<span id="cb9-269"><a href="#cb9-269" aria-hidden="true" tabindex="-1"></a>      <span class="dt">tile_max</span><span class="op">:</span> block_max<span class="op">,</span></span>
+<span id="cb9-270"><a href="#cb9-270" aria-hidden="true" tabindex="-1"></a>      <span class="dt">m_prev</span><span class="op">:</span> <span class="pp">isFinite</span>(m) <span class="op">?</span> m<span class="op">.</span><span class="fu">toFixed</span>(<span class="dv">4</span>) <span class="op">:</span> <span class="st">"-inf"</span><span class="op">,</span></span>
+<span id="cb9-271"><a href="#cb9-271" aria-hidden="true" tabindex="-1"></a>      <span class="dt">m_new</span><span class="op">:</span> m_new<span class="op">.</span><span class="fu">toFixed</span>(<span class="dv">4</span>)<span class="op">,</span></span>
+<span id="cb9-272"><a href="#cb9-272" aria-hidden="true" tabindex="-1"></a>      <span class="dt">alpha</span><span class="op">:</span> alpha<span class="op">.</span><span class="fu">toFixed</span>(<span class="dv">4</span>)<span class="op">,</span></span>
+<span id="cb9-273"><a href="#cb9-273" aria-hidden="true" tabindex="-1"></a>      <span class="dt">l_new</span><span class="op">:</span> l_new<span class="op">.</span><span class="fu">toFixed</span>(<span class="dv">4</span>)<span class="op">,</span></span>
+<span id="cb9-274"><a href="#cb9-274" aria-hidden="true" tabindex="-1"></a>    })<span class="op">;</span></span>
+<span id="cb9-275"><a href="#cb9-275" aria-hidden="true" tabindex="-1"></a>    m <span class="op">=</span> m_new<span class="op">;</span></span>
+<span id="cb9-276"><a href="#cb9-276" aria-hidden="true" tabindex="-1"></a>    l <span class="op">=</span> l_new<span class="op">;</span></span>
+<span id="cb9-277"><a href="#cb9-277" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb9-278"><a href="#cb9-278" aria-hidden="true" tabindex="-1"></a>  <span class="cf">return</span> out<span class="op">;</span></span>
+<span id="cb9-279"><a href="#cb9-279" aria-hidden="true" tabindex="-1"></a>}</span>
+<span id="cb9-280"><a href="#cb9-280" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb9-281"><a href="#cb9-281" aria-hidden="true" tabindex="-1"></a>Inputs<span class="op">.</span><span class="fu">table</span>(rows<span class="op">,</span> {</span>
+<span id="cb9-282"><a href="#cb9-282" aria-hidden="true" tabindex="-1"></a>  <span class="dt">columns</span><span class="op">:</span> [<span class="st">"tile"</span><span class="op">,</span> <span class="st">"tile_values"</span><span class="op">,</span> <span class="st">"tile_max"</span><span class="op">,</span> <span class="st">"m_prev"</span><span class="op">,</span> <span class="st">"m_new"</span><span class="op">,</span> <span class="st">"alpha"</span><span class="op">,</span> <span class="st">"l_new"</span>]<span class="op">,</span></span>
+<span id="cb9-283"><a href="#cb9-283" aria-hidden="true" tabindex="-1"></a>  <span class="dt">header</span><span class="op">:</span> {</span>
+<span id="cb9-284"><a href="#cb9-284" aria-hidden="true" tabindex="-1"></a>    <span class="dt">tile</span><span class="op">:</span> <span class="st">"tile"</span><span class="op">,</span></span>
+<span id="cb9-285"><a href="#cb9-285" aria-hidden="true" tabindex="-1"></a>    <span class="dt">tile_values</span><span class="op">:</span> <span class="st">"tile values"</span><span class="op">,</span></span>
+<span id="cb9-286"><a href="#cb9-286" aria-hidden="true" tabindex="-1"></a>    <span class="dt">tile_max</span><span class="op">:</span> <span class="st">"tile max"</span><span class="op">,</span></span>
+<span id="cb9-287"><a href="#cb9-287" aria-hidden="true" tabindex="-1"></a>    <span class="dt">m_prev</span><span class="op">:</span> <span class="st">"m (prev)"</span><span class="op">,</span></span>
+<span id="cb9-288"><a href="#cb9-288" aria-hidden="true" tabindex="-1"></a>    <span class="dt">m_new</span><span class="op">:</span> <span class="st">"m (new)"</span><span class="op">,</span></span>
+<span id="cb9-289"><a href="#cb9-289" aria-hidden="true" tabindex="-1"></a>    <span class="dt">alpha</span><span class="op">:</span> <span class="st">"alpha = exp(m_prev - m_new)"</span><span class="op">,</span></span>
+<span id="cb9-290"><a href="#cb9-290" aria-hidden="true" tabindex="-1"></a>    <span class="dt">l_new</span><span class="op">:</span> <span class="st">"l (running)"</span></span>
+<span id="cb9-291"><a href="#cb9-291" aria-hidden="true" tabindex="-1"></a>  }</span>
+<span id="cb9-292"><a href="#cb9-292" aria-hidden="true" tabindex="-1"></a>})</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-display">
+<div>
+<div id="ojs-cell-2-1" data-nodetype="declaration">
+
+</div>
+</div>
+</div>
+<div class="cell-output cell-output-display">
+<div>
+<div id="ojs-cell-2-2" data-nodetype="declaration">
+
+</div>
+</div>
+</div>
+<div class="cell-output cell-output-display">
+<div>
+<div id="ojs-cell-2-3" data-nodetype="declaration">
+
+</div>
+</div>
+</div>
+<div class="cell-output cell-output-display">
+<div>
+<div id="ojs-cell-2-4" data-nodetype="declaration">
+
+</div>
+</div>
+</div>
+<div class="cell-output cell-output-display">
+<div>
+<div id="ojs-cell-2-5" data-nodetype="declaration">
+
+</div>
+</div>
+</div>
+<div class="cell-output cell-output-display">
+<div>
+<div id="ojs-cell-2-6" data-nodetype="expression">
+
+</div>
+</div>
+</div>
+<div class="sourceCode cell-code hidden" id="cb10" data-startfrom="294" data-source-offset="-1254"><pre class="sourceCode js code-with-copy"><code class="sourceCode javascript" style="counter-reset: source-line 293;"><span id="cb10-294"><a href="#cb10-294" aria-hidden="true" tabindex="-1"></a><span class="fu">md</span><span class="vs">`After </span><span class="sc">${</span>step<span class="sc">}</span><span class="vs"> tile(s): reference full-row sum-of-exps = </span><span class="sc">${</span></span>
+<span id="cb10-295"><a href="#cb10-295" aria-hidden="true" tabindex="-1"></a>  (() <span class="kw">=&gt;</span> {</span>
+<span id="cb10-296"><a href="#cb10-296" aria-hidden="true" tabindex="-1"></a>    <span class="kw">const</span> m <span class="op">=</span> <span class="bu">Math</span><span class="op">.</span><span class="fu">max</span>(<span class="op">...</span>scores)<span class="op">;</span></span>
+<span id="cb10-297"><a href="#cb10-297" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> scores<span class="op">.</span><span class="fu">reduce</span>((s<span class="op">,</span> v) <span class="kw">=&gt;</span> s <span class="op">+</span> <span class="bu">Math</span><span class="op">.</span><span class="fu">exp</span>(v <span class="op">-</span> m)<span class="op">,</span> <span class="dv">0</span>)<span class="op">.</span><span class="fu">toFixed</span>(<span class="dv">4</span>)<span class="op">;</span></span>
+<span id="cb10-298"><a href="#cb10-298" aria-hidden="true" tabindex="-1"></a>  })()</span>
+<span id="cb10-299"><a href="#cb10-299" aria-hidden="true" tabindex="-1"></a><span class="sc">}</span><span class="vs">. The widget's final </span><span class="sc">\`</span><span class="vs">l</span><span class="sc">\`</span><span class="vs"> should match.`</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-display">
+<div>
+<div id="ojs-cell-2-7" data-nodetype="expression">
+
+</div>
+</div>
+</div>
+</div>
+</section>
+<section id="optimization-discussion" class="level3" data-number="7.2.8">
+<h3 data-number="7.2.8" class="anchored" data-anchor-id="optimization-discussion"><span class="header-section-number">7.2.8</span> Optimization discussion</h3>
+<p><code>stable_softmax</code> is memory-bound; the relevant lever is <code>num_warps</code>. A 1024-element row in fp16 needs eight 128-lane warps to cover all loads in one issue, so <code>num_warps=4</code> to <code>8</code> is the right ballpark. Wider rows benefit from more warps for the reduction tree; we step <code>num_warps</code> up at 2048 and 4096.</p>
+<p><code>BLOCK_SIZE = triton.next_power_of_2(n_cols)</code> is the standard pattern for “row fits in one tile” kernels. Triton’s reductions are implemented for power-of-two extents; with a non-power-of-two extent you would need to pad-and-mask manually.</p>
+<p>For <code>online_softmax</code>, the lever is the streaming <code>BLOCK_SIZE</code> (independent of <code>n_cols</code>). 1024 is a sensible default on consumer GPUs: it keeps the load/store burst large enough to saturate memory while leaving register room for the running scalars. Smaller tiles increase loop overhead; larger tiles spill.</p>
+<p>Next stop: fuse with the producer. In attention, the row of <code>x</code> is the output of <code>Q @ K^T</code>. Computing <code>softmax(Q @ K^T)</code> as one kernel (FlashAttention, Chapter 14) avoids ever writing the score matrix to HBM. This chapter is the prerequisite.</p>
+</section>
+<section id="common-bugs" class="level3" data-number="7.2.9">
+<h3 data-number="7.2.9" class="anchored" data-anchor-id="common-bugs"><span class="header-section-number">7.2.9</span> Common bugs</h3>
+<ol type="1">
+<li><strong>No max subtraction → fp16 overflow.</strong> <code>exp(x)</code> for <code>x &gt; 11.09</code> is <code>+inf</code> in fp16. With max subtraction every exponent is <code>&lt;= 0</code>, so every output is <code>&lt;= 1</code>. If you find yourself adding tiny epsilons to a softmax denominator, you skipped this step.</li>
+<li><strong>Wrong <code>other=</code> on the load.</strong> A <code>max</code> reduction wants <code>other=-inf</code>; a <code>sum</code> reduction wants <code>other=0.0</code>. Mixing them silently corrupts the row max and you will not see it on <code>torch.randn</code> inputs.</li>
+<li><strong>Reducing the wrong axis.</strong> <code>tl.max(x, axis=0)</code> reduces the only axis of a 1D tile. If you write <code>axis=1</code> on a 1D tile, Triton errors out — but if you accidentally make the tile 2D (e.g.&nbsp;by loading two rows at once) you can silently reduce the wrong dimension. Print shapes when in doubt.</li>
+<li><strong><code>BLOCK_SIZE</code> unrelated to <code>n_cols</code>.</strong> If <code>BLOCK_SIZE</code> is smaller than <code>n_cols</code>, the single-tile kernel will read only the first <code>BLOCK_SIZE</code> columns of each row and produce a softmax over a subset. Always use <code>triton.next_power_of_2(n_cols)</code> for the single-tile variant, or switch to the streaming variant.</li>
+<li><strong>Accumulating fp16 sums in fp16.</strong> Summing 4096 small fp16 numbers loses 8+ bits of precision. Cast to fp32 before the reduction, always.</li>
+</ol>
+</section>
+<section id="exercises" class="level3" data-number="7.2.10">
+<h3 data-number="7.2.10" class="anchored" data-anchor-id="exercises"><span class="header-section-number">7.2.10</span> Exercises</h3>
+<section id="beginner" class="level4" data-number="7.2.10.1">
+<h4 data-number="7.2.10.1" class="anchored" data-anchor-id="beginner"><span class="header-section-number">7.2.10.1</span> Beginner</h4>
+<ol type="1">
+<li><p><strong>Causal mask.</strong> Modify the kernel so that, before the max reduction, columns with index <code>&gt;= row_idx</code> are set to <code>-inf</code>. Verify it matches <code>torch.softmax</code> applied to a manually masked tensor. Hint: <code>causal = col_offs &lt;= row_idx</code>.</p></li>
+<li><p><strong>Temperature scaling.</strong> Add a <code>tau</code> argument (Python float). Compute <code>softmax(x / tau)</code>. Hint: divide before subtracting the max.</p></li>
+<li><p><strong>Log-softmax.</strong> Implement <code>log_softmax(x) = x - m - log(sum(exp(x - m)))</code>. Compare against <code>torch.log_softmax</code>. Hint: emit <code>(x - m) - tl.log(denom)</code>.</p></li>
+</ol>
+</section>
+<section id="intermediate" class="level4" data-number="7.2.10.2">
+<h4 data-number="7.2.10.2" class="anchored" data-anchor-id="intermediate"><span class="header-section-number">7.2.10.2</span> Intermediate</h4>
+<ol start="4" type="1">
+<li><p><strong>Variable-length rows.</strong> Take an extra <code>seq_lens: (M,)</code> int32 tensor. Each program treats only the first <code>seq_lens[i]</code> columns as valid; the rest must not contribute to the max or sum. Hint: <code>seq_len = tl.load(seq_lens_ptr + row_idx)</code>; build the mask from <code>seq_len</code> instead of <code>n_cols</code>.</p></li>
+<li><p><strong>Column softmax.</strong> Implement softmax along <code>axis=0</code> for a 2D input. Why is this harder in Triton? Hint: one program per column means strided loads; the reduction now runs over rows, and the layout is no longer coalesced unless you transpose first.</p></li>
+</ol>
+</section>
+<section id="advanced" class="level4" data-number="7.2.10.3">
+<h4 data-number="7.2.10.3" class="anchored" data-anchor-id="advanced"><span class="header-section-number">7.2.10.3</span> Advanced</h4>
+<ol start="6" type="1">
+<li><strong>Two-pass vs single-pass online softmax.</strong> The streaming kernel above makes two passes. Try a single-pass variant that maintains the running numerator and rescales every tile by <code>alpha</code>. Benchmark both on <code>M=2048, N=32768</code> in fp16 and report the wall-clock and the worst-case error vs <code>torch.softmax</code>. The interesting finding: the single-pass variant needs to write either the unscaled exps or the rescaled numerator somewhere — registers (only works if the row fits) or HBM (defeats the purpose). Discuss when each makes sense.</li>
+</ol>
+<p>Worked solutions live in <code>solutions/ch05_solutions.py</code>.</p>
+
+
+<!-- -->
+
+</section>
+</section>
+</section>
+
+</main> <!-- /main -->
+<script type="ojs-module-contents">
+eyJjb250ZW50cyI6W3sibWV0aG9kTmFtZSI6ImludGVycHJldCIsImNlbGxOYW1lIjoib2pzLWNlbGwtMSIsImlubGluZSI6ZmFsc2UsInNvdXJjZSI6IntcbiAgY29uc3QgZGF0YSA9IFtcbiAgICB7TjogMjU2LCAgIHRyaXRvbl9tczogMC4wNCwgdG9yY2hfbXM6IDAuMTAsIGNvbXBpbGVkX21zOiAwLjA1fSxcbiAgICB7TjogMTAyNCwgIHRyaXRvbl9tczogMC4wOSwgdG9yY2hfbXM6IDAuMjAsIGNvbXBpbGVkX21zOiAwLjEwfSxcbiAgICB7TjogNDA5NiwgIHRyaXRvbl9tczogMC4zMCwgdG9yY2hfbXM6IDAuNTUsIGNvbXBpbGVkX21zOiAwLjMyfSxcbiAgICB7TjogODE5MiwgIHRyaXRvbl9tczogMC42MCwgdG9yY2hfbXM6IDEuMTAsIGNvbXBpbGVkX21zOiAwLjY1fSxcbiAgICB7TjogMTYzODQsIHRyaXRvbl9tczogMS4yMCwgdG9yY2hfbXM6IDIuMjAsIGNvbXBpbGVkX21zOiAxLjI4fSxcbiAgXTtcbiAgY29uc3QgbG9uZyA9IGRhdGEuZmxhdE1hcChkID0+IFtcbiAgICB7TjogZC5OLCBpbXBsOiBcInRyaXRvblwiLCAgIG1zOiBkLnRyaXRvbl9tc30sXG4gICAge046IGQuTiwgaW1wbDogXCJ0b3JjaFwiLCAgICBtczogZC50b3JjaF9tc30sXG4gICAge046IGQuTiwgaW1wbDogXCJjb21waWxlZFwiLCBtczogZC5jb21waWxlZF9tc31cbiAgXSk7XG4gIHJldHVybiBQbG90LnBsb3Qoe1xuICAgIGNvbG9yOiB7bGVnZW5kOiB0cnVlLCBkb21haW46IFtcInRyaXRvblwiLCBcInRvcmNoXCIsIFwiY29tcGlsZWRcIl0sIHJhbmdlOiBbXCJzdGVlbGJsdWVcIiwgXCJvcmFuZ2VcIiwgXCJzZWFncmVlblwiXX0sXG4gICAgeToge2xhYmVsOiBcIm1lZGlhbiBsYXRlbmN5IChtcywgTT00MDk2KSDigJQgbG93ZXIgaXMgYmV0dGVyXCJ9LFxuICAgIHg6IHtsYWJlbDogXCJOIChyb3cgd2lkdGgsIGVsZW1lbnRzKVwiLCB0eXBlOiBcImxvZ1wifSxcbiAgICBtYXJrczogW1xuICAgICAgUGxvdC5saW5lKGxvbmcsIHt4OiBcIk5cIiwgeTogXCJtc1wiLCBzdHJva2U6IFwiaW1wbFwifSksXG4gICAgICBQbG90LmRvdChsb25nLCAge3g6IFwiTlwiLCB5OiBcIm1zXCIsIGZpbGw6IFwiaW1wbFwifSksXG4gICAgXVxuICB9KTtcbn1cbiJ9LHsibWV0aG9kTmFtZSI6ImludGVycHJldCIsImNlbGxOYW1lIjoib2pzLWNlbGwtMiIsImlubGluZSI6ZmFsc2UsInNvdXJjZSI6Ilxuc2NvcmVzID0gWzMsIDEsIDQsIDEsIDUsIDksIDIsIDZdXG5CTE9DS19LID0gMlxubnVtX2Jsb2NrcyA9IE1hdGguY2VpbChzY29yZXMubGVuZ3RoIC8gQkxPQ0tfSylcblxudmlld29mIHN0ZXAgPSBJbnB1dHMucmFuZ2UoWzAsIG51bV9ibG9ja3NdLCB7dmFsdWU6IG51bV9ibG9ja3MsIHN0ZXA6IDEsIGxhYmVsOiBcInRpbGVzIHByb2Nlc3NlZFwifSlcblxucm93cyA9IHtcbiAgY29uc3Qgb3V0ID0gW107XG4gIGxldCBtID0gLUluZmluaXR5O1xuICBsZXQgbCA9IDAuMDtcbiAgZm9yIChsZXQgYiA9IDA7IGIgPCBzdGVwOyBiKyspIHtcbiAgICBjb25zdCBzdGFydCA9IGIgKiBCTE9DS19LO1xuICAgIGNvbnN0IGJsb2NrID0gc2NvcmVzLnNsaWNlKHN0YXJ0LCBzdGFydCArIEJMT0NLX0spO1xuICAgIGNvbnN0IGJsb2NrX21heCA9IE1hdGgubWF4KC4uLmJsb2NrKTtcbiAgICBjb25zdCBtX25ldyA9IE1hdGgubWF4KG0sIGJsb2NrX21heCk7XG4gICAgY29uc3QgYWxwaGEgPSBpc0Zpbml0ZShtKSA/IE1hdGguZXhwKG0gLSBtX25ldykgOiAwLjA7XG4gICAgY29uc3QgYmxvY2tfc3VtID0gYmxvY2sucmVkdWNlKChzLCB2KSA9PiBzICsgTWF0aC5leHAodiAtIG1fbmV3KSwgMC4wKTtcbiAgICBjb25zdCBsX25ldyA9IGFscGhhICogbCArIGJsb2NrX3N1bTtcbiAgICBvdXQucHVzaCh7XG4gICAgICB0aWxlOiBiLFxuICAgICAgdGlsZV92YWx1ZXM6IGJsb2NrLmpvaW4oXCIsIFwiKSxcbiAgICAgIHRpbGVfbWF4OiBibG9ja19tYXgsXG4gICAgICBtX3ByZXY6IGlzRmluaXRlKG0pID8gbS50b0ZpeGVkKDQpIDogXCItaW5mXCIsXG4gICAgICBtX25ldzogbV9uZXcudG9GaXhlZCg0KSxcbiAgICAgIGFscGhhOiBhbHBoYS50b0ZpeGVkKDQpLFxuICAgICAgbF9uZXc6IGxfbmV3LnRvRml4ZWQoNCksXG4gICAgfSk7XG4gICAgbSA9IG1fbmV3O1xuICAgIGwgPSBsX25ldztcbiAgfVxuICByZXR1cm4gb3V0O1xufVxuXG5JbnB1dHMudGFibGUocm93cywge1xuICBjb2x1bW5zOiBbXCJ0aWxlXCIsIFwidGlsZV92YWx1ZXNcIiwgXCJ0aWxlX21heFwiLCBcIm1fcHJldlwiLCBcIm1fbmV3XCIsIFwiYWxwaGFcIiwgXCJsX25ld1wiXSxcbiAgaGVhZGVyOiB7XG4gICAgdGlsZTogXCJ0aWxlXCIsXG4gICAgdGlsZV92YWx1ZXM6IFwidGlsZSB2YWx1ZXNcIixcbiAgICB0aWxlX21heDogXCJ0aWxlIG1heFwiLFxuICAgIG1fcHJldjogXCJtIChwcmV2KVwiLFxuICAgIG1fbmV3OiBcIm0gKG5ldylcIixcbiAgICBhbHBoYTogXCJhbHBoYSA9IGV4cChtX3ByZXYgLSBtX25ldylcIixcbiAgICBsX25ldzogXCJsIChydW5uaW5nKVwiXG4gIH1cbn0pXG5cbm1kYEFmdGVyICR7c3RlcH0gdGlsZShzKTogcmVmZXJlbmNlIGZ1bGwtcm93IHN1bS1vZi1leHBzID0gJHtcbiAgKCgpID0+IHtcbiAgICBjb25zdCBtID0gTWF0aC5tYXgoLi4uc2NvcmVzKTtcbiAgICByZXR1cm4gc2NvcmVzLnJlZHVjZSgocywgdikgPT4gcyArIE1hdGguZXhwKHYgLSBtKSwgMCkudG9GaXhlZCg0KTtcbiAgfSkoKVxufS4gVGhlIHdpZGdldCdzIGZpbmFsIFxcYGxcXGAgc2hvdWxkIG1hdGNoLmBcbiJ9LHsibWV0aG9kTmFtZSI6ImludGVycHJldFF1aWV0Iiwic291cmNlIjoic2hpbnlJbnB1dCgnc3RlcCcpIn1dfQ==
+</script>
+<script type="module">
+if (window.location.protocol === "file:") { alert("The OJS runtime does not work with file:// URLs. Please use a web server to view this document."); }
+window._ojs.paths.runtimeToDoc = "../../book/02-basic-nn";
+window._ojs.paths.runtimeToRoot = "../..";
+window._ojs.paths.docToRoot = "../..";
+window._ojs.selfContained = false;
+window._ojs.runtime.interpretFromScriptTags();
+</script>
+<script id="quarto-html-after-body" type="application/javascript">
+window.document.addEventListener("DOMContentLoaded", function (event) {
+  const toggleBodyColorMode = (bsSheetEl) => {
+    const mode = bsSheetEl.getAttribute("data-mode");
+    const bodyEl = window.document.querySelector("body");
+    if (mode === "dark") {
+      bodyEl.classList.add("quarto-dark");
+      bodyEl.classList.remove("quarto-light");
+    } else {
+      bodyEl.classList.add("quarto-light");
+      bodyEl.classList.remove("quarto-dark");
+    }
+  }
+  const toggleBodyColorPrimary = () => {
+    const bsSheetEl = window.document.querySelector("link#quarto-bootstrap");
+    if (bsSheetEl) {
+      toggleBodyColorMode(bsSheetEl);
+    }
+  }
+  toggleBodyColorPrimary();  
+  const icon = "";
+  const anchorJS = new window.AnchorJS();
+  anchorJS.options = {
+    placement: 'right',
+    icon: icon
+  };
+  anchorJS.add('.anchored');
+  const isCodeAnnotation = (el) => {
+    for (const clz of el.classList) {
+      if (clz.startsWith('code-annotation-')) {                     
+        return true;
+      }
+    }
+    return false;
+  }
+  const onCopySuccess = function(e) {
+    // button target
+    const button = e.trigger;
+    // don't keep focus
+    button.blur();
+    // flash "checked"
+    button.classList.add('code-copy-button-checked');
+    var currentTitle = button.getAttribute("title");
+    button.setAttribute("title", "Copied!");
+    let tooltip;
+    if (window.bootstrap) {
+      button.setAttribute("data-bs-toggle", "tooltip");
+      button.setAttribute("data-bs-placement", "left");
+      button.setAttribute("data-bs-title", "Copied!");
+      tooltip = new bootstrap.Tooltip(button, 
+        { trigger: "manual", 
+          customClass: "code-copy-button-tooltip",
+          offset: [0, -8]});
+      tooltip.show();    
+    }
+    setTimeout(function() {
+      if (tooltip) {
+        tooltip.hide();
+        button.removeAttribute("data-bs-title");
+        button.removeAttribute("data-bs-toggle");
+        button.removeAttribute("data-bs-placement");
+      }
+      button.setAttribute("title", currentTitle);
+      button.classList.remove('code-copy-button-checked');
+    }, 1000);
+    // clear code selection
+    e.clearSelection();
+  }
+  const getTextToCopy = function(trigger) {
+      const codeEl = trigger.previousElementSibling.cloneNode(true);
+      for (const childEl of codeEl.children) {
+        if (isCodeAnnotation(childEl)) {
+          childEl.remove();
+        }
+      }
+      return codeEl.innerText;
+  }
+  const clipboard = new window.ClipboardJS('.code-copy-button:not([data-in-quarto-modal])', {
+    text: getTextToCopy
+  });
+  clipboard.on('success', onCopySuccess);
+  if (window.document.getElementById('quarto-embedded-source-code-modal')) {
+    // For code content inside modals, clipBoardJS needs to be initialized with a container option
+    // TODO: Check when it could be a function (https://github.com/zenorocha/clipboard.js/issues/860)
+    const clipboardModal = new window.ClipboardJS('.code-copy-button[data-in-quarto-modal]', {
+      text: getTextToCopy,
+      container: window.document.getElementById('quarto-embedded-source-code-modal')
+    });
+    clipboardModal.on('success', onCopySuccess);
+  }
+  const viewSource = window.document.getElementById('quarto-view-source') ||
+                     window.document.getElementById('quarto-code-tools-source');
+  if (viewSource) {
+    const sourceUrl = viewSource.getAttribute("data-quarto-source-url");
+    viewSource.addEventListener("click", function(e) {
+      if (sourceUrl) {
+        // rstudio viewer pane
+        if (/\bcapabilities=\b/.test(window.location)) {
+          window.open(sourceUrl);
+        } else {
+          window.location.href = sourceUrl;
+        }
+      } else {
+        const modal = new bootstrap.Modal(document.getElementById('quarto-embedded-source-code-modal'));
+        modal.show();
+      }
+      return false;
+    });
+  }
+  function toggleCodeHandler(show) {
+    return function(e) {
+      const detailsSrc = window.document.querySelectorAll(".cell > details > .sourceCode");
+      for (let i=0; i<detailsSrc.length; i++) {
+        const details = detailsSrc[i].parentElement;
+        if (show) {
+          details.open = true;
+        } else {
+          details.removeAttribute("open");
+        }
+      }
+      const cellCodeDivs = window.document.querySelectorAll(".cell > .sourceCode");
+      const fromCls = show ? "hidden" : "unhidden";
+      const toCls = show ? "unhidden" : "hidden";
+      for (let i=0; i<cellCodeDivs.length; i++) {
+        const codeDiv = cellCodeDivs[i];
+        if (codeDiv.classList.contains(fromCls)) {
+          codeDiv.classList.remove(fromCls);
+          codeDiv.classList.add(toCls);
+        } 
+      }
+      return false;
+    }
+  }
+  const hideAllCode = window.document.getElementById("quarto-hide-all-code");
+  if (hideAllCode) {
+    hideAllCode.addEventListener("click", toggleCodeHandler(false));
+  }
+  const showAllCode = window.document.getElementById("quarto-show-all-code");
+  if (showAllCode) {
+    showAllCode.addEventListener("click", toggleCodeHandler(true));
+  }
+    var localhostRegex = new RegExp(/^(?:http|https):\/\/localhost\:?[0-9]*\//);
+    var mailtoRegex = new RegExp(/^mailto:/);
+      var filterRegex = new RegExp('/' + window.location.host + '/');
+    var isInternal = (href) => {
+        return filterRegex.test(href) || localhostRegex.test(href) || mailtoRegex.test(href);
+    }
+    // Inspect non-navigation links and adorn them if external
+ 	var links = window.document.querySelectorAll('a[href]:not(.nav-link):not(.navbar-brand):not(.toc-action):not(.sidebar-link):not(.sidebar-item-toggle):not(.pagination-link):not(.no-external):not([aria-hidden]):not(.dropdown-item):not(.quarto-navigation-tool):not(.about-link)');
+    for (var i=0; i<links.length; i++) {
+      const link = links[i];
+      if (!isInternal(link.href)) {
+        // undo the damage that might have been done by quarto-nav.js in the case of
+        // links that we want to consider external
+        if (link.dataset.originalHref !== undefined) {
+          link.href = link.dataset.originalHref;
+        }
+      }
+    }
+  function tippyHover(el, contentFn, onTriggerFn, onUntriggerFn) {
+    const config = {
+      allowHTML: true,
+      maxWidth: 500,
+      delay: 100,
+      arrow: false,
+      appendTo: function(el) {
+          return el.parentElement;
+      },
+      interactive: true,
+      interactiveBorder: 10,
+      theme: 'quarto',
+      placement: 'bottom-start',
+    };
+    if (contentFn) {
+      config.content = contentFn;
+    }
+    if (onTriggerFn) {
+      config.onTrigger = onTriggerFn;
+    }
+    if (onUntriggerFn) {
+      config.onUntrigger = onUntriggerFn;
+    }
+    window.tippy(el, config); 
+  }
+  const noterefs = window.document.querySelectorAll('a[role="doc-noteref"]');
+  for (var i=0; i<noterefs.length; i++) {
+    const ref = noterefs[i];
+    tippyHover(ref, function() {
+      // use id or data attribute instead here
+      let href = ref.getAttribute('data-footnote-href') || ref.getAttribute('href');
+      try { href = new URL(href).hash; } catch {}
+      const id = href.replace(/^#\/?/, "");
+      const note = window.document.getElementById(id);
+      if (note) {
+        return note.innerHTML;
+      } else {
+        return "";
+      }
+    });
+  }
+  const xrefs = window.document.querySelectorAll('a.quarto-xref');
+  const processXRef = (id, note) => {
+    // Strip column container classes
+    const stripColumnClz = (el) => {
+      el.classList.remove("page-full", "page-columns");
+      if (el.children) {
+        for (const child of el.children) {
+          stripColumnClz(child);
+        }
+      }
+    }
+    stripColumnClz(note)
+    if (id === null || id.startsWith('sec-')) {
+      // Special case sections, only their first couple elements
+      const container = document.createElement("div");
+      if (note.children && note.children.length > 2) {
+        container.appendChild(note.children[0].cloneNode(true));
+        for (let i = 1; i < note.children.length; i++) {
+          const child = note.children[i];
+          if (child.tagName === "P" && child.innerText === "") {
+            continue;
+          } else {
+            container.appendChild(child.cloneNode(true));
+            break;
+          }
+        }
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(container);
+        }
+        return container.innerHTML
+      } else {
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(note);
+        }
+        return note.innerHTML;
+      }
+    } else {
+      // Remove any anchor links if they are present
+      const anchorLink = note.querySelector('a.anchorjs-link');
+      if (anchorLink) {
+        anchorLink.remove();
+      }
+      if (window.Quarto?.typesetMath) {
+        window.Quarto.typesetMath(note);
+      }
+      // TODO in 1.5, we should make sure this works without a callout special case
+      if (note.classList.contains("callout")) {
+        return note.outerHTML;
+      } else {
+        return note.innerHTML;
+      }
+    }
+  }
+  for (var i=0; i<xrefs.length; i++) {
+    const xref = xrefs[i];
+    tippyHover(xref, undefined, function(instance) {
+      instance.disable();
+      let url = xref.getAttribute('href');
+      let hash = undefined; 
+      if (url.startsWith('#')) {
+        hash = url;
+      } else {
+        try { hash = new URL(url).hash; } catch {}
+      }
+      if (hash) {
+        const id = hash.replace(/^#\/?/, "");
+        const note = window.document.getElementById(id);
+        if (note !== null) {
+          try {
+            const html = processXRef(id, note.cloneNode(true));
+            instance.setContent(html);
+          } finally {
+            instance.enable();
+            instance.show();
+          }
+        } else {
+          // See if we can fetch this
+          fetch(url.split('#')[0])
+          .then(res => res.text())
+          .then(html => {
+            const parser = new DOMParser();
+            const htmlDoc = parser.parseFromString(html, "text/html");
+            const note = htmlDoc.getElementById(id);
+            if (note !== null) {
+              const html = processXRef(id, note);
+              instance.setContent(html);
+            } 
+          }).finally(() => {
+            instance.enable();
+            instance.show();
+          });
+        }
+      } else {
+        // See if we can fetch a full url (with no hash to target)
+        // This is a special case and we should probably do some content thinning / targeting
+        fetch(url)
+        .then(res => res.text())
+        .then(html => {
+          const parser = new DOMParser();
+          const htmlDoc = parser.parseFromString(html, "text/html");
+          const note = htmlDoc.querySelector('main.content');
+          if (note !== null) {
+            // This should only happen for chapter cross references
+            // (since there is no id in the URL)
+            // remove the first header
+            if (note.children.length > 0 && note.children[0].tagName === "HEADER") {
+              note.children[0].remove();
+            }
+            const html = processXRef(null, note);
+            instance.setContent(html);
+          } 
+        }).finally(() => {
+          instance.enable();
+          instance.show();
+        });
+      }
+    }, function(instance) {
+    });
+  }
+      let selectedAnnoteEl;
+      const selectorForAnnotation = ( cell, annotation) => {
+        let cellAttr = 'data-code-cell="' + cell + '"';
+        let lineAttr = 'data-code-annotation="' +  annotation + '"';
+        const selector = 'span[' + cellAttr + '][' + lineAttr + ']';
+        return selector;
+      }
+      const selectCodeLines = (annoteEl) => {
+        const doc = window.document;
+        const targetCell = annoteEl.getAttribute("data-target-cell");
+        const targetAnnotation = annoteEl.getAttribute("data-target-annotation");
+        const annoteSpan = window.document.querySelector(selectorForAnnotation(targetCell, targetAnnotation));
+        const lines = annoteSpan.getAttribute("data-code-lines").split(",");
+        const lineIds = lines.map((line) => {
+          return targetCell + "-" + line;
+        })
+        let top = null;
+        let height = null;
+        let parent = null;
+        if (lineIds.length > 0) {
+            //compute the position of the single el (top and bottom and make a div)
+            const el = window.document.getElementById(lineIds[0]);
+            top = el.offsetTop;
+            height = el.offsetHeight;
+            parent = el.parentElement.parentElement;
+          if (lineIds.length > 1) {
+            const lastEl = window.document.getElementById(lineIds[lineIds.length - 1]);
+            const bottom = lastEl.offsetTop + lastEl.offsetHeight;
+            height = bottom - top;
+          }
+          if (top !== null && height !== null && parent !== null) {
+            // cook up a div (if necessary) and position it 
+            let div = window.document.getElementById("code-annotation-line-highlight");
+            if (div === null) {
+              div = window.document.createElement("div");
+              div.setAttribute("id", "code-annotation-line-highlight");
+              div.style.position = 'absolute';
+              parent.appendChild(div);
+            }
+            div.style.top = top - 2 + "px";
+            div.style.height = height + 4 + "px";
+            div.style.left = 0;
+            let gutterDiv = window.document.getElementById("code-annotation-line-highlight-gutter");
+            if (gutterDiv === null) {
+              gutterDiv = window.document.createElement("div");
+              gutterDiv.setAttribute("id", "code-annotation-line-highlight-gutter");
+              gutterDiv.style.position = 'absolute';
+              const codeCell = window.document.getElementById(targetCell);
+              const gutter = codeCell.querySelector('.code-annotation-gutter');
+              gutter.appendChild(gutterDiv);
+            }
+            gutterDiv.style.top = top - 2 + "px";
+            gutterDiv.style.height = height + 4 + "px";
+          }
+          selectedAnnoteEl = annoteEl;
+        }
+      };
+      const unselectCodeLines = () => {
+        const elementsIds = ["code-annotation-line-highlight", "code-annotation-line-highlight-gutter"];
+        elementsIds.forEach((elId) => {
+          const div = window.document.getElementById(elId);
+          if (div) {
+            div.remove();
+          }
+        });
+        selectedAnnoteEl = undefined;
+      };
+        // Handle positioning of the toggle
+    window.addEventListener(
+      "resize",
+      throttle(() => {
+        elRect = undefined;
+        if (selectedAnnoteEl) {
+          selectCodeLines(selectedAnnoteEl);
+        }
+      }, 10)
+    );
+    function throttle(fn, ms) {
+    let throttle = false;
+    let timer;
+      return (...args) => {
+        if(!throttle) { // first call gets through
+            fn.apply(this, args);
+            throttle = true;
+        } else { // all the others get throttled
+            if(timer) clearTimeout(timer); // cancel #2
+            timer = setTimeout(() => {
+              fn.apply(this, args);
+              timer = throttle = false;
+            }, ms);
+        }
+      };
+    }
+      // Attach click handler to the DT
+      const annoteDls = window.document.querySelectorAll('dt[data-target-cell]');
+      for (const annoteDlNode of annoteDls) {
+        annoteDlNode.addEventListener('click', (event) => {
+          const clickedEl = event.target;
+          if (clickedEl !== selectedAnnoteEl) {
+            unselectCodeLines();
+            const activeEl = window.document.querySelector('dt[data-target-cell].code-annotation-active');
+            if (activeEl) {
+              activeEl.classList.remove('code-annotation-active');
+            }
+            selectCodeLines(clickedEl);
+            clickedEl.classList.add('code-annotation-active');
+          } else {
+            // Unselect the line
+            unselectCodeLines();
+            clickedEl.classList.remove('code-annotation-active');
+          }
+        });
+      }
+  const findCites = (el) => {
+    const parentEl = el.parentElement;
+    if (parentEl) {
+      const cites = parentEl.dataset.cites;
+      if (cites) {
+        return {
+          el,
+          cites: cites.split(' ')
+        };
+      } else {
+        return findCites(el.parentElement)
+      }
+    } else {
+      return undefined;
+    }
+  };
+  var bibliorefs = window.document.querySelectorAll('a[role="doc-biblioref"]');
+  for (var i=0; i<bibliorefs.length; i++) {
+    const ref = bibliorefs[i];
+    const citeInfo = findCites(ref);
+    if (citeInfo) {
+      tippyHover(citeInfo.el, function() {
+        var popup = window.document.createElement('div');
+        citeInfo.cites.forEach(function(cite) {
+          var citeDiv = window.document.createElement('div');
+          citeDiv.classList.add('hanging-indent');
+          citeDiv.classList.add('csl-entry');
+          var biblioDiv = window.document.getElementById('ref-' + cite);
+          if (biblioDiv) {
+            citeDiv.innerHTML = biblioDiv.innerHTML;
+          }
+          popup.appendChild(citeDiv);
+        });
+        return popup.innerHTML;
+      });
+    }
+  }
+});
+</script>
+<nav class="page-navigation">
+  <div class="nav-page nav-page-previous">
+      <a href="../../book/01-fundamentals/04-reductions.html" class="pagination-link" aria-label="Chapter 4: Reductions">
+        <i class="bi bi-arrow-left-short"></i> <span class="nav-page-text"><span class="chapter-number">6</span>&nbsp; <span class="chapter-title">Chapter 4: Reductions</span></span>
+      </a>          
+  </div>
+  <div class="nav-page nav-page-next">
+      <a href="../../book/02-basic-nn/06-layernorm.html" class="pagination-link" aria-label="Chapter 6: LayerNorm">
+        <span class="nav-page-text"><span class="chapter-number">8</span>&nbsp; <span class="chapter-title">Chapter 6: LayerNorm</span></span> <i class="bi bi-arrow-right-short"></i>
+      </a>
+  </div>
+</nav><div class="modal fade" id="quarto-embedded-source-code-modal" tabindex="-1" aria-labelledby="quarto-embedded-source-code-modal-label" aria-hidden="true"><div class="modal-dialog modal-dialog-scrollable"><div class="modal-content"><div class="modal-header"><h5 class="modal-title" id="quarto-embedded-source-code-modal-label">Source Code</h5><button class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><div class="">
+<div class="sourceCode" id="cb11" data-shortcodes="false"><pre class="sourceCode markdown code-with-copy"><code class="sourceCode markdown"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a><span class="co">---</span></span>
+<span id="cb11-2"><a href="#cb11-2" aria-hidden="true" tabindex="-1"></a><span class="an">title:</span><span class="co"> "Chapter 5: Fused Softmax"</span></span>
+<span id="cb11-3"><a href="#cb11-3" aria-hidden="true" tabindex="-1"></a><span class="co">---</span></span>
+<span id="cb11-4"><a href="#cb11-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-5"><a href="#cb11-5" aria-hidden="true" tabindex="-1"></a>Softmax is the first kernel where naive correctness is not the hard part — *staying correct under fp16* is. It is also the first kernel where you have to think carefully about reductions inside a single program. Get this chapter right and LayerNorm, RMSNorm, and (eventually) FlashAttention all follow the same pattern.</span>
+<span id="cb11-6"><a href="#cb11-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-7"><a href="#cb11-7" aria-hidden="true" tabindex="-1"></a><span class="fu">## What softmax actually does</span></span>
+<span id="cb11-8"><a href="#cb11-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-9"><a href="#cb11-9" aria-hidden="true" tabindex="-1"></a>For a single row $x \in \mathbb{R}^N$:</span>
+<span id="cb11-10"><a href="#cb11-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-11"><a href="#cb11-11" aria-hidden="true" tabindex="-1"></a>$$</span>
+<span id="cb11-12"><a href="#cb11-12" aria-hidden="true" tabindex="-1"></a>\text{softmax}(x)_i = \frac{e^{x_i}}{\sum_{j=1}^{N} e^{x_j}}</span>
+<span id="cb11-13"><a href="#cb11-13" aria-hidden="true" tabindex="-1"></a>$$</span>
+<span id="cb11-14"><a href="#cb11-14" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-15"><a href="#cb11-15" aria-hidden="true" tabindex="-1"></a>In a transformer you call this on the attention score matrix, on classifier logits, and on routing logits in mixture-of-experts. The shape is almost always <span class="in">`(batch * heads * seq, seq)`</span> or <span class="in">`(batch * seq, vocab)`</span> — many rows, each row reduced along its last dimension.</span>
+<span id="cb11-16"><a href="#cb11-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-17"><a href="#cb11-17" aria-hidden="true" tabindex="-1"></a><span class="fu">## Why this kernel is memory-bound</span></span>
+<span id="cb11-18"><a href="#cb11-18" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-19"><a href="#cb11-19" aria-hidden="true" tabindex="-1"></a>Per row we read $N$ values and write $N$ values. The arithmetic is one <span class="in">`max`</span>, $N$ <span class="in">`exp`</span>s, one <span class="in">`sum`</span>, and $N$ divides — roughly $3N$ ops vs $2N$ memory accesses. On any modern GPU the read/write dominates. Concretely, a 2070 SUPER has ~448 GB/s of memory bandwidth and ~9 TFLOPs of fp32; even allocating the exps and divides as fp32 ops, we cannot saturate compute. The job of the Triton kernel is to read every byte of <span class="in">`x`</span> exactly once and write every byte of <span class="in">`y`</span> exactly once, with no intermediate trip to HBM.</span>
+<span id="cb11-20"><a href="#cb11-20" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-21"><a href="#cb11-21" aria-hidden="true" tabindex="-1"></a>That last sentence is why we fuse. Calling <span class="in">`torch.exp(x - x.max(dim=-1, keepdim=True).values)`</span> then <span class="in">`.sum(dim=-1)`</span> then a division writes three full-row-sized intermediates to HBM. The Triton kernel keeps everything in registers.</span>
+<span id="cb11-22"><a href="#cb11-22" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-23"><a href="#cb11-23" aria-hidden="true" tabindex="-1"></a><span class="fu">### PyTorch reference</span></span>
+<span id="cb11-24"><a href="#cb11-24" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-25"><a href="#cb11-25" aria-hidden="true" tabindex="-1"></a><span class="in">```{.python}</span></span>
+<span id="cb11-26"><a href="#cb11-26" aria-hidden="true" tabindex="-1"></a><span class="in">import torch</span></span>
+<span id="cb11-27"><a href="#cb11-27" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-28"><a href="#cb11-28" aria-hidden="true" tabindex="-1"></a><span class="in">def pytorch_softmax(x: torch.Tensor) -&gt; torch.Tensor:</span></span>
+<span id="cb11-29"><a href="#cb11-29" aria-hidden="true" tabindex="-1"></a><span class="in">    # x: (M, N), reduce along the last dim.</span></span>
+<span id="cb11-30"><a href="#cb11-30" aria-hidden="true" tabindex="-1"></a><span class="in">    return torch.softmax(x, dim=-1)</span></span>
+<span id="cb11-31"><a href="#cb11-31" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb11-32"><a href="#cb11-32" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-33"><a href="#cb11-33" aria-hidden="true" tabindex="-1"></a>This is the oracle. It already does the max-subtraction trick internally.</span>
+<span id="cb11-34"><a href="#cb11-34" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-35"><a href="#cb11-35" aria-hidden="true" tabindex="-1"></a><span class="fu">### Triton implementation</span></span>
+<span id="cb11-36"><a href="#cb11-36" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-37"><a href="#cb11-37" aria-hidden="true" tabindex="-1"></a>We start with the wrong-on-purpose version so the numerical hazard is visible. Then we fix it. Then we extend it to rows that do not fit in one tile.</span>
+<span id="cb11-38"><a href="#cb11-38" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-39"><a href="#cb11-39" aria-hidden="true" tabindex="-1"></a><span class="fu">#### Naive: one tile per row, no max subtraction</span></span>
+<span id="cb11-40"><a href="#cb11-40" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-41"><a href="#cb11-41" aria-hidden="true" tabindex="-1"></a><span class="in">```{.python}</span></span>
+<span id="cb11-42"><a href="#cb11-42" aria-hidden="true" tabindex="-1"></a><span class="in">import torch</span></span>
+<span id="cb11-43"><a href="#cb11-43" aria-hidden="true" tabindex="-1"></a><span class="in">import triton</span></span>
+<span id="cb11-44"><a href="#cb11-44" aria-hidden="true" tabindex="-1"></a><span class="in">import triton.language as tl</span></span>
+<span id="cb11-45"><a href="#cb11-45" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-46"><a href="#cb11-46" aria-hidden="true" tabindex="-1"></a><span class="in">@triton.jit</span></span>
+<span id="cb11-47"><a href="#cb11-47" aria-hidden="true" tabindex="-1"></a><span class="in">def _naive_softmax_kernel(</span></span>
+<span id="cb11-48"><a href="#cb11-48" aria-hidden="true" tabindex="-1"></a><span class="in">    x_ptr, y_ptr,</span></span>
+<span id="cb11-49"><a href="#cb11-49" aria-hidden="true" tabindex="-1"></a><span class="in">    row_stride,</span></span>
+<span id="cb11-50"><a href="#cb11-50" aria-hidden="true" tabindex="-1"></a><span class="in">    n_cols,</span></span>
+<span id="cb11-51"><a href="#cb11-51" aria-hidden="true" tabindex="-1"></a><span class="in">    BLOCK_SIZE: tl.constexpr,</span></span>
+<span id="cb11-52"><a href="#cb11-52" aria-hidden="true" tabindex="-1"></a><span class="in">):</span></span>
+<span id="cb11-53"><a href="#cb11-53" aria-hidden="true" tabindex="-1"></a><span class="in">    row_idx = tl.program_id(axis=0)</span></span>
+<span id="cb11-54"><a href="#cb11-54" aria-hidden="true" tabindex="-1"></a><span class="in">    row_start_ptr = x_ptr + row_idx * row_stride</span></span>
+<span id="cb11-55"><a href="#cb11-55" aria-hidden="true" tabindex="-1"></a><span class="in">    col_offs = tl.arange(0, BLOCK_SIZE)</span></span>
+<span id="cb11-56"><a href="#cb11-56" aria-hidden="true" tabindex="-1"></a><span class="in">    mask = col_offs &lt; n_cols</span></span>
+<span id="cb11-57"><a href="#cb11-57" aria-hidden="true" tabindex="-1"></a><span class="in">    x = tl.load(row_start_ptr + col_offs, mask=mask, other=0.0)</span></span>
+<span id="cb11-58"><a href="#cb11-58" aria-hidden="true" tabindex="-1"></a><span class="in">    e = tl.exp(x.to(tl.float32))</span></span>
+<span id="cb11-59"><a href="#cb11-59" aria-hidden="true" tabindex="-1"></a><span class="in">    e = tl.where(mask, e, 0.0)</span></span>
+<span id="cb11-60"><a href="#cb11-60" aria-hidden="true" tabindex="-1"></a><span class="in">    denom = tl.sum(e, axis=0)</span></span>
+<span id="cb11-61"><a href="#cb11-61" aria-hidden="true" tabindex="-1"></a><span class="in">    y = e / denom</span></span>
+<span id="cb11-62"><a href="#cb11-62" aria-hidden="true" tabindex="-1"></a><span class="in">    tl.store(y_ptr + row_idx * row_stride + col_offs, y.to(x.dtype), mask=mask)</span></span>
+<span id="cb11-63"><a href="#cb11-63" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb11-64"><a href="#cb11-64" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-65"><a href="#cb11-65" aria-hidden="true" tabindex="-1"></a>Try this with fp16 inputs whose row max sits around 20. <span class="in">`exp(20) ~= 4.85e8`</span>, well below the fp32 ceiling, so the intermediate <span class="in">`e`</span> is fine — but when we cast back to fp16 the per-element ratio can land outside fp16's representable range (or underflow to zero). Even one row with a genuine <span class="in">`inf`</span> poisons the divide. You will not detect this on <span class="in">`torch.randn`</span>-style inputs, which is exactly why this bug ships.</span>
+<span id="cb11-66"><a href="#cb11-66" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-67"><a href="#cb11-67" aria-hidden="true" tabindex="-1"></a><span class="fu">#### Stable: subtract the row max</span></span>
+<span id="cb11-68"><a href="#cb11-68" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-69"><a href="#cb11-69" aria-hidden="true" tabindex="-1"></a><span class="in">```{.python}</span></span>
+<span id="cb11-70"><a href="#cb11-70" aria-hidden="true" tabindex="-1"></a><span class="in">@triton.jit</span></span>
+<span id="cb11-71"><a href="#cb11-71" aria-hidden="true" tabindex="-1"></a><span class="in">def _stable_softmax_kernel(</span></span>
+<span id="cb11-72"><a href="#cb11-72" aria-hidden="true" tabindex="-1"></a><span class="in">    x_ptr, y_ptr, row_stride, n_cols,</span></span>
+<span id="cb11-73"><a href="#cb11-73" aria-hidden="true" tabindex="-1"></a><span class="in">    BLOCK_SIZE: tl.constexpr,</span></span>
+<span id="cb11-74"><a href="#cb11-74" aria-hidden="true" tabindex="-1"></a><span class="in">):</span></span>
+<span id="cb11-75"><a href="#cb11-75" aria-hidden="true" tabindex="-1"></a><span class="in">    row_idx = tl.program_id(axis=0)</span></span>
+<span id="cb11-76"><a href="#cb11-76" aria-hidden="true" tabindex="-1"></a><span class="in">    row_start_ptr = x_ptr + row_idx * row_stride</span></span>
+<span id="cb11-77"><a href="#cb11-77" aria-hidden="true" tabindex="-1"></a><span class="in">    col_offs = tl.arange(0, BLOCK_SIZE)</span></span>
+<span id="cb11-78"><a href="#cb11-78" aria-hidden="true" tabindex="-1"></a><span class="in">    mask = col_offs &lt; n_cols</span></span>
+<span id="cb11-79"><a href="#cb11-79" aria-hidden="true" tabindex="-1"></a><span class="in">    # other=-inf so masked lanes do not poison the max.</span></span>
+<span id="cb11-80"><a href="#cb11-80" aria-hidden="true" tabindex="-1"></a><span class="in">    x = tl.load(row_start_ptr + col_offs, mask=mask, other=-float("inf"))</span></span>
+<span id="cb11-81"><a href="#cb11-81" aria-hidden="true" tabindex="-1"></a><span class="in">    x_f32 = x.to(tl.float32)</span></span>
+<span id="cb11-82"><a href="#cb11-82" aria-hidden="true" tabindex="-1"></a><span class="in">    m = tl.max(x_f32, axis=0)</span></span>
+<span id="cb11-83"><a href="#cb11-83" aria-hidden="true" tabindex="-1"></a><span class="in">    e = tl.exp(x_f32 - m)</span></span>
+<span id="cb11-84"><a href="#cb11-84" aria-hidden="true" tabindex="-1"></a><span class="in">    e = tl.where(mask, e, 0.0)</span></span>
+<span id="cb11-85"><a href="#cb11-85" aria-hidden="true" tabindex="-1"></a><span class="in">    denom = tl.sum(e, axis=0)</span></span>
+<span id="cb11-86"><a href="#cb11-86" aria-hidden="true" tabindex="-1"></a><span class="in">    y = e / denom</span></span>
+<span id="cb11-87"><a href="#cb11-87" aria-hidden="true" tabindex="-1"></a><span class="in">    tl.store(y_ptr + row_idx * row_stride + col_offs, y.to(x.dtype), mask=mask)</span></span>
+<span id="cb11-88"><a href="#cb11-88" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb11-89"><a href="#cb11-89" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-90"><a href="#cb11-90" aria-hidden="true" tabindex="-1"></a>The change is one line: <span class="in">`tl.exp(x_f32 - m)`</span> instead of <span class="in">`tl.exp(x_f32)`</span>. Mathematically the max cancels in the numerator and denominator, so the result is identical. Numerically, every argument to <span class="in">`exp`</span> is now <span class="in">`&lt;= 0`</span>, so the largest possible value of <span class="in">`exp(x - m)`</span> is <span class="in">`1.0`</span>. Overflow is gone.</span>
+<span id="cb11-91"><a href="#cb11-91" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-92"><a href="#cb11-92" aria-hidden="true" tabindex="-1"></a><span class="in">`x_f32 = x.to(tl.float32)`</span> is the second non-obvious choice. We do the reduction and the exp in fp32 even when the input is fp16, because summing thousands of small fp16 values catastrophically loses precision. Cast back to fp16 only at the store. This is the standard pattern; you will see it again in LayerNorm, RMSNorm, and softmax-in-attention.</span>
+<span id="cb11-93"><a href="#cb11-93" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-94"><a href="#cb11-94" aria-hidden="true" tabindex="-1"></a><span class="fu">#### Wide rows: streaming with a running max</span></span>
+<span id="cb11-95"><a href="#cb11-95" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-96"><a href="#cb11-96" aria-hidden="true" tabindex="-1"></a>The single-tile kernel requires <span class="in">`BLOCK_SIZE &gt;= n_cols`</span>. Triton compiles to a single tile so the row must fit in registers — a few thousand elements on consumer GPUs, up to ~16k on big ones. For wider rows (long-context vocabularies, attention scores over very long sequences) you have to stream:</span>
+<span id="cb11-97"><a href="#cb11-97" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-98"><a href="#cb11-98" aria-hidden="true" tabindex="-1"></a><span class="in">```{.python}</span></span>
+<span id="cb11-99"><a href="#cb11-99" aria-hidden="true" tabindex="-1"></a><span class="in">@triton.jit</span></span>
+<span id="cb11-100"><a href="#cb11-100" aria-hidden="true" tabindex="-1"></a><span class="in">def _online_softmax_kernel(</span></span>
+<span id="cb11-101"><a href="#cb11-101" aria-hidden="true" tabindex="-1"></a><span class="in">    x_ptr, y_ptr, row_stride, n_cols,</span></span>
+<span id="cb11-102"><a href="#cb11-102" aria-hidden="true" tabindex="-1"></a><span class="in">    BLOCK_SIZE: tl.constexpr,</span></span>
+<span id="cb11-103"><a href="#cb11-103" aria-hidden="true" tabindex="-1"></a><span class="in">):</span></span>
+<span id="cb11-104"><a href="#cb11-104" aria-hidden="true" tabindex="-1"></a><span class="in">    row_idx = tl.program_id(axis=0)</span></span>
+<span id="cb11-105"><a href="#cb11-105" aria-hidden="true" tabindex="-1"></a><span class="in">    row_start = x_ptr + row_idx * row_stride</span></span>
+<span id="cb11-106"><a href="#cb11-106" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-107"><a href="#cb11-107" aria-hidden="true" tabindex="-1"></a><span class="in">    # Pass 1: streaming max + sum-of-exps.</span></span>
+<span id="cb11-108"><a href="#cb11-108" aria-hidden="true" tabindex="-1"></a><span class="in">    m = -float("inf")</span></span>
+<span id="cb11-109"><a href="#cb11-109" aria-hidden="true" tabindex="-1"></a><span class="in">    l = 0.0</span></span>
+<span id="cb11-110"><a href="#cb11-110" aria-hidden="true" tabindex="-1"></a><span class="in">    for tile_start in range(0, n_cols, BLOCK_SIZE):</span></span>
+<span id="cb11-111"><a href="#cb11-111" aria-hidden="true" tabindex="-1"></a><span class="in">        col_offs = tile_start + tl.arange(0, BLOCK_SIZE)</span></span>
+<span id="cb11-112"><a href="#cb11-112" aria-hidden="true" tabindex="-1"></a><span class="in">        mask = col_offs &lt; n_cols</span></span>
+<span id="cb11-113"><a href="#cb11-113" aria-hidden="true" tabindex="-1"></a><span class="in">        x = tl.load(row_start + col_offs, mask=mask, other=-float("inf")).to(tl.float32)</span></span>
+<span id="cb11-114"><a href="#cb11-114" aria-hidden="true" tabindex="-1"></a><span class="in">        m_new = tl.maximum(m, tl.max(x, axis=0))</span></span>
+<span id="cb11-115"><a href="#cb11-115" aria-hidden="true" tabindex="-1"></a><span class="in">        alpha = tl.exp(m - m_new)</span></span>
+<span id="cb11-116"><a href="#cb11-116" aria-hidden="true" tabindex="-1"></a><span class="in">        tile_sum = tl.sum(tl.exp(x - m_new), axis=0)</span></span>
+<span id="cb11-117"><a href="#cb11-117" aria-hidden="true" tabindex="-1"></a><span class="in">        l = alpha * l + tile_sum</span></span>
+<span id="cb11-118"><a href="#cb11-118" aria-hidden="true" tabindex="-1"></a><span class="in">        m = m_new</span></span>
+<span id="cb11-119"><a href="#cb11-119" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-120"><a href="#cb11-120" aria-hidden="true" tabindex="-1"></a><span class="in">    # Pass 2: write normalized output.</span></span>
+<span id="cb11-121"><a href="#cb11-121" aria-hidden="true" tabindex="-1"></a><span class="in">    for tile_start in range(0, n_cols, BLOCK_SIZE):</span></span>
+<span id="cb11-122"><a href="#cb11-122" aria-hidden="true" tabindex="-1"></a><span class="in">        col_offs = tile_start + tl.arange(0, BLOCK_SIZE)</span></span>
+<span id="cb11-123"><a href="#cb11-123" aria-hidden="true" tabindex="-1"></a><span class="in">        mask = col_offs &lt; n_cols</span></span>
+<span id="cb11-124"><a href="#cb11-124" aria-hidden="true" tabindex="-1"></a><span class="in">        x = tl.load(row_start + col_offs, mask=mask, other=-float("inf")).to(tl.float32)</span></span>
+<span id="cb11-125"><a href="#cb11-125" aria-hidden="true" tabindex="-1"></a><span class="in">        y = tl.exp(x - m) / l</span></span>
+<span id="cb11-126"><a href="#cb11-126" aria-hidden="true" tabindex="-1"></a><span class="in">        tl.store(y_ptr + row_idx * row_stride + col_offs, y, mask=mask)</span></span>
+<span id="cb11-127"><a href="#cb11-127" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb11-128"><a href="#cb11-128" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-129"><a href="#cb11-129" aria-hidden="true" tabindex="-1"></a><span class="in">`alpha = exp(m - m_new)`</span> is the rescaling factor: when the new tile raises the running max from <span class="in">`m`</span> to <span class="in">`m_new`</span>, every contribution to <span class="in">`l`</span> accumulated under the old pivot needs to be multiplied by <span class="in">`alpha`</span> to be on the new pivot. The first iteration has <span class="in">`m = -inf`</span>, so <span class="in">`alpha = exp(-inf) = 0`</span> and <span class="in">`l`</span> starts fresh from the first tile's sum. This is the exact accumulator FlashAttention uses; we treat it gently here and revisit it formally in Chapter 14.</span>
+<span id="cb11-130"><a href="#cb11-130" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-131"><a href="#cb11-131" aria-hidden="true" tabindex="-1"></a><span class="fu">### Shape trace</span></span>
+<span id="cb11-132"><a href="#cb11-132" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-133"><a href="#cb11-133" aria-hidden="true" tabindex="-1"></a>For the stable single-tile kernel with <span class="in">`x: (M, N)`</span> in fp16, one program per row:</span>
+<span id="cb11-134"><a href="#cb11-134" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-135"><a href="#cb11-135" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb11-136"><a href="#cb11-136" aria-hidden="true" tabindex="-1"></a><span class="in">Input:                       x   : (M, N)         fp16</span></span>
+<span id="cb11-137"><a href="#cb11-137" aria-hidden="true" tabindex="-1"></a><span class="in">Output:                      y   : (M, N)         fp16</span></span>
+<span id="cb11-138"><a href="#cb11-138" aria-hidden="true" tabindex="-1"></a><span class="in">Program owns:                one row of x          (axis=0 grid, size M)</span></span>
+<span id="cb11-139"><a href="#cb11-139" aria-hidden="true" tabindex="-1"></a><span class="in">pid = tl.program_id(0)       scalar               int32  # row index</span></span>
+<span id="cb11-140"><a href="#cb11-140" aria-hidden="true" tabindex="-1"></a><span class="in">row_start = pid * row_stride scalar offset        int64</span></span>
+<span id="cb11-141"><a href="#cb11-141" aria-hidden="true" tabindex="-1"></a><span class="in">col_offs = tl.arange(0, BN)  (BN,)                int32  # BN = next_pow2(N), constexpr</span></span>
+<span id="cb11-142"><a href="#cb11-142" aria-hidden="true" tabindex="-1"></a><span class="in">mask = col_offs &lt; N          (BN,)                bool</span></span>
+<span id="cb11-143"><a href="#cb11-143" aria-hidden="true" tabindex="-1"></a><span class="in">x = tl.load(x_ptr + row_start + col_offs,</span></span>
+<span id="cb11-144"><a href="#cb11-144" aria-hidden="true" tabindex="-1"></a><span class="in">            mask, other=-inf) (BN,)               fp16</span></span>
+<span id="cb11-145"><a href="#cb11-145" aria-hidden="true" tabindex="-1"></a><span class="in">x_f32 = x.to(tl.float32)     (BN,)                fp32</span></span>
+<span id="cb11-146"><a href="#cb11-146" aria-hidden="true" tabindex="-1"></a><span class="in">m = tl.max(x_f32, axis=0)    scalar               fp32</span></span>
+<span id="cb11-147"><a href="#cb11-147" aria-hidden="true" tabindex="-1"></a><span class="in">e = tl.exp(x_f32 - m)        (BN,)                fp32</span></span>
+<span id="cb11-148"><a href="#cb11-148" aria-hidden="true" tabindex="-1"></a><span class="in">e = tl.where(mask, e, 0.0)   (BN,)                fp32</span></span>
+<span id="cb11-149"><a href="#cb11-149" aria-hidden="true" tabindex="-1"></a><span class="in">denom = tl.sum(e, axis=0)    scalar               fp32</span></span>
+<span id="cb11-150"><a href="#cb11-150" aria-hidden="true" tabindex="-1"></a><span class="in">y = (e / denom).to(fp16)     (BN,)                fp16</span></span>
+<span id="cb11-151"><a href="#cb11-151" aria-hidden="true" tabindex="-1"></a><span class="in">tl.store(y_ptr + row_start + col_offs, y, mask)</span></span>
+<span id="cb11-152"><a href="#cb11-152" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb11-153"><a href="#cb11-153" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-154"><a href="#cb11-154" aria-hidden="true" tabindex="-1"></a><span class="fu">### Pointer arithmetic and masks</span></span>
+<span id="cb11-155"><a href="#cb11-155" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-156"><a href="#cb11-156" aria-hidden="true" tabindex="-1"></a>The whole row lives at <span class="in">`x_ptr + pid * row_stride`</span>. We add a vector <span class="in">`col_offs = tl.arange(0, BLOCK_SIZE)`</span> to get one pointer per column. <span class="in">`row_stride`</span> comes from the launcher (<span class="in">`x.stride(0)`</span>) — never hardcode it as <span class="in">`N`</span>, because a caller might pass a transposed or sliced tensor with a different leading stride.</span>
+<span id="cb11-157"><a href="#cb11-157" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-158"><a href="#cb11-158" aria-hidden="true" tabindex="-1"></a>The mask is <span class="in">`col_offs &lt; n_cols`</span>. Two <span class="in">`other=`</span> values matter:</span>
+<span id="cb11-159"><a href="#cb11-159" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-160"><a href="#cb11-160" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>The load uses <span class="in">`other=-float("inf")`</span> so masked lanes do not change the row max.</span>
+<span id="cb11-161"><a href="#cb11-161" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>The <span class="in">`tl.where(mask, e, 0.0)`</span> zeroes masked lanes before the sum.</span>
+<span id="cb11-162"><a href="#cb11-162" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-163"><a href="#cb11-163" aria-hidden="true" tabindex="-1"></a>If you swap those — <span class="in">`other=0.0`</span> on the load and no re-mask on <span class="in">`e`</span> — you get two bugs at once. The masked-off lanes load as zero, <span class="in">`exp(0 - m)`</span> is <span class="in">`exp(-m)`</span> (which is large when <span class="in">`m`</span> is negative), and the sum is now wrong.</span>
+<span id="cb11-164"><a href="#cb11-164" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-165"><a href="#cb11-165" aria-hidden="true" tabindex="-1"></a><span class="fu">### Correctness test</span></span>
+<span id="cb11-166"><a href="#cb11-166" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-167"><a href="#cb11-167" aria-hidden="true" tabindex="-1"></a><span class="in">```{.python}</span></span>
+<span id="cb11-168"><a href="#cb11-168" aria-hidden="true" tabindex="-1"></a><span class="in">import pytest</span></span>
+<span id="cb11-169"><a href="#cb11-169" aria-hidden="true" tabindex="-1"></a><span class="in">import torch</span></span>
+<span id="cb11-170"><a href="#cb11-170" aria-hidden="true" tabindex="-1"></a><span class="in">from src.ch05_softmax import stable_softmax</span></span>
+<span id="cb11-171"><a href="#cb11-171" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-172"><a href="#cb11-172" aria-hidden="true" tabindex="-1"></a><span class="in">pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda only")</span></span>
+<span id="cb11-173"><a href="#cb11-173" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-174"><a href="#cb11-174" aria-hidden="true" tabindex="-1"></a><span class="in">@pytest.mark.parametrize("shape", [(3, 7), (1, 1024), (512, 1024), (64, 31)])</span></span>
+<span id="cb11-175"><a href="#cb11-175" aria-hidden="true" tabindex="-1"></a><span class="in">@pytest.mark.parametrize("dtype", [torch.float32, torch.float16])</span></span>
+<span id="cb11-176"><a href="#cb11-176" aria-hidden="true" tabindex="-1"></a><span class="in">def test_stable_softmax(shape, dtype):</span></span>
+<span id="cb11-177"><a href="#cb11-177" aria-hidden="true" tabindex="-1"></a><span class="in">    torch.manual_seed(0)</span></span>
+<span id="cb11-178"><a href="#cb11-178" aria-hidden="true" tabindex="-1"></a><span class="in">    x = torch.randn(*shape, device="cuda", dtype=dtype)</span></span>
+<span id="cb11-179"><a href="#cb11-179" aria-hidden="true" tabindex="-1"></a><span class="in">    out = stable_softmax(x)</span></span>
+<span id="cb11-180"><a href="#cb11-180" aria-hidden="true" tabindex="-1"></a><span class="in">    ref = torch.softmax(x, dim=-1)</span></span>
+<span id="cb11-181"><a href="#cb11-181" aria-hidden="true" tabindex="-1"></a><span class="in">    rtol, atol = (1e-5, 1e-5) if dtype == torch.float32 else (5e-3, 5e-3)</span></span>
+<span id="cb11-182"><a href="#cb11-182" aria-hidden="true" tabindex="-1"></a><span class="in">    torch.testing.assert_close(out, ref, rtol=rtol, atol=atol)</span></span>
+<span id="cb11-183"><a href="#cb11-183" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb11-184"><a href="#cb11-184" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-185"><a href="#cb11-185" aria-hidden="true" tabindex="-1"></a>The non-power-of-two shape <span class="in">`(64, 31)`</span> exercises the mask. The fp16 tolerance is loose because the fp16 round-trip on the divide is not bit-identical to PyTorch's internal path.</span>
+<span id="cb11-186"><a href="#cb11-186" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-187"><a href="#cb11-187" aria-hidden="true" tabindex="-1"></a><span class="fu">### Benchmark</span></span>
+<span id="cb11-188"><a href="#cb11-188" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-189"><a href="#cb11-189" aria-hidden="true" tabindex="-1"></a><span class="in">```{.python}</span></span>
+<span id="cb11-190"><a href="#cb11-190" aria-hidden="true" tabindex="-1"></a><span class="in">import torch, triton</span></span>
+<span id="cb11-191"><a href="#cb11-191" aria-hidden="true" tabindex="-1"></a><span class="in">from src.ch05_softmax import stable_softmax</span></span>
+<span id="cb11-192"><a href="#cb11-192" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-193"><a href="#cb11-193" aria-hidden="true" tabindex="-1"></a><span class="in">x = torch.randn(4096, 4096, device="cuda", dtype=torch.float16)</span></span>
+<span id="cb11-194"><a href="#cb11-194" aria-hidden="true" tabindex="-1"></a><span class="in">ms_triton = triton.testing.do_bench(lambda: stable_softmax(x))</span></span>
+<span id="cb11-195"><a href="#cb11-195" aria-hidden="true" tabindex="-1"></a><span class="in">ms_torch  = triton.testing.do_bench(lambda: torch.softmax(x, dim=-1))</span></span>
+<span id="cb11-196"><a href="#cb11-196" aria-hidden="true" tabindex="-1"></a><span class="in">compiled = torch.compile(lambda t: torch.softmax(t, dim=-1)); compiled(x); torch.cuda.synchronize()</span></span>
+<span id="cb11-197"><a href="#cb11-197" aria-hidden="true" tabindex="-1"></a><span class="in">ms_compiled = triton.testing.do_bench(lambda: compiled(x))</span></span>
+<span id="cb11-198"><a href="#cb11-198" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-199"><a href="#cb11-199" aria-hidden="true" tabindex="-1"></a><span class="in">bytes_moved = 2 * 4096 * 4096 * 2  # read+write, fp16</span></span>
+<span id="cb11-200"><a href="#cb11-200" aria-hidden="true" tabindex="-1"></a><span class="in">gbps = lambda ms: bytes_moved / (ms*1e-3) / 1e9</span></span>
+<span id="cb11-201"><a href="#cb11-201" aria-hidden="true" tabindex="-1"></a><span class="in">print(f"triton {ms_triton:.3f}ms ({gbps(ms_triton):.0f} GB/s)")</span></span>
+<span id="cb11-202"><a href="#cb11-202" aria-hidden="true" tabindex="-1"></a><span class="in">print(f"torch  {ms_torch:.3f}ms ({gbps(ms_torch):.0f} GB/s)")</span></span>
+<span id="cb11-203"><a href="#cb11-203" aria-hidden="true" tabindex="-1"></a><span class="in">print(f"compile{ms_compiled:.3f}ms ({gbps(ms_compiled):.0f} GB/s)")</span></span>
+<span id="cb11-204"><a href="#cb11-204" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb11-205"><a href="#cb11-205" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-206"><a href="#cb11-206" aria-hidden="true" tabindex="-1"></a>::: {.callout-warning appearance="simple"}</span>
+<span id="cb11-207"><a href="#cb11-207" aria-hidden="true" tabindex="-1"></a>**Placeholder data.** The numbers below are hardcoded illustrative values, not measurements. Replace with output from your own <span class="in">`triton.testing.do_bench`</span> run before drawing conclusions.</span>
+<span id="cb11-208"><a href="#cb11-208" aria-hidden="true" tabindex="-1"></a>:::</span>
+<span id="cb11-209"><a href="#cb11-209" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-212"><a href="#cb11-212" aria-hidden="true" tabindex="-1"></a><span class="in">```{ojs}</span></span>
+<span id="cb11-213"><a href="#cb11-213" aria-hidden="true" tabindex="-1"></a><span class="in">//| echo: false</span></span>
+<span id="cb11-214"><a href="#cb11-214" aria-hidden="true" tabindex="-1"></a><span class="in">//| label: fig-softmax-bench</span></span>
+<span id="cb11-215"><a href="#cb11-215" aria-hidden="true" tabindex="-1"></a><span class="in">//| fig-cap: "Fused-softmax median latency vs row width N (log x-axis, M=4096). Lower is better. Triton kernel vs eager torch.softmax vs torch.compile(torch.softmax)."</span></span>
+<span id="cb11-216"><a href="#cb11-216" aria-hidden="true" tabindex="-1"></a><span class="in">{</span></span>
+<span id="cb11-217"><a href="#cb11-217" aria-hidden="true" tabindex="-1"></a><span class="in">  const data = [</span></span>
+<span id="cb11-218"><a href="#cb11-218" aria-hidden="true" tabindex="-1"></a><span class="in">    {N: 256,   triton_ms: 0.04, torch_ms: 0.10, compiled_ms: 0.05},</span></span>
+<span id="cb11-219"><a href="#cb11-219" aria-hidden="true" tabindex="-1"></a><span class="in">    {N: 1024,  triton_ms: 0.09, torch_ms: 0.20, compiled_ms: 0.10},</span></span>
+<span id="cb11-220"><a href="#cb11-220" aria-hidden="true" tabindex="-1"></a><span class="in">    {N: 4096,  triton_ms: 0.30, torch_ms: 0.55, compiled_ms: 0.32},</span></span>
+<span id="cb11-221"><a href="#cb11-221" aria-hidden="true" tabindex="-1"></a><span class="in">    {N: 8192,  triton_ms: 0.60, torch_ms: 1.10, compiled_ms: 0.65},</span></span>
+<span id="cb11-222"><a href="#cb11-222" aria-hidden="true" tabindex="-1"></a><span class="in">    {N: 16384, triton_ms: 1.20, torch_ms: 2.20, compiled_ms: 1.28},</span></span>
+<span id="cb11-223"><a href="#cb11-223" aria-hidden="true" tabindex="-1"></a><span class="in">  ];</span></span>
+<span id="cb11-224"><a href="#cb11-224" aria-hidden="true" tabindex="-1"></a><span class="in">  const long = data.flatMap(d =&gt; [</span></span>
+<span id="cb11-225"><a href="#cb11-225" aria-hidden="true" tabindex="-1"></a><span class="in">    {N: d.N, impl: "triton",   ms: d.triton_ms},</span></span>
+<span id="cb11-226"><a href="#cb11-226" aria-hidden="true" tabindex="-1"></a><span class="in">    {N: d.N, impl: "torch",    ms: d.torch_ms},</span></span>
+<span id="cb11-227"><a href="#cb11-227" aria-hidden="true" tabindex="-1"></a><span class="in">    {N: d.N, impl: "compiled", ms: d.compiled_ms}</span></span>
+<span id="cb11-228"><a href="#cb11-228" aria-hidden="true" tabindex="-1"></a><span class="in">  ]);</span></span>
+<span id="cb11-229"><a href="#cb11-229" aria-hidden="true" tabindex="-1"></a><span class="in">  return Plot.plot({</span></span>
+<span id="cb11-230"><a href="#cb11-230" aria-hidden="true" tabindex="-1"></a><span class="in">    color: {legend: true, domain: ["triton", "torch", "compiled"], range: ["steelblue", "orange", "seagreen"]},</span></span>
+<span id="cb11-231"><a href="#cb11-231" aria-hidden="true" tabindex="-1"></a><span class="in">    y: {label: "median latency (ms, M=4096) — lower is better"},</span></span>
+<span id="cb11-232"><a href="#cb11-232" aria-hidden="true" tabindex="-1"></a><span class="in">    x: {label: "N (row width, elements)", type: "log"},</span></span>
+<span id="cb11-233"><a href="#cb11-233" aria-hidden="true" tabindex="-1"></a><span class="in">    marks: [</span></span>
+<span id="cb11-234"><a href="#cb11-234" aria-hidden="true" tabindex="-1"></a><span class="in">      Plot.line(long, {x: "N", y: "ms", stroke: "impl"}),</span></span>
+<span id="cb11-235"><a href="#cb11-235" aria-hidden="true" tabindex="-1"></a><span class="in">      Plot.dot(long,  {x: "N", y: "ms", fill: "impl"}),</span></span>
+<span id="cb11-236"><a href="#cb11-236" aria-hidden="true" tabindex="-1"></a><span class="in">    ]</span></span>
+<span id="cb11-237"><a href="#cb11-237" aria-hidden="true" tabindex="-1"></a><span class="in">  });</span></span>
+<span id="cb11-238"><a href="#cb11-238" aria-hidden="true" tabindex="-1"></a><span class="in">}</span></span>
+<span id="cb11-239"><a href="#cb11-239" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb11-240"><a href="#cb11-240" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-241"><a href="#cb11-241" aria-hidden="true" tabindex="-1"></a>Expect Triton to roughly tie <span class="in">`torch.compile`</span> and to comfortably beat eager <span class="in">`torch.softmax`</span>, because eager dispatches separate kernels for max / sub / exp / sum / div. The compiled path also fuses, so the contest is mostly even — the win comes from owning the kernel for downstream fusion (you cannot fuse <span class="in">`torch.compile`</span>'s softmax with your custom causal mask without a graph rewrite).</span>
+<span id="cb11-242"><a href="#cb11-242" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-243"><a href="#cb11-243" aria-hidden="true" tabindex="-1"></a><span class="fu">### Interactive: stepping through the online accumulator</span></span>
+<span id="cb11-244"><a href="#cb11-244" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-245"><a href="#cb11-245" aria-hidden="true" tabindex="-1"></a>This widget walks through the online softmax recurrence on the row <span class="in">`[3, 1, 4, 1, 5, 9, 2, 6]`</span> with <span class="in">`BLOCK_SIZE = 2`</span>. Drag the slider to advance one tile at a time and watch <span class="in">`m`</span> (running max), <span class="in">`l`</span> (running denominator), and <span class="in">`alpha`</span> (the rescaling factor that keeps <span class="in">`l`</span> consistent when the max jumps).</span>
+<span id="cb11-246"><a href="#cb11-246" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-249"><a href="#cb11-249" aria-hidden="true" tabindex="-1"></a><span class="in">```{ojs}</span></span>
+<span id="cb11-250"><a href="#cb11-250" aria-hidden="true" tabindex="-1"></a><span class="in">//| echo: false</span></span>
+<span id="cb11-251"><a href="#cb11-251" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-252"><a href="#cb11-252" aria-hidden="true" tabindex="-1"></a><span class="in">scores = [3, 1, 4, 1, 5, 9, 2, 6]</span></span>
+<span id="cb11-253"><a href="#cb11-253" aria-hidden="true" tabindex="-1"></a><span class="in">BLOCK_K = 2</span></span>
+<span id="cb11-254"><a href="#cb11-254" aria-hidden="true" tabindex="-1"></a><span class="in">num_blocks = Math.ceil(scores.length / BLOCK_K)</span></span>
+<span id="cb11-255"><a href="#cb11-255" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-256"><a href="#cb11-256" aria-hidden="true" tabindex="-1"></a><span class="in">viewof step = Inputs.range([0, num_blocks], {value: num_blocks, step: 1, label: "tiles processed"})</span></span>
+<span id="cb11-257"><a href="#cb11-257" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-258"><a href="#cb11-258" aria-hidden="true" tabindex="-1"></a><span class="in">rows = {</span></span>
+<span id="cb11-259"><a href="#cb11-259" aria-hidden="true" tabindex="-1"></a><span class="in">  const out = [];</span></span>
+<span id="cb11-260"><a href="#cb11-260" aria-hidden="true" tabindex="-1"></a><span class="in">  let m = -Infinity;</span></span>
+<span id="cb11-261"><a href="#cb11-261" aria-hidden="true" tabindex="-1"></a><span class="in">  let l = 0.0;</span></span>
+<span id="cb11-262"><a href="#cb11-262" aria-hidden="true" tabindex="-1"></a><span class="in">  for (let b = 0; b &lt; step; b++) {</span></span>
+<span id="cb11-263"><a href="#cb11-263" aria-hidden="true" tabindex="-1"></a><span class="in">    const start = b * BLOCK_K;</span></span>
+<span id="cb11-264"><a href="#cb11-264" aria-hidden="true" tabindex="-1"></a><span class="in">    const block = scores.slice(start, start + BLOCK_K);</span></span>
+<span id="cb11-265"><a href="#cb11-265" aria-hidden="true" tabindex="-1"></a><span class="in">    const block_max = Math.max(...block);</span></span>
+<span id="cb11-266"><a href="#cb11-266" aria-hidden="true" tabindex="-1"></a><span class="in">    const m_new = Math.max(m, block_max);</span></span>
+<span id="cb11-267"><a href="#cb11-267" aria-hidden="true" tabindex="-1"></a><span class="in">    const alpha = isFinite(m) ? Math.exp(m - m_new) : 0.0;</span></span>
+<span id="cb11-268"><a href="#cb11-268" aria-hidden="true" tabindex="-1"></a><span class="in">    const block_sum = block.reduce((s, v) =&gt; s + Math.exp(v - m_new), 0.0);</span></span>
+<span id="cb11-269"><a href="#cb11-269" aria-hidden="true" tabindex="-1"></a><span class="in">    const l_new = alpha * l + block_sum;</span></span>
+<span id="cb11-270"><a href="#cb11-270" aria-hidden="true" tabindex="-1"></a><span class="in">    out.push({</span></span>
+<span id="cb11-271"><a href="#cb11-271" aria-hidden="true" tabindex="-1"></a><span class="in">      tile: b,</span></span>
+<span id="cb11-272"><a href="#cb11-272" aria-hidden="true" tabindex="-1"></a><span class="in">      tile_values: block.join(", "),</span></span>
+<span id="cb11-273"><a href="#cb11-273" aria-hidden="true" tabindex="-1"></a><span class="in">      tile_max: block_max,</span></span>
+<span id="cb11-274"><a href="#cb11-274" aria-hidden="true" tabindex="-1"></a><span class="in">      m_prev: isFinite(m) ? m.toFixed(4) : "-inf",</span></span>
+<span id="cb11-275"><a href="#cb11-275" aria-hidden="true" tabindex="-1"></a><span class="in">      m_new: m_new.toFixed(4),</span></span>
+<span id="cb11-276"><a href="#cb11-276" aria-hidden="true" tabindex="-1"></a><span class="in">      alpha: alpha.toFixed(4),</span></span>
+<span id="cb11-277"><a href="#cb11-277" aria-hidden="true" tabindex="-1"></a><span class="in">      l_new: l_new.toFixed(4),</span></span>
+<span id="cb11-278"><a href="#cb11-278" aria-hidden="true" tabindex="-1"></a><span class="in">    });</span></span>
+<span id="cb11-279"><a href="#cb11-279" aria-hidden="true" tabindex="-1"></a><span class="in">    m = m_new;</span></span>
+<span id="cb11-280"><a href="#cb11-280" aria-hidden="true" tabindex="-1"></a><span class="in">    l = l_new;</span></span>
+<span id="cb11-281"><a href="#cb11-281" aria-hidden="true" tabindex="-1"></a><span class="in">  }</span></span>
+<span id="cb11-282"><a href="#cb11-282" aria-hidden="true" tabindex="-1"></a><span class="in">  return out;</span></span>
+<span id="cb11-283"><a href="#cb11-283" aria-hidden="true" tabindex="-1"></a><span class="in">}</span></span>
+<span id="cb11-284"><a href="#cb11-284" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-285"><a href="#cb11-285" aria-hidden="true" tabindex="-1"></a><span class="in">Inputs.table(rows, {</span></span>
+<span id="cb11-286"><a href="#cb11-286" aria-hidden="true" tabindex="-1"></a><span class="in">  columns: ["tile", "tile_values", "tile_max", "m_prev", "m_new", "alpha", "l_new"],</span></span>
+<span id="cb11-287"><a href="#cb11-287" aria-hidden="true" tabindex="-1"></a><span class="in">  header: {</span></span>
+<span id="cb11-288"><a href="#cb11-288" aria-hidden="true" tabindex="-1"></a><span class="in">    tile: "tile",</span></span>
+<span id="cb11-289"><a href="#cb11-289" aria-hidden="true" tabindex="-1"></a><span class="in">    tile_values: "tile values",</span></span>
+<span id="cb11-290"><a href="#cb11-290" aria-hidden="true" tabindex="-1"></a><span class="in">    tile_max: "tile max",</span></span>
+<span id="cb11-291"><a href="#cb11-291" aria-hidden="true" tabindex="-1"></a><span class="in">    m_prev: "m (prev)",</span></span>
+<span id="cb11-292"><a href="#cb11-292" aria-hidden="true" tabindex="-1"></a><span class="in">    m_new: "m (new)",</span></span>
+<span id="cb11-293"><a href="#cb11-293" aria-hidden="true" tabindex="-1"></a><span class="in">    alpha: "alpha = exp(m_prev - m_new)",</span></span>
+<span id="cb11-294"><a href="#cb11-294" aria-hidden="true" tabindex="-1"></a><span class="in">    l_new: "l (running)"</span></span>
+<span id="cb11-295"><a href="#cb11-295" aria-hidden="true" tabindex="-1"></a><span class="in">  }</span></span>
+<span id="cb11-296"><a href="#cb11-296" aria-hidden="true" tabindex="-1"></a><span class="in">})</span></span>
+<span id="cb11-297"><a href="#cb11-297" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-298"><a href="#cb11-298" aria-hidden="true" tabindex="-1"></a><span class="in">md`After ${step} tile(s): reference full-row sum-of-exps = ${</span></span>
+<span id="cb11-299"><a href="#cb11-299" aria-hidden="true" tabindex="-1"></a><span class="in">  (() =&gt; {</span></span>
+<span id="cb11-300"><a href="#cb11-300" aria-hidden="true" tabindex="-1"></a><span class="in">    const m = Math.max(...scores);</span></span>
+<span id="cb11-301"><a href="#cb11-301" aria-hidden="true" tabindex="-1"></a><span class="in">    return scores.reduce((s, v) =&gt; s + Math.exp(v - m), 0).toFixed(4);</span></span>
+<span id="cb11-302"><a href="#cb11-302" aria-hidden="true" tabindex="-1"></a><span class="in">  })()</span></span>
+<span id="cb11-303"><a href="#cb11-303" aria-hidden="true" tabindex="-1"></a><span class="in">}. The widget's final \`l\` should match.`</span></span>
+<span id="cb11-304"><a href="#cb11-304" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb11-305"><a href="#cb11-305" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-306"><a href="#cb11-306" aria-hidden="true" tabindex="-1"></a><span class="fu">### Optimization discussion</span></span>
+<span id="cb11-307"><a href="#cb11-307" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-308"><a href="#cb11-308" aria-hidden="true" tabindex="-1"></a><span class="in">`stable_softmax`</span> is memory-bound; the relevant lever is <span class="in">`num_warps`</span>. A 1024-element row in fp16 needs eight 128-lane warps to cover all loads in one issue, so <span class="in">`num_warps=4`</span> to <span class="in">`8`</span> is the right ballpark. Wider rows benefit from more warps for the reduction tree; we step <span class="in">`num_warps`</span> up at 2048 and 4096.</span>
+<span id="cb11-309"><a href="#cb11-309" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-310"><a href="#cb11-310" aria-hidden="true" tabindex="-1"></a><span class="in">`BLOCK_SIZE = triton.next_power_of_2(n_cols)`</span> is the standard pattern for "row fits in one tile" kernels. Triton's reductions are implemented for power-of-two extents; with a non-power-of-two extent you would need to pad-and-mask manually.</span>
+<span id="cb11-311"><a href="#cb11-311" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-312"><a href="#cb11-312" aria-hidden="true" tabindex="-1"></a>For <span class="in">`online_softmax`</span>, the lever is the streaming <span class="in">`BLOCK_SIZE`</span> (independent of <span class="in">`n_cols`</span>). 1024 is a sensible default on consumer GPUs: it keeps the load/store burst large enough to saturate memory while leaving register room for the running scalars. Smaller tiles increase loop overhead; larger tiles spill.</span>
+<span id="cb11-313"><a href="#cb11-313" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-314"><a href="#cb11-314" aria-hidden="true" tabindex="-1"></a>Next stop: fuse with the producer. In attention, the row of <span class="in">`x`</span> is the output of <span class="in">`Q @ K^T`</span>. Computing <span class="in">`softmax(Q @ K^T)`</span> as one kernel (FlashAttention, Chapter 14) avoids ever writing the score matrix to HBM. This chapter is the prerequisite.</span>
+<span id="cb11-315"><a href="#cb11-315" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-316"><a href="#cb11-316" aria-hidden="true" tabindex="-1"></a><span class="fu">### Common bugs</span></span>
+<span id="cb11-317"><a href="#cb11-317" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-318"><a href="#cb11-318" aria-hidden="true" tabindex="-1"></a><span class="ss">1. </span>**No max subtraction → fp16 overflow.** <span class="in">`exp(x)`</span> for <span class="in">`x &gt; 11.09`</span> is <span class="in">`+inf`</span> in fp16. With max subtraction every exponent is <span class="in">`&lt;= 0`</span>, so every output is <span class="in">`&lt;= 1`</span>. If you find yourself adding tiny epsilons to a softmax denominator, you skipped this step.</span>
+<span id="cb11-319"><a href="#cb11-319" aria-hidden="true" tabindex="-1"></a><span class="ss">2. </span>**Wrong `other=` on the load.** A <span class="in">`max`</span> reduction wants <span class="in">`other=-inf`</span>; a <span class="in">`sum`</span> reduction wants <span class="in">`other=0.0`</span>. Mixing them silently corrupts the row max and you will not see it on <span class="in">`torch.randn`</span> inputs.</span>
+<span id="cb11-320"><a href="#cb11-320" aria-hidden="true" tabindex="-1"></a><span class="ss">3. </span>**Reducing the wrong axis.** <span class="in">`tl.max(x, axis=0)`</span> reduces the only axis of a 1D tile. If you write <span class="in">`axis=1`</span> on a 1D tile, Triton errors out — but if you accidentally make the tile 2D (e.g. by loading two rows at once) you can silently reduce the wrong dimension. Print shapes when in doubt.</span>
+<span id="cb11-321"><a href="#cb11-321" aria-hidden="true" tabindex="-1"></a><span class="ss">4. </span>**`BLOCK_SIZE` unrelated to `n_cols`.** If <span class="in">`BLOCK_SIZE`</span> is smaller than <span class="in">`n_cols`</span>, the single-tile kernel will read only the first <span class="in">`BLOCK_SIZE`</span> columns of each row and produce a softmax over a subset. Always use <span class="in">`triton.next_power_of_2(n_cols)`</span> for the single-tile variant, or switch to the streaming variant.</span>
+<span id="cb11-322"><a href="#cb11-322" aria-hidden="true" tabindex="-1"></a><span class="ss">5. </span>**Accumulating fp16 sums in fp16.** Summing 4096 small fp16 numbers loses 8+ bits of precision. Cast to fp32 before the reduction, always.</span>
+<span id="cb11-323"><a href="#cb11-323" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-324"><a href="#cb11-324" aria-hidden="true" tabindex="-1"></a><span class="fu">### Exercises</span></span>
+<span id="cb11-325"><a href="#cb11-325" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-326"><a href="#cb11-326" aria-hidden="true" tabindex="-1"></a><span class="fu">#### Beginner</span></span>
+<span id="cb11-327"><a href="#cb11-327" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-328"><a href="#cb11-328" aria-hidden="true" tabindex="-1"></a><span class="ss">1. </span>**Causal mask.** Modify the kernel so that, before the max reduction, columns with index <span class="in">`&gt;= row_idx`</span> are set to <span class="in">`-inf`</span>. Verify it matches <span class="in">`torch.softmax`</span> applied to a manually masked tensor. Hint: <span class="in">`causal = col_offs &lt;= row_idx`</span>.</span>
+<span id="cb11-329"><a href="#cb11-329" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-330"><a href="#cb11-330" aria-hidden="true" tabindex="-1"></a><span class="ss">2. </span>**Temperature scaling.** Add a <span class="in">`tau`</span> argument (Python float). Compute <span class="in">`softmax(x / tau)`</span>. Hint: divide before subtracting the max.</span>
+<span id="cb11-331"><a href="#cb11-331" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-332"><a href="#cb11-332" aria-hidden="true" tabindex="-1"></a><span class="ss">3. </span>**Log-softmax.** Implement <span class="in">`log_softmax(x) = x - m - log(sum(exp(x - m)))`</span>. Compare against <span class="in">`torch.log_softmax`</span>. Hint: emit <span class="in">`(x - m) - tl.log(denom)`</span>.</span>
+<span id="cb11-333"><a href="#cb11-333" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-334"><a href="#cb11-334" aria-hidden="true" tabindex="-1"></a><span class="fu">#### Intermediate</span></span>
+<span id="cb11-335"><a href="#cb11-335" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-336"><a href="#cb11-336" aria-hidden="true" tabindex="-1"></a><span class="ss">4. </span>**Variable-length rows.** Take an extra <span class="in">`seq_lens: (M,)`</span> int32 tensor. Each program treats only the first <span class="in">`seq_lens[i]`</span> columns as valid; the rest must not contribute to the max or sum. Hint: <span class="in">`seq_len = tl.load(seq_lens_ptr + row_idx)`</span>; build the mask from <span class="in">`seq_len`</span> instead of <span class="in">`n_cols`</span>.</span>
+<span id="cb11-337"><a href="#cb11-337" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-338"><a href="#cb11-338" aria-hidden="true" tabindex="-1"></a><span class="ss">5. </span>**Column softmax.** Implement softmax along <span class="in">`axis=0`</span> for a 2D input. Why is this harder in Triton? Hint: one program per column means strided loads; the reduction now runs over rows, and the layout is no longer coalesced unless you transpose first.</span>
+<span id="cb11-339"><a href="#cb11-339" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-340"><a href="#cb11-340" aria-hidden="true" tabindex="-1"></a><span class="fu">#### Advanced</span></span>
+<span id="cb11-341"><a href="#cb11-341" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-342"><a href="#cb11-342" aria-hidden="true" tabindex="-1"></a><span class="ss">6. </span>**Two-pass vs single-pass online softmax.** The streaming kernel above makes two passes. Try a single-pass variant that maintains the running numerator and rescales every tile by <span class="in">`alpha`</span>. Benchmark both on <span class="in">`M=2048, N=32768`</span> in fp16 and report the wall-clock and the worst-case error vs <span class="in">`torch.softmax`</span>. The interesting finding: the single-pass variant needs to write either the unscaled exps or the rescaled numerator somewhere — registers (only works if the row fits) or HBM (defeats the purpose). Discuss when each makes sense.</span>
+<span id="cb11-343"><a href="#cb11-343" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb11-344"><a href="#cb11-344" aria-hidden="true" tabindex="-1"></a>Worked solutions live in <span class="in">`solutions/ch05_solutions.py`</span>.</span>
+</code><button title="Copy to Clipboard" class="code-copy-button" data-in-quarto-modal=""><i class="bi"></i></button></pre></div>
+</div></div></div></div></div>
+</div> <!-- /content -->
+
+
+
+
+</body></html>

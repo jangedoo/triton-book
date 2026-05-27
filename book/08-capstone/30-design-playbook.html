@@ -1,0 +1,1595 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"><head>
+
+<meta charset="utf-8">
+<meta name="generator" content="quarto-1.5.57">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+
+<title>32&nbsp; Chapter 30: Final Kernel Design Playbook – Learning Triton by Rebuilding Modern LLM Kernels</title>
+<style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+  width: 0.8em;
+  margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
+  vertical-align: middle;
+}
+/* CSS for syntax highlighting */
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { display: inline-block; text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+  { counter-reset: source-line 0; }
+pre.numberSource code > span
+  { position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+  { content: counter(source-line);
+    position: relative; left: -1em; text-align: right; vertical-align: baseline;
+    border: none; display: inline-block;
+    -webkit-touch-callout: none; -webkit-user-select: none;
+    -khtml-user-select: none; -moz-user-select: none;
+    -ms-user-select: none; user-select: none;
+    padding: 0 4px; width: 4em;
+  }
+pre.numberSource { margin-left: 3em;  padding-left: 4px; }
+div.sourceCode
+  {   }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+</style>
+
+
+<script src="../../site_libs/quarto-nav/quarto-nav.js"></script>
+<script src="../../site_libs/quarto-nav/headroom.min.js"></script>
+<script src="../../site_libs/clipboard/clipboard.min.js"></script>
+<script src="../../site_libs/quarto-search/autocomplete.umd.js"></script>
+<script src="../../site_libs/quarto-search/fuse.min.js"></script>
+<script src="../../site_libs/quarto-search/quarto-search.js"></script>
+<meta name="quarto:offset" content="../../">
+<link href="../../book/appendix-study-plan.html" rel="next">
+<link href="../../book/08-capstone/29-replace-transformer-pieces.html" rel="prev">
+<script src="../../site_libs/quarto-html/quarto.js"></script>
+<script src="../../site_libs/quarto-html/popper.min.js"></script>
+<script src="../../site_libs/quarto-html/tippy.umd.min.js"></script>
+<script src="../../site_libs/quarto-html/anchor.min.js"></script>
+<link href="../../site_libs/quarto-html/tippy.css" rel="stylesheet">
+<link href="../../site_libs/quarto-html/quarto-syntax-highlighting.css" rel="stylesheet" id="quarto-text-highlighting-styles">
+<script src="../../site_libs/bootstrap/bootstrap.min.js"></script>
+<link href="../../site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
+<link href="../../site_libs/bootstrap/bootstrap.min.css" rel="stylesheet" id="quarto-bootstrap" data-mode="light">
+<script id="quarto-search-options" type="application/json">{
+  "location": "sidebar",
+  "copy-button": false,
+  "collapse-after": 3,
+  "panel-placement": "start",
+  "type": "textbox",
+  "limit": 50,
+  "keyboard-shortcut": [
+    "f",
+    "/",
+    "s"
+  ],
+  "show-item-context": false,
+  "language": {
+    "search-no-results-text": "No results",
+    "search-matching-documents-text": "matching documents",
+    "search-copy-link-title": "Copy link to search",
+    "search-hide-matches-text": "Hide additional matches",
+    "search-more-match-text": "more match in this document",
+    "search-more-matches-text": "more matches in this document",
+    "search-clear-button-title": "Clear",
+    "search-text-placeholder": "",
+    "search-detached-cancel-button-title": "Cancel",
+    "search-submit-button-title": "Submit",
+    "search-label": "Search"
+  }
+}</script>
+
+
+</head>
+
+<body class="nav-sidebar floating">
+
+<div id="quarto-search-results"></div>
+  <header id="quarto-header" class="headroom fixed-top">
+  <nav class="quarto-secondary-nav">
+    <div class="container-fluid d-flex">
+      <button type="button" class="quarto-btn-toggle btn" data-bs-toggle="collapse" role="button" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">
+        <i class="bi bi-layout-text-sidebar-reverse"></i>
+      </button>
+        <nav class="quarto-page-breadcrumbs" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="../../book/08-capstone/28-mini-library.html">Part 8: Capstone Projects</a></li><li class="breadcrumb-item"><a href="../../book/08-capstone/30-design-playbook.html"><span class="chapter-number">32</span>&nbsp; <span class="chapter-title">Chapter 30: Final Kernel Design Playbook</span></a></li></ol></nav>
+        <a class="flex-grow-1" role="navigation" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">      
+        </a>
+      <button type="button" class="btn quarto-search-button" aria-label="Search" onclick="window.quartoOpenSearch();">
+        <i class="bi bi-search"></i>
+      </button>
+    </div>
+  </nav>
+</header>
+<!-- content -->
+<div id="quarto-content" class="quarto-container page-columns page-rows-contents page-layout-article">
+<!-- sidebar -->
+  <nav id="quarto-sidebar" class="sidebar collapse collapse-horizontal quarto-sidebar-collapse-item sidebar-navigation floating overflow-auto">
+    <div class="pt-lg-2 mt-2 text-left sidebar-header">
+    <div class="sidebar-title mb-0 py-0">
+      <a href="../../">Learning Triton by Rebuilding Modern LLM Kernels</a> 
+    </div>
+      </div>
+        <div class="mt-2 flex-shrink-0 align-items-center">
+        <div class="sidebar-search">
+        <div id="quarto-search" class="" title="Search"></div>
+        </div>
+        </div>
+    <div class="sidebar-menu-container"> 
+    <ul class="list-unstyled mt-1">
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../index.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">1</span>&nbsp; <span class="chapter-title">Learning Triton by Rebuilding Modern LLM Kernels</span></span></a>
+  </div>
+</li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-1" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 0: Orientation</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-1" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-1" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/00-orientation/00-why-triton.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">2</span>&nbsp; <span class="chapter-title">Chapter 00: Why Triton Exists</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/00-orientation/01-setup.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">3</span>&nbsp; <span class="chapter-title">Chapter 01: Environment Setup</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-2" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 1: Triton Fundamentals</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-2" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-2" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/01-fundamentals/02-mental-model.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">4</span>&nbsp; <span class="chapter-title">Chapter 2: The Triton Mental Model</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/01-fundamentals/03-memory-pointers-strides.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">5</span>&nbsp; <span class="chapter-title">Chapter 3: Memory, Pointers, Strides, and Masks</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/01-fundamentals/04-reductions.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">6</span>&nbsp; <span class="chapter-title">Chapter 4: Reductions</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-3" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 2: Basic Neural Network Kernels</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-3" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-3" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/02-basic-nn/05-fused-softmax.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">7</span>&nbsp; <span class="chapter-title">Chapter 5: Fused Softmax</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/02-basic-nn/06-layernorm.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">8</span>&nbsp; <span class="chapter-title">Chapter 6: LayerNorm</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/02-basic-nn/07-rmsnorm.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">9</span>&nbsp; <span class="chapter-title">Chapter 7: RMSNorm</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/02-basic-nn/08-activations-swiglu.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">10</span>&nbsp; <span class="chapter-title">Chapter 8: Activation Functions and Gated MLPs</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-4" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 3: Matrix Multiplication</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-4" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-4" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/03-matmul/09-matmul.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">11</span>&nbsp; <span class="chapter-title">Chapter 9: Matmul From Scratch</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/03-matmul/10-batched-matmul-linear.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">12</span>&nbsp; <span class="chapter-title">Chapter 10: Batched Matmul and Linear Layers</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/03-matmul/11-persistent-matmul.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">13</span>&nbsp; <span class="chapter-title">Chapter 11: Persistent Matmul and Advanced Matmul Concepts</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-5" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 4: Attention and Transformer Kernels</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-5" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-5" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/12-attention-math.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">14</span>&nbsp; <span class="chapter-title">Chapter 12: Attention Math Refresher for Kernel Writers</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/13-naive-attention.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">15</span>&nbsp; <span class="chapter-title">Chapter 13: Naive Attention in PyTorch and Triton Pieces</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/14-flashattention-fwd.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">16</span>&nbsp; <span class="chapter-title">Chapter 14: FlashAttention Forward in Triton</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/15-attention-backward.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">17</span>&nbsp; <span class="chapter-title">Chapter 15: Attention Backward — Conceptual and Optional Implementation</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/16-rope-alibi.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">18</span>&nbsp; <span class="chapter-title">Chapter 16: Rotary Positional Embeddings, ALiBi, and Position Kernels</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/17-kv-cache.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">19</span>&nbsp; <span class="chapter-title">Chapter 17: KV Cache Kernels for Inference</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-6" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 5: Modern LLM Layer Fusion</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-6" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-6" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/05-llm-fusion/18-residual-rmsnorm.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">20</span>&nbsp; <span class="chapter-title">Chapter 18: Residual Add + RMSNorm Fusion</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/05-llm-fusion/19-fused-bias-act-gate.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">21</span>&nbsp; <span class="chapter-title">Chapter 19: Fused Bias + Activation + Gate</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/05-llm-fusion/20-cross-entropy.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">22</span>&nbsp; <span class="chapter-title">Chapter 20: Cross Entropy and Logits Kernels</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/05-llm-fusion/21-sampling.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">23</span>&nbsp; <span class="chapter-title">Chapter 21: Sampling Kernels for Inference</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-7" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 6: Quantization-Oriented Kernels</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-7" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-7" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/06-quantization/22-low-precision.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">24</span>&nbsp; <span class="chapter-title">Chapter 22: Low Precision Basics</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/06-quantization/23-dequant-matmul.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">25</span>&nbsp; <span class="chapter-title">Chapter 23: Int8 / FP8 Style Dequant + Matmul Concepts</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-8" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 7: Debugging, Testing, Profiling, Optimization</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-8" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-8" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/07-debug-perf/24-debugging.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">26</span>&nbsp; <span class="chapter-title">Chapter 24: Debugging Triton Kernels</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/07-debug-perf/25-benchmarking.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">27</span>&nbsp; <span class="chapter-title">Chapter 25: Benchmarking Correctly</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/07-debug-perf/26-autotuning.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">28</span>&nbsp; <span class="chapter-title">Chapter 26: Autotuning</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/07-debug-perf/27-perf-tuning.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">29</span>&nbsp; <span class="chapter-title">Chapter 27: Performance Tuning Mental Model</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-9" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 8: Capstone Projects</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-9" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-9" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/08-capstone/28-mini-library.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">30</span>&nbsp; <span class="chapter-title">Chapter 28: Build a Mini Triton LLM Kernel Library</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/08-capstone/29-replace-transformer-pieces.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">31</span>&nbsp; <span class="chapter-title">Chapter 29: Replace Pieces of a Tiny Transformer</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/08-capstone/30-design-playbook.html" class="sidebar-item-text sidebar-link active">
+ <span class="menu-text"><span class="chapter-number">32</span>&nbsp; <span class="chapter-title">Chapter 30: Final Kernel Design Playbook</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/appendix-study-plan.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">33</span>&nbsp; <span class="chapter-title">Appendix: Study Plan, Memory Kernels, and the Capstone Challenge</span></span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../kernel_checklist.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">34</span>&nbsp; <span class="chapter-title">Triton Kernel Design Checklist</span></span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../llm_kernel_map.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">35</span>&nbsp; <span class="chapter-title">LLM Component → Triton Kernel Map</span></span></a>
+  </div>
+</li>
+    </ul>
+    </div>
+</nav>
+<div id="quarto-sidebar-glass" class="quarto-sidebar-collapse-item" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item"></div>
+<!-- margin-sidebar -->
+    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar">
+        <nav id="TOC" role="doc-toc" class="toc-active">
+    <h2 id="toc-title">Table of contents</h2>
+   
+  <ul>
+  <li><a href="#the-fifteen-step-playbook" id="toc-the-fifteen-step-playbook" class="nav-link active" data-scroll-target="#the-fifteen-step-playbook"><span class="header-section-number">32.0.1</span> The fifteen-step playbook</a></li>
+  <li><a href="#the-checklist-inline" id="toc-the-checklist-inline" class="nav-link" data-scroll-target="#the-checklist-inline"><span class="header-section-number">32.0.2</span> The checklist, inline</a></li>
+  <li><a href="#summary-table-llm-components-to-library-functions" id="toc-summary-table-llm-components-to-library-functions" class="nav-link" data-scroll-target="#summary-table-llm-components-to-library-functions"><span class="header-section-number">32.0.3</span> Summary table: LLM components to library functions</a></li>
+  <li><a href="#where-to-look-next" id="toc-where-to-look-next" class="nav-link" data-scroll-target="#where-to-look-next"><span class="header-section-number">32.0.4</span> Where to look next</a></li>
+  </ul>
+</nav>
+    </div>
+<!-- main -->
+<main class="content" id="quarto-document-content">
+
+<header id="title-block-header" class="quarto-title-block default"><nav class="quarto-page-breadcrumbs quarto-title-breadcrumbs d-none d-lg-block" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="../../book/08-capstone/28-mini-library.html">Part 8: Capstone Projects</a></li><li class="breadcrumb-item"><a href="../../book/08-capstone/30-design-playbook.html"><span class="chapter-number">32</span>&nbsp; <span class="chapter-title">Chapter 30: Final Kernel Design Playbook</span></a></li></ol></nav>
+<div class="quarto-title">
+<div class="quarto-title-block"><div><h1 class="title"><span class="chapter-number">32</span>&nbsp; <span class="chapter-title">Chapter 30: Final Kernel Design Playbook</span></h1><button type="button" class="btn code-tools-button" id="quarto-code-tools-source"><i class="bi"></i> Code</button></div></div>
+</div>
+
+
+
+<div class="quarto-title-meta">
+
+    
+  
+    
+  </div>
+  
+
+
+</header>
+
+
+<p>This is the chapter you will keep coming back to. The previous twenty-nine chapters taught the moves. This one organizes them into a recipe you can follow under deadline, when the layer is unfamiliar and the GPU is unforgiving.</p>
+<p>The recipe has fifteen steps. They are in order on purpose. Every shortcut you take here, you pay for in debugging time later — usually at 2 AM, on a Sunday, the day before a deadline.</p>
+<p>We walk all fifteen steps using one running example: a <strong>fused residual + LayerNorm + dropout</strong> kernel. The reference lives at <code>src/ch30_playbook/fused_residual_ln_dropout.py</code>. Read it alongside this chapter.</p>
+<section id="the-fifteen-step-playbook" class="level3" data-number="32.0.1">
+<h3 data-number="32.0.1" class="anchored" data-anchor-id="the-fifteen-step-playbook"><span class="header-section-number">32.0.1</span> The fifteen-step playbook</h3>
+<section id="write-the-pytorch-reference" class="level4" data-number="32.0.1.1">
+<h4 data-number="32.0.1.1" class="anchored" data-anchor-id="write-the-pytorch-reference"><span class="header-section-number">32.0.1.1</span> 1. Write the PyTorch reference</h4>
+<p><strong>What to do.</strong> Write the layer in plain PyTorch. The clearest version you can. No premature optimization. This is your oracle: every test compares against it.</p>
+<p><strong>Worked example.</strong></p>
+<div id="c6d1230b" class="cell">
+<div class="sourceCode cell-code" id="cb1"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> fused_residual_ln_dropout_ref(x, residual, weight, bias, p, eps):</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a>    h <span class="op">=</span> x <span class="op">+</span> residual                                     <span class="co"># residual stream</span></span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>    n <span class="op">=</span> F.layer_norm(h, (h.shape[<span class="op">-</span><span class="dv">1</span>],), weight, bias, eps<span class="op">=</span>eps)</span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> p <span class="op">&gt;</span> <span class="dv">0</span>:</span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a>        m <span class="op">=</span> (torch.rand_like(n) <span class="op">&lt;</span> (<span class="dv">1</span> <span class="op">-</span> p)).to(n.dtype) <span class="op">/</span> (<span class="dv">1</span> <span class="op">-</span> p)</span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a>        n <span class="op">=</span> n <span class="op">*</span> m</span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> h, n                                          <span class="co"># return both</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+<p><strong>Common pitfall.</strong> “I will skip the reference and tune the Triton kernel directly.” You will spend the next four hours arguing with yourself about whether a 0.003 mismatch is a real bug or a tolerance issue. Write the reference.</p>
+<p><strong>Chapter link.</strong> Chapter 5 on softmax shows the pattern: PyTorch reference first, Triton second.</p>
+</section>
+<section id="identify-inputsoutputs-and-their-shapes" class="level4" data-number="32.0.1.2">
+<h4 data-number="32.0.1.2" class="anchored" data-anchor-id="identify-inputsoutputs-and-their-shapes"><span class="header-section-number">32.0.1.2</span> 2. Identify inputs/outputs and their shapes</h4>
+<p><strong>What to do.</strong> Make a table. Tensor name, shape, dtype, role (input / output / scratch). Pin down which dims are batch, which are feature, which are reduced.</p>
+<p><strong>Worked example.</strong></p>
+<table class="caption-top table">
+<thead>
+<tr class="header">
+<th>name</th>
+<th>shape</th>
+<th>dtype</th>
+<th>role</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>x</code></td>
+<td>(M, N)</td>
+<td>fp16</td>
+<td>input</td>
+</tr>
+<tr class="even">
+<td><code>residual</code></td>
+<td>(M, N)</td>
+<td>fp16</td>
+<td>input</td>
+</tr>
+<tr class="odd">
+<td><code>weight</code></td>
+<td>(N,)</td>
+<td>fp16</td>
+<td>input (param)</td>
+</tr>
+<tr class="even">
+<td><code>bias</code></td>
+<td>(N,)</td>
+<td>fp16</td>
+<td>input (param)</td>
+</tr>
+<tr class="odd">
+<td><code>h</code></td>
+<td>(M, N)</td>
+<td>fp16</td>
+<td>output (residual)</td>
+</tr>
+<tr class="even">
+<td><code>y</code></td>
+<td>(M, N)</td>
+<td>fp16</td>
+<td>output (normed)</td>
+</tr>
+</tbody>
+</table>
+<p><code>M = batch * sequence</code>. The kernel does not care; it flattens.</p>
+<p><strong>Common pitfall.</strong> Forgetting that the kernel produces two outputs. Many fused kernels do.</p>
+<p><strong>Chapter link.</strong> Chapter 18 (residual + RMSNorm) is the canonical two-output case.</p>
+</section>
+<section id="identify-shape-patterns-and-the-reduction-axis" class="level4" data-number="32.0.1.3">
+<h4 data-number="32.0.1.3" class="anchored" data-anchor-id="identify-shape-patterns-and-the-reduction-axis"><span class="header-section-number">32.0.1.3</span> 3. Identify shape patterns and the reduction axis</h4>
+<p><strong>What to do.</strong> Which dims are mapped over independently? Which dim is <em>reduced</em> (mean, max, sum)? Mapped dims become grid dims; reduced dims become loops or block-wise reductions inside the kernel.</p>
+<p><strong>Worked example.</strong> The N axis is reduced (mean and variance go over it). The M axis is mapped over: each row’s normalization is independent of every other row.</p>
+<p><strong>Common pitfall.</strong> Confusing “broadcast” with “reduce”. <code>weight</code> is broadcast across rows (one weight vector for all <code>M</code>); the N axis inside the row is reduced.</p>
+<p><strong>Chapter link.</strong> Chapter 4 on reductions.</p>
+</section>
+<section id="decide-programblock-mapping" class="level4" data-number="32.0.1.4">
+<h4 data-number="32.0.1.4" class="anchored" data-anchor-id="decide-programblock-mapping"><span class="header-section-number">32.0.1.4</span> 4. Decide program/block mapping</h4>
+<p><strong>What to do.</strong> Pick the grid. The default for a row-wise layer is “one program per row”. For 2D tile layers, it is “one program per (row tile, col tile)”. For attention, it is “one program per (batch, head, query tile)”.</p>
+<p><strong>Worked example.</strong> <code>grid = (M,)</code>. One program owns one row. <code>BLOCK_SIZE = next_pow2(N)</code>, one block covers the whole row. If <code>N</code> is larger than your hardware’s per-program register/SRAM budget, switch to a multi-block strategy (Chapter 5 covers this for softmax).</p>
+<p><strong>Common pitfall.</strong> Choosing the grid based on tensor shape alone, then discovering that one program needs more SRAM than the hardware has. Check the register budget early.</p>
+<p><strong>Chapter link.</strong> Chapter 2 on the mental model; Chapter 7 on RMSNorm for the row-per-program pattern.</p>
+</section>
+<section id="decide-what-each-program-loads" class="level4" data-number="32.0.1.5">
+<h4 data-number="32.0.1.5" class="anchored" data-anchor-id="decide-what-each-program-loads"><span class="header-section-number">32.0.1.5</span> 5. Decide what each program loads</h4>
+<p><strong>What to do.</strong> Enumerate every <code>tl.load</code>. For each, write down what the pointer expression looks like and what mask you will use.</p>
+<p><strong>Worked example.</strong> One program (row <code>pid</code>) loads:</p>
+<ul>
+<li><code>x[pid, :]</code> — <code>(BLOCK_SIZE,)</code>, masked by <code>offs &lt; N</code>, fp16, cast to fp32.</li>
+<li><code>residual[pid, :]</code> — same as above.</li>
+<li><code>weight[:]</code> — <code>(BLOCK_SIZE,)</code>, masked, fp16, cast to fp32.</li>
+<li><code>bias[:]</code> — same as <code>weight</code>.</li>
+</ul>
+<p><strong>Common pitfall.</strong> Loading <code>weight</code> and <code>bias</code> inside an inner loop instead of once at the top of the program. They are tiny; load them once.</p>
+<p><strong>Chapter link.</strong> Chapter 3 on pointers and strides.</p>
+</section>
+<section id="decide-what-each-program-computes" class="level4" data-number="32.0.1.6">
+<h4 data-number="32.0.1.6" class="anchored" data-anchor-id="decide-what-each-program-computes"><span class="header-section-number">32.0.1.6</span> 6. Decide what each program computes</h4>
+<p><strong>What to do.</strong> Pseudocode the math. Mark every place the dtype changes. Mark every reduction.</p>
+<p><strong>Worked example.</strong></p>
+<pre><code>h        = x + residual                  (fp32, BLOCK_SIZE)
+mean     = sum(h) / N                    (fp32, scalar)
+centered = (h - mean) * mask             (fp32, BLOCK_SIZE)
+var      = sum(centered ** 2) / N        (fp32, scalar)
+inv      = rsqrt(var + eps)              (fp32, scalar)
+n        = centered * inv * weight + bias (fp32, BLOCK_SIZE)
+if dropout:
+    rand = tl.rand(seed, row * BLOCK_SIZE + offs)  (fp32, BLOCK_SIZE)
+    n    = n * (rand &lt; p_keep) / p_keep</code></pre>
+<p><strong>Common pitfall.</strong> Computing <code>centered</code> without masking the out-of-range lanes back to zero before the variance sum. Masked-off lanes will contribute garbage to the reduction.</p>
+<p><strong>Chapter link.</strong> Chapter 6 on LayerNorm for the mean-then-variance pattern; Chapter 5 for the “shift by max” trick that motivates fp32 in reductions.</p>
+</section>
+<section id="decide-what-each-program-stores" class="level4" data-number="32.0.1.7">
+<h4 data-number="32.0.1.7" class="anchored" data-anchor-id="decide-what-each-program-stores"><span class="header-section-number">32.0.1.7</span> 7. Decide what each program stores</h4>
+<p><strong>What to do.</strong> Two outputs need two <code>tl.store</code>s. Same mask as the input loads.</p>
+<p><strong>Worked example.</strong></p>
+<pre><code>tl.store(h_ptr + row * stride_hm + offs, h, mask)
+tl.store(y_ptr + row * stride_ym + offs, n, mask)</code></pre>
+<p><strong>Common pitfall.</strong> Forgetting to mask the store and scribbling past the last valid element. Memory checkers will not catch this on power-of-two <code>N</code>; it manifests as a flaky test on <code>N=257</code>.</p>
+<p><strong>Chapter link.</strong> Chapter 3 on masks.</p>
+</section>
+<section id="add-masks-for-boundary-conditions" class="level4" data-number="32.0.1.8">
+<h4 data-number="32.0.1.8" class="anchored" data-anchor-id="add-masks-for-boundary-conditions"><span class="header-section-number">32.0.1.8</span> 8. Add masks for boundary conditions</h4>
+<p><strong>What to do.</strong> Every load and store touching a partial tile needs <code>mask=</code>. Every reduction whose summand could include masked-off lanes needs <code>other=</code> set to the reduction’s identity (<code>0.0</code> for sum, <code>-inf</code> for max).</p>
+<p><strong>Worked example.</strong> <code>mask = offs &lt; N</code>. Load with <code>other=0.0</code> (because we are summing). The dropout mask uses the same <code>mask</code>; out-of-range lanes are not stored, so their RNG draws are wasted but harmless.</p>
+<p><strong>Common pitfall.</strong> Using <code>other=0.0</code> for a max reduction or <code>other=-inf</code> for a sum. The kernel runs, gives wrong answers, and passes any test where <code>N</code> is a multiple of <code>BLOCK_SIZE</code>.</p>
+<p><strong>Chapter link.</strong> Chapter 3 on masks and <code>other=</code>.</p>
+</section>
+<section id="decide-dtype-policy" class="level4" data-number="32.0.1.9">
+<h4 data-number="32.0.1.9" class="anchored" data-anchor-id="decide-dtype-policy"><span class="header-section-number">32.0.1.9</span> 9. Decide dtype policy</h4>
+<p><strong>What to do.</strong> Write down: input dtype, accumulator dtype, output dtype. For every reduction, sum in fp32. For softmax exponents, fp32. For matmul accumulator, fp32 unless you have explicit fp64 needs.</p>
+<p><strong>Worked example.</strong> Input fp16. Compute fp32 (loads cast on read). Output fp16 (stores cast on write). Weight/bias loaded in their stored dtype, cast to fp32 for the multiply-add.</p>
+<p><strong>Common pitfall.</strong> Accumulating fp16 inputs in fp16. The variance of even moderate-magnitude activations will saturate fp16’s range.</p>
+<p><strong>Chapter link.</strong> Chapter 7 on RMSNorm spells out the fp32 accumulator policy.</p>
+</section>
+<section id="test-tiny-shapes-first" class="level4" data-number="32.0.1.10">
+<h4 data-number="32.0.1.10" class="anchored" data-anchor-id="test-tiny-shapes-first"><span class="header-section-number">32.0.1.10</span> 10. Test tiny shapes first</h4>
+<p><strong>What to do.</strong> Pick <code>N=7, M=3</code>. Run the kernel. Compare to the reference element-wise. If this fails you cannot debug a larger shape.</p>
+<p><strong>Worked example.</strong> The Chapter 30 test file’s first case is <code>N=7</code>. It catches mask bugs and stride bugs before anything else.</p>
+<p><strong>Common pitfall.</strong> Jumping to <code>N=4096</code> and seeing a 1e-3 deviation, then spending an hour wondering if it is precision or correctness. Start small.</p>
+<p><strong>Chapter link.</strong> Chapter 24 on debugging.</p>
+</section>
+<section id="test-weird-shapes" class="level4" data-number="32.0.1.11">
+<h4 data-number="32.0.1.11" class="anchored" data-anchor-id="test-weird-shapes"><span class="header-section-number">32.0.1.11</span> 11. Test weird shapes</h4>
+<p><strong>What to do.</strong> Non-power-of-two <code>N</code> (e.g.&nbsp;511, 1023). <code>N</code> equal to <code>BLOCK_SIZE</code>, <code>BLOCK_SIZE - 1</code>, <code>BLOCK_SIZE + 1</code>. Non-contiguous inputs if you claim to support them (otherwise mark them <code>xfail</code> with a comment).</p>
+<p><strong>Worked example.</strong> <code>tests/test_ch30_playbook.py</code> parametrizes over <code>N in [7, 64, 511, 1024]</code>. 7 is hand-traceable, 64 is power-of-two, 511 forces the mask, 1024 is the realistic case.</p>
+<p><strong>Common pitfall.</strong> “It works on <code>N=4096</code> so it works.” It does not. The mask path is a separate code path and you must exercise it.</p>
+<p><strong>Chapter link.</strong> Chapter 24 on debugging.</p>
+</section>
+<section id="benchmark" class="level4" data-number="32.0.1.12">
+<h4 data-number="32.0.1.12" class="anchored" data-anchor-id="benchmark"><span class="header-section-number">32.0.1.12</span> 12. Benchmark</h4>
+<p><strong>What to do.</strong> <code>triton.testing.do_bench</code> against the PyTorch reference. Same shapes. Median ms. Compute GB/s for memory-bound kernels and TFLOP/s for compute-bound ones. Report both numbers, plus the GPU you ran on.</p>
+<p><strong>Worked example.</strong> See <code>benchmarks/bench_ch30_playbook.py</code>. Four shapes, fp16, dropout p=0.1. The Triton kernel saves the round-trip of <code>h</code> between the residual op and the LayerNorm, and the round-trip of <code>n</code> between the LayerNorm and the dropout. Both wins are real and measurable.</p>
+<p><strong>Common pitfall.</strong> Benchmarking the kernel and reporting “10x faster” because PyTorch was running on fp32 and your kernel on fp16. Apples to apples.</p>
+<p><strong>Chapter link.</strong> Chapter 25 on benchmarking.</p>
+</section>
+<section id="optimize" class="level4" data-number="32.0.1.13">
+<h4 data-number="32.0.1.13" class="anchored" data-anchor-id="optimize"><span class="header-section-number">32.0.1.13</span> 13. Optimize</h4>
+<p><strong>What to do.</strong> Identify the bound (memory or compute). Try larger <code>BLOCK_SIZE</code>, more <code>num_warps</code>, more <code>num_stages</code>. Look for fusion opportunities with neighboring ops.</p>
+<p><strong>Worked example.</strong> Our kernel is memory-bound (one read per input byte, one write per output byte). <code>BLOCK_SIZE</code> is already covering the whole row; the knobs left are <code>num_warps</code> (try 2, 4, 8) and potentially fusing the <em>next</em> layer’s residual-add into the same kernel. (At which point you are reinventing Chapter 18.)</p>
+<p><strong>Common pitfall.</strong> Optimizing before establishing the baseline. Without the baseline you cannot tell whether a change is a 5% win or a 5% loss.</p>
+<p><strong>Chapter link.</strong> Chapter 27 on perf tuning.</p>
+</section>
+<section id="autotune" class="level4" data-number="32.0.1.14">
+<h4 data-number="32.0.1.14" class="anchored" data-anchor-id="autotune"><span class="header-section-number">32.0.1.14</span> 14. Autotune</h4>
+<p><strong>What to do.</strong> Wrap the kernel with <code>triton.autotune</code> over a handful of configs that span the realistic shape space. Three to six configs is usually enough. <code>key=</code> should list the shape dims the optimal config depends on.</p>
+<p><strong>Worked example.</strong> For our kernel:</p>
+<div id="5152cb42" class="cell">
+<div class="sourceCode cell-code" id="cb4"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.autotune</span>(</span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>    configs<span class="op">=</span>[</span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>        triton.Config({}, num_warps<span class="op">=</span><span class="dv">2</span>),</span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a>        triton.Config({}, num_warps<span class="op">=</span><span class="dv">4</span>),</span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a>        triton.Config({}, num_warps<span class="op">=</span><span class="dv">8</span>),</span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a>    ],</span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a>    key<span class="op">=</span>[<span class="st">"N"</span>],</span>
+<span id="cb4-8"><a href="#cb4-8" aria-hidden="true" tabindex="-1"></a>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+<p><code>BLOCK_SIZE</code> is computed from <code>N</code> at launch time, so it does not appear in the autotuner.</p>
+<p><strong>Common pitfall.</strong> Autotuning over fifty configs. Every config adds compile time and warmup overhead. Three to six is usually the sweet spot.</p>
+<p><strong>Chapter link.</strong> Chapter 26 on autotuning.</p>
+</section>
+<section id="document-limitations" class="level4" data-number="32.0.1.15">
+<h4 data-number="32.0.1.15" class="anchored" data-anchor-id="document-limitations"><span class="header-section-number">32.0.1.15</span> 15. Document limitations</h4>
+<p><strong>What to do.</strong> Docstring on the launcher, in three sections: supported shapes, supported dtypes, known limitations. Add a “future work” note for anything you punted on.</p>
+<p><strong>Worked example.</strong></p>
+<pre><code>"""
+Supported shapes: any (..., N) with N &lt;= 16384.
+Supported dtypes: fp16, bf16, fp32.
+Limitations:
+  - dropout is forward-only; no autograd support.
+  - row width N &gt; 16384 will OOM the SRAM; split rows or move to a
+    multi-block reduction (Chapter 5 pattern).
+"""</code></pre>
+<p><strong>Common pitfall.</strong> Documenting at launch time and never updating. Update the docstring when you add a feature or hit a regression.</p>
+<p><strong>Chapter link.</strong> Chapter 25 on benchmark reporting; the checklist in <code>kernel_checklist.qmd</code>.</p>
+</section>
+</section>
+<section id="the-checklist-inline" class="level3" data-number="32.0.2">
+<h3 data-number="32.0.2" class="anchored" data-anchor-id="the-checklist-inline"><span class="header-section-number">32.0.2</span> The checklist, inline</h3>
+<p>Keep this on your wall. It is the Phase summary of <code>kernel_checklist.qmd</code>.</p>
+<p><strong>Phase 1 — Design.</strong> Plain-math statement. PyTorch oracle. Shape table. Reduction axis. One-program ownership. Grid shape. Block sizes. Accumulator dtype. SRAM vs registers. Numerical hazards listed.</p>
+<p><strong>Phase 2 — Implement.</strong> Kernel signature. <code>pid</code> per axis. Offsets from <code>pid</code> * <code>stride</code>. <code>tl.arange</code> per-element. Masks on partial tiles. <code>tl.load</code> with safe <code>other=</code>. Compute. <code>tl.store</code> with mask. Launcher allocates output and validates inputs.</p>
+<p><strong>Phase 3 — Test.</strong> Tiny shape. Power-of-two. Non-power-of-two. Boundary (<code>BS</code>, <code>BS-1</code>, <code>BS+1</code>). Every dtype. Non-contiguous if supported. Compare to PyTorch with <code>assert_close</code> and dtype-appropriate tolerances.</p>
+<p><strong>Phase 4 — Optimize.</strong> Baseline. Identify bound. Sweep <code>BLOCK_SIZE</code>. Sweep <code>num_warps</code>. Sweep <code>num_stages</code>. Autotune. Re-measure.</p>
+<p><strong>Phase 5 — Document.</strong> Signature, shapes, dtypes, hardware. Numerical contract. Benchmark numbers and the GPU.</p>
+</section>
+<section id="summary-table-llm-components-to-library-functions" class="level3" data-number="32.0.3">
+<h3 data-number="32.0.3" class="anchored" data-anchor-id="summary-table-llm-components-to-library-functions"><span class="header-section-number">32.0.3</span> Summary table: LLM components to library functions</h3>
+<p>When you sit down to wire up a new model, this is the lookup table.</p>
+<table class="caption-top table">
+<colgroup>
+<col style="width: 45%">
+<col style="width: 11%">
+<col style="width: 43%">
+</colgroup>
+<thead>
+<tr class="header">
+<th>Component</th>
+<th>Chapter</th>
+<th>Library function</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td>Embedding lookup</td>
+<td>3</td>
+<td>(PyTorch is fine)</td>
+</tr>
+<tr class="even">
+<td>Softmax (logits, attention)</td>
+<td>5</td>
+<td><code>mini_triton_llm.softmax</code></td>
+</tr>
+<tr class="odd">
+<td>LayerNorm</td>
+<td>6</td>
+<td>(Chapter 6 kernel, not in lib)</td>
+</tr>
+<tr class="even">
+<td>RMSNorm</td>
+<td>7</td>
+<td><code>mini_triton_llm.rmsnorm</code></td>
+</tr>
+<tr class="odd">
+<td>SiLU / SwiGLU</td>
+<td>8, 19</td>
+<td><code>mini_triton_llm.swiglu</code></td>
+</tr>
+<tr class="even">
+<td>Linear (Q/K/V/O, up/down)</td>
+<td>9, 10</td>
+<td><code>torch.nn.Linear</code> (cuBLAS)</td>
+</tr>
+<tr class="odd">
+<td>Persistent matmul (large hidden)</td>
+<td>11</td>
+<td>(Chapter 11 kernel, not in lib)</td>
+</tr>
+<tr class="even">
+<td>Attention (naive)</td>
+<td>13</td>
+<td>(Chapter 13 kernel, debug only)</td>
+</tr>
+<tr class="odd">
+<td>FlashAttention forward</td>
+<td>14</td>
+<td><code>mini_triton_llm.flash_attention</code></td>
+</tr>
+<tr class="even">
+<td>Attention backward</td>
+<td>15</td>
+<td>(Chapter 15 kernel, not in lib)</td>
+</tr>
+<tr class="odd">
+<td>RoPE</td>
+<td>16</td>
+<td><code>mini_triton_llm.rope</code></td>
+</tr>
+<tr class="even">
+<td>KV cache decode</td>
+<td>17</td>
+<td>(Chapter 17 kernel, not in lib)</td>
+</tr>
+<tr class="odd">
+<td>Residual + RMSNorm fusion</td>
+<td>18</td>
+<td><code>mini_triton_llm.residual_rmsnorm</code></td>
+</tr>
+<tr class="even">
+<td>Cross-entropy loss</td>
+<td>20</td>
+<td><code>mini_triton_llm.cross_entropy</code></td>
+</tr>
+<tr class="odd">
+<td>Sampling</td>
+<td>21</td>
+<td>(Chapter 21 kernels, not in lib)</td>
+</tr>
+<tr class="even">
+<td>Quantized matmul (int8/int4)</td>
+<td>23</td>
+<td>(Chapter 23 kernel, not in lib)</td>
+</tr>
+</tbody>
+</table>
+<p>Items marked “not in lib” are intentional. The library exposes the components you would actually drop into a forward pass. The chapter-only kernels are educational scaffolding (the naive attention) or kernels that need more maturation before they belong in a shared library (LayerNorm, persistent matmul, quantized matmul, attention backward).</p>
+</section>
+<section id="where-to-look-next" class="level3" data-number="32.0.4">
+<h3 data-number="32.0.4" class="anchored" data-anchor-id="where-to-look-next"><span class="header-section-number">32.0.4</span> Where to look next</h3>
+<p>This book stopped at the kernels you need for a modern transformer forward pass. There is a lot more out there. Pointers:</p>
+<ul>
+<li><strong>FlashAttention v3.</strong> Asynchronous TMA loads, warp specialization, FP8 compute. Hopper-only.</li>
+<li><strong>Persistent kernels with TMA.</strong> Chapter 11 introduced persistent; TMA is the H100 instruction that makes the inner loop cheaper.</li>
+<li><strong>FP8 training and inference.</strong> Chapter 22 introduced the dtype; the production story is <code>transformer_engine</code> and FlashAttention v3.</li>
+<li><strong>vLLM internals.</strong> The paged KV cache and the continuous-batching scheduler are kernel-level engineering on top of Chapter 17.</li>
+<li><strong>AMD ROCm Triton.</strong> Triton compiles for AMD. The mental model carries over; the autotune configs do not.</li>
+</ul>
+<p>The appendix that follows has a study plan, a list of kernels worth reimplementing from memory, and the capstone challenge. Read it once. Pick one project. Build it.</p>
+
+
+<!-- -->
+
+</section>
+
+</main> <!-- /main -->
+<script id="quarto-html-after-body" type="application/javascript">
+window.document.addEventListener("DOMContentLoaded", function (event) {
+  const toggleBodyColorMode = (bsSheetEl) => {
+    const mode = bsSheetEl.getAttribute("data-mode");
+    const bodyEl = window.document.querySelector("body");
+    if (mode === "dark") {
+      bodyEl.classList.add("quarto-dark");
+      bodyEl.classList.remove("quarto-light");
+    } else {
+      bodyEl.classList.add("quarto-light");
+      bodyEl.classList.remove("quarto-dark");
+    }
+  }
+  const toggleBodyColorPrimary = () => {
+    const bsSheetEl = window.document.querySelector("link#quarto-bootstrap");
+    if (bsSheetEl) {
+      toggleBodyColorMode(bsSheetEl);
+    }
+  }
+  toggleBodyColorPrimary();  
+  const icon = "";
+  const anchorJS = new window.AnchorJS();
+  anchorJS.options = {
+    placement: 'right',
+    icon: icon
+  };
+  anchorJS.add('.anchored');
+  const isCodeAnnotation = (el) => {
+    for (const clz of el.classList) {
+      if (clz.startsWith('code-annotation-')) {                     
+        return true;
+      }
+    }
+    return false;
+  }
+  const onCopySuccess = function(e) {
+    // button target
+    const button = e.trigger;
+    // don't keep focus
+    button.blur();
+    // flash "checked"
+    button.classList.add('code-copy-button-checked');
+    var currentTitle = button.getAttribute("title");
+    button.setAttribute("title", "Copied!");
+    let tooltip;
+    if (window.bootstrap) {
+      button.setAttribute("data-bs-toggle", "tooltip");
+      button.setAttribute("data-bs-placement", "left");
+      button.setAttribute("data-bs-title", "Copied!");
+      tooltip = new bootstrap.Tooltip(button, 
+        { trigger: "manual", 
+          customClass: "code-copy-button-tooltip",
+          offset: [0, -8]});
+      tooltip.show();    
+    }
+    setTimeout(function() {
+      if (tooltip) {
+        tooltip.hide();
+        button.removeAttribute("data-bs-title");
+        button.removeAttribute("data-bs-toggle");
+        button.removeAttribute("data-bs-placement");
+      }
+      button.setAttribute("title", currentTitle);
+      button.classList.remove('code-copy-button-checked');
+    }, 1000);
+    // clear code selection
+    e.clearSelection();
+  }
+  const getTextToCopy = function(trigger) {
+      const codeEl = trigger.previousElementSibling.cloneNode(true);
+      for (const childEl of codeEl.children) {
+        if (isCodeAnnotation(childEl)) {
+          childEl.remove();
+        }
+      }
+      return codeEl.innerText;
+  }
+  const clipboard = new window.ClipboardJS('.code-copy-button:not([data-in-quarto-modal])', {
+    text: getTextToCopy
+  });
+  clipboard.on('success', onCopySuccess);
+  if (window.document.getElementById('quarto-embedded-source-code-modal')) {
+    // For code content inside modals, clipBoardJS needs to be initialized with a container option
+    // TODO: Check when it could be a function (https://github.com/zenorocha/clipboard.js/issues/860)
+    const clipboardModal = new window.ClipboardJS('.code-copy-button[data-in-quarto-modal]', {
+      text: getTextToCopy,
+      container: window.document.getElementById('quarto-embedded-source-code-modal')
+    });
+    clipboardModal.on('success', onCopySuccess);
+  }
+  const viewSource = window.document.getElementById('quarto-view-source') ||
+                     window.document.getElementById('quarto-code-tools-source');
+  if (viewSource) {
+    const sourceUrl = viewSource.getAttribute("data-quarto-source-url");
+    viewSource.addEventListener("click", function(e) {
+      if (sourceUrl) {
+        // rstudio viewer pane
+        if (/\bcapabilities=\b/.test(window.location)) {
+          window.open(sourceUrl);
+        } else {
+          window.location.href = sourceUrl;
+        }
+      } else {
+        const modal = new bootstrap.Modal(document.getElementById('quarto-embedded-source-code-modal'));
+        modal.show();
+      }
+      return false;
+    });
+  }
+  function toggleCodeHandler(show) {
+    return function(e) {
+      const detailsSrc = window.document.querySelectorAll(".cell > details > .sourceCode");
+      for (let i=0; i<detailsSrc.length; i++) {
+        const details = detailsSrc[i].parentElement;
+        if (show) {
+          details.open = true;
+        } else {
+          details.removeAttribute("open");
+        }
+      }
+      const cellCodeDivs = window.document.querySelectorAll(".cell > .sourceCode");
+      const fromCls = show ? "hidden" : "unhidden";
+      const toCls = show ? "unhidden" : "hidden";
+      for (let i=0; i<cellCodeDivs.length; i++) {
+        const codeDiv = cellCodeDivs[i];
+        if (codeDiv.classList.contains(fromCls)) {
+          codeDiv.classList.remove(fromCls);
+          codeDiv.classList.add(toCls);
+        } 
+      }
+      return false;
+    }
+  }
+  const hideAllCode = window.document.getElementById("quarto-hide-all-code");
+  if (hideAllCode) {
+    hideAllCode.addEventListener("click", toggleCodeHandler(false));
+  }
+  const showAllCode = window.document.getElementById("quarto-show-all-code");
+  if (showAllCode) {
+    showAllCode.addEventListener("click", toggleCodeHandler(true));
+  }
+    var localhostRegex = new RegExp(/^(?:http|https):\/\/localhost\:?[0-9]*\//);
+    var mailtoRegex = new RegExp(/^mailto:/);
+      var filterRegex = new RegExp('/' + window.location.host + '/');
+    var isInternal = (href) => {
+        return filterRegex.test(href) || localhostRegex.test(href) || mailtoRegex.test(href);
+    }
+    // Inspect non-navigation links and adorn them if external
+ 	var links = window.document.querySelectorAll('a[href]:not(.nav-link):not(.navbar-brand):not(.toc-action):not(.sidebar-link):not(.sidebar-item-toggle):not(.pagination-link):not(.no-external):not([aria-hidden]):not(.dropdown-item):not(.quarto-navigation-tool):not(.about-link)');
+    for (var i=0; i<links.length; i++) {
+      const link = links[i];
+      if (!isInternal(link.href)) {
+        // undo the damage that might have been done by quarto-nav.js in the case of
+        // links that we want to consider external
+        if (link.dataset.originalHref !== undefined) {
+          link.href = link.dataset.originalHref;
+        }
+      }
+    }
+  function tippyHover(el, contentFn, onTriggerFn, onUntriggerFn) {
+    const config = {
+      allowHTML: true,
+      maxWidth: 500,
+      delay: 100,
+      arrow: false,
+      appendTo: function(el) {
+          return el.parentElement;
+      },
+      interactive: true,
+      interactiveBorder: 10,
+      theme: 'quarto',
+      placement: 'bottom-start',
+    };
+    if (contentFn) {
+      config.content = contentFn;
+    }
+    if (onTriggerFn) {
+      config.onTrigger = onTriggerFn;
+    }
+    if (onUntriggerFn) {
+      config.onUntrigger = onUntriggerFn;
+    }
+    window.tippy(el, config); 
+  }
+  const noterefs = window.document.querySelectorAll('a[role="doc-noteref"]');
+  for (var i=0; i<noterefs.length; i++) {
+    const ref = noterefs[i];
+    tippyHover(ref, function() {
+      // use id or data attribute instead here
+      let href = ref.getAttribute('data-footnote-href') || ref.getAttribute('href');
+      try { href = new URL(href).hash; } catch {}
+      const id = href.replace(/^#\/?/, "");
+      const note = window.document.getElementById(id);
+      if (note) {
+        return note.innerHTML;
+      } else {
+        return "";
+      }
+    });
+  }
+  const xrefs = window.document.querySelectorAll('a.quarto-xref');
+  const processXRef = (id, note) => {
+    // Strip column container classes
+    const stripColumnClz = (el) => {
+      el.classList.remove("page-full", "page-columns");
+      if (el.children) {
+        for (const child of el.children) {
+          stripColumnClz(child);
+        }
+      }
+    }
+    stripColumnClz(note)
+    if (id === null || id.startsWith('sec-')) {
+      // Special case sections, only their first couple elements
+      const container = document.createElement("div");
+      if (note.children && note.children.length > 2) {
+        container.appendChild(note.children[0].cloneNode(true));
+        for (let i = 1; i < note.children.length; i++) {
+          const child = note.children[i];
+          if (child.tagName === "P" && child.innerText === "") {
+            continue;
+          } else {
+            container.appendChild(child.cloneNode(true));
+            break;
+          }
+        }
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(container);
+        }
+        return container.innerHTML
+      } else {
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(note);
+        }
+        return note.innerHTML;
+      }
+    } else {
+      // Remove any anchor links if they are present
+      const anchorLink = note.querySelector('a.anchorjs-link');
+      if (anchorLink) {
+        anchorLink.remove();
+      }
+      if (window.Quarto?.typesetMath) {
+        window.Quarto.typesetMath(note);
+      }
+      // TODO in 1.5, we should make sure this works without a callout special case
+      if (note.classList.contains("callout")) {
+        return note.outerHTML;
+      } else {
+        return note.innerHTML;
+      }
+    }
+  }
+  for (var i=0; i<xrefs.length; i++) {
+    const xref = xrefs[i];
+    tippyHover(xref, undefined, function(instance) {
+      instance.disable();
+      let url = xref.getAttribute('href');
+      let hash = undefined; 
+      if (url.startsWith('#')) {
+        hash = url;
+      } else {
+        try { hash = new URL(url).hash; } catch {}
+      }
+      if (hash) {
+        const id = hash.replace(/^#\/?/, "");
+        const note = window.document.getElementById(id);
+        if (note !== null) {
+          try {
+            const html = processXRef(id, note.cloneNode(true));
+            instance.setContent(html);
+          } finally {
+            instance.enable();
+            instance.show();
+          }
+        } else {
+          // See if we can fetch this
+          fetch(url.split('#')[0])
+          .then(res => res.text())
+          .then(html => {
+            const parser = new DOMParser();
+            const htmlDoc = parser.parseFromString(html, "text/html");
+            const note = htmlDoc.getElementById(id);
+            if (note !== null) {
+              const html = processXRef(id, note);
+              instance.setContent(html);
+            } 
+          }).finally(() => {
+            instance.enable();
+            instance.show();
+          });
+        }
+      } else {
+        // See if we can fetch a full url (with no hash to target)
+        // This is a special case and we should probably do some content thinning / targeting
+        fetch(url)
+        .then(res => res.text())
+        .then(html => {
+          const parser = new DOMParser();
+          const htmlDoc = parser.parseFromString(html, "text/html");
+          const note = htmlDoc.querySelector('main.content');
+          if (note !== null) {
+            // This should only happen for chapter cross references
+            // (since there is no id in the URL)
+            // remove the first header
+            if (note.children.length > 0 && note.children[0].tagName === "HEADER") {
+              note.children[0].remove();
+            }
+            const html = processXRef(null, note);
+            instance.setContent(html);
+          } 
+        }).finally(() => {
+          instance.enable();
+          instance.show();
+        });
+      }
+    }, function(instance) {
+    });
+  }
+      let selectedAnnoteEl;
+      const selectorForAnnotation = ( cell, annotation) => {
+        let cellAttr = 'data-code-cell="' + cell + '"';
+        let lineAttr = 'data-code-annotation="' +  annotation + '"';
+        const selector = 'span[' + cellAttr + '][' + lineAttr + ']';
+        return selector;
+      }
+      const selectCodeLines = (annoteEl) => {
+        const doc = window.document;
+        const targetCell = annoteEl.getAttribute("data-target-cell");
+        const targetAnnotation = annoteEl.getAttribute("data-target-annotation");
+        const annoteSpan = window.document.querySelector(selectorForAnnotation(targetCell, targetAnnotation));
+        const lines = annoteSpan.getAttribute("data-code-lines").split(",");
+        const lineIds = lines.map((line) => {
+          return targetCell + "-" + line;
+        })
+        let top = null;
+        let height = null;
+        let parent = null;
+        if (lineIds.length > 0) {
+            //compute the position of the single el (top and bottom and make a div)
+            const el = window.document.getElementById(lineIds[0]);
+            top = el.offsetTop;
+            height = el.offsetHeight;
+            parent = el.parentElement.parentElement;
+          if (lineIds.length > 1) {
+            const lastEl = window.document.getElementById(lineIds[lineIds.length - 1]);
+            const bottom = lastEl.offsetTop + lastEl.offsetHeight;
+            height = bottom - top;
+          }
+          if (top !== null && height !== null && parent !== null) {
+            // cook up a div (if necessary) and position it 
+            let div = window.document.getElementById("code-annotation-line-highlight");
+            if (div === null) {
+              div = window.document.createElement("div");
+              div.setAttribute("id", "code-annotation-line-highlight");
+              div.style.position = 'absolute';
+              parent.appendChild(div);
+            }
+            div.style.top = top - 2 + "px";
+            div.style.height = height + 4 + "px";
+            div.style.left = 0;
+            let gutterDiv = window.document.getElementById("code-annotation-line-highlight-gutter");
+            if (gutterDiv === null) {
+              gutterDiv = window.document.createElement("div");
+              gutterDiv.setAttribute("id", "code-annotation-line-highlight-gutter");
+              gutterDiv.style.position = 'absolute';
+              const codeCell = window.document.getElementById(targetCell);
+              const gutter = codeCell.querySelector('.code-annotation-gutter');
+              gutter.appendChild(gutterDiv);
+            }
+            gutterDiv.style.top = top - 2 + "px";
+            gutterDiv.style.height = height + 4 + "px";
+          }
+          selectedAnnoteEl = annoteEl;
+        }
+      };
+      const unselectCodeLines = () => {
+        const elementsIds = ["code-annotation-line-highlight", "code-annotation-line-highlight-gutter"];
+        elementsIds.forEach((elId) => {
+          const div = window.document.getElementById(elId);
+          if (div) {
+            div.remove();
+          }
+        });
+        selectedAnnoteEl = undefined;
+      };
+        // Handle positioning of the toggle
+    window.addEventListener(
+      "resize",
+      throttle(() => {
+        elRect = undefined;
+        if (selectedAnnoteEl) {
+          selectCodeLines(selectedAnnoteEl);
+        }
+      }, 10)
+    );
+    function throttle(fn, ms) {
+    let throttle = false;
+    let timer;
+      return (...args) => {
+        if(!throttle) { // first call gets through
+            fn.apply(this, args);
+            throttle = true;
+        } else { // all the others get throttled
+            if(timer) clearTimeout(timer); // cancel #2
+            timer = setTimeout(() => {
+              fn.apply(this, args);
+              timer = throttle = false;
+            }, ms);
+        }
+      };
+    }
+      // Attach click handler to the DT
+      const annoteDls = window.document.querySelectorAll('dt[data-target-cell]');
+      for (const annoteDlNode of annoteDls) {
+        annoteDlNode.addEventListener('click', (event) => {
+          const clickedEl = event.target;
+          if (clickedEl !== selectedAnnoteEl) {
+            unselectCodeLines();
+            const activeEl = window.document.querySelector('dt[data-target-cell].code-annotation-active');
+            if (activeEl) {
+              activeEl.classList.remove('code-annotation-active');
+            }
+            selectCodeLines(clickedEl);
+            clickedEl.classList.add('code-annotation-active');
+          } else {
+            // Unselect the line
+            unselectCodeLines();
+            clickedEl.classList.remove('code-annotation-active');
+          }
+        });
+      }
+  const findCites = (el) => {
+    const parentEl = el.parentElement;
+    if (parentEl) {
+      const cites = parentEl.dataset.cites;
+      if (cites) {
+        return {
+          el,
+          cites: cites.split(' ')
+        };
+      } else {
+        return findCites(el.parentElement)
+      }
+    } else {
+      return undefined;
+    }
+  };
+  var bibliorefs = window.document.querySelectorAll('a[role="doc-biblioref"]');
+  for (var i=0; i<bibliorefs.length; i++) {
+    const ref = bibliorefs[i];
+    const citeInfo = findCites(ref);
+    if (citeInfo) {
+      tippyHover(citeInfo.el, function() {
+        var popup = window.document.createElement('div');
+        citeInfo.cites.forEach(function(cite) {
+          var citeDiv = window.document.createElement('div');
+          citeDiv.classList.add('hanging-indent');
+          citeDiv.classList.add('csl-entry');
+          var biblioDiv = window.document.getElementById('ref-' + cite);
+          if (biblioDiv) {
+            citeDiv.innerHTML = biblioDiv.innerHTML;
+          }
+          popup.appendChild(citeDiv);
+        });
+        return popup.innerHTML;
+      });
+    }
+  }
+});
+</script>
+<nav class="page-navigation">
+  <div class="nav-page nav-page-previous">
+      <a href="../../book/08-capstone/29-replace-transformer-pieces.html" class="pagination-link" aria-label="Chapter 29: Replace Pieces of a Tiny Transformer">
+        <i class="bi bi-arrow-left-short"></i> <span class="nav-page-text"><span class="chapter-number">31</span>&nbsp; <span class="chapter-title">Chapter 29: Replace Pieces of a Tiny Transformer</span></span>
+      </a>          
+  </div>
+  <div class="nav-page nav-page-next">
+      <a href="../../book/appendix-study-plan.html" class="pagination-link" aria-label="Appendix: Study Plan, Memory Kernels, and the Capstone Challenge">
+        <span class="nav-page-text"><span class="chapter-number">33</span>&nbsp; <span class="chapter-title">Appendix: Study Plan, Memory Kernels, and the Capstone Challenge</span></span> <i class="bi bi-arrow-right-short"></i>
+      </a>
+  </div>
+</nav><div class="modal fade" id="quarto-embedded-source-code-modal" tabindex="-1" aria-labelledby="quarto-embedded-source-code-modal-label" aria-hidden="true"><div class="modal-dialog modal-dialog-scrollable"><div class="modal-content"><div class="modal-header"><h5 class="modal-title" id="quarto-embedded-source-code-modal-label">Source Code</h5><button class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><div class="">
+<div class="sourceCode" id="cb6" data-shortcodes="false"><pre class="sourceCode markdown code-with-copy"><code class="sourceCode markdown"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="co">---</span></span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a><span class="an">title:</span><span class="co"> "Chapter 30: Final Kernel Design Playbook"</span></span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a><span class="co">---</span></span>
+<span id="cb6-4"><a href="#cb6-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-5"><a href="#cb6-5" aria-hidden="true" tabindex="-1"></a>This is the chapter you will keep coming back to. The previous twenty-nine chapters taught the moves. This one organizes them into a recipe you can follow under deadline, when the layer is unfamiliar and the GPU is unforgiving.</span>
+<span id="cb6-6"><a href="#cb6-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-7"><a href="#cb6-7" aria-hidden="true" tabindex="-1"></a>The recipe has fifteen steps. They are in order on purpose. Every shortcut you take here, you pay for in debugging time later — usually at 2 AM, on a Sunday, the day before a deadline.</span>
+<span id="cb6-8"><a href="#cb6-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-9"><a href="#cb6-9" aria-hidden="true" tabindex="-1"></a>We walk all fifteen steps using one running example: a **fused residual + LayerNorm + dropout** kernel. The reference lives at <span class="in">`src/ch30_playbook/fused_residual_ln_dropout.py`</span>. Read it alongside this chapter.</span>
+<span id="cb6-10"><a href="#cb6-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-11"><a href="#cb6-11" aria-hidden="true" tabindex="-1"></a><span class="fu">### The fifteen-step playbook</span></span>
+<span id="cb6-12"><a href="#cb6-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-13"><a href="#cb6-13" aria-hidden="true" tabindex="-1"></a><span class="fu">#### 1. Write the PyTorch reference</span></span>
+<span id="cb6-14"><a href="#cb6-14" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-15"><a href="#cb6-15" aria-hidden="true" tabindex="-1"></a>**What to do.** Write the layer in plain PyTorch. The clearest version you can. No premature optimization. This is your oracle: every test compares against it.</span>
+<span id="cb6-16"><a href="#cb6-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-17"><a href="#cb6-17" aria-hidden="true" tabindex="-1"></a>**Worked example.**</span>
+<span id="cb6-18"><a href="#cb6-18" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-21"><a href="#cb6-21" aria-hidden="true" tabindex="-1"></a><span class="in">```{python}</span></span>
+<span id="cb6-22"><a href="#cb6-22" aria-hidden="true" tabindex="-1"></a><span class="co">#| eval: false</span></span>
+<span id="cb6-23"><a href="#cb6-23" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> fused_residual_ln_dropout_ref(x, residual, weight, bias, p, eps):</span>
+<span id="cb6-24"><a href="#cb6-24" aria-hidden="true" tabindex="-1"></a>    h <span class="op">=</span> x <span class="op">+</span> residual                                     <span class="co"># residual stream</span></span>
+<span id="cb6-25"><a href="#cb6-25" aria-hidden="true" tabindex="-1"></a>    n <span class="op">=</span> F.layer_norm(h, (h.shape[<span class="op">-</span><span class="dv">1</span>],), weight, bias, eps<span class="op">=</span>eps)</span>
+<span id="cb6-26"><a href="#cb6-26" aria-hidden="true" tabindex="-1"></a>    <span class="cf">if</span> p <span class="op">&gt;</span> <span class="dv">0</span>:</span>
+<span id="cb6-27"><a href="#cb6-27" aria-hidden="true" tabindex="-1"></a>        m <span class="op">=</span> (torch.rand_like(n) <span class="op">&lt;</span> (<span class="dv">1</span> <span class="op">-</span> p)).to(n.dtype) <span class="op">/</span> (<span class="dv">1</span> <span class="op">-</span> p)</span>
+<span id="cb6-28"><a href="#cb6-28" aria-hidden="true" tabindex="-1"></a>        n <span class="op">=</span> n <span class="op">*</span> m</span>
+<span id="cb6-29"><a href="#cb6-29" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> h, n                                          <span class="co"># return both</span></span>
+<span id="cb6-30"><a href="#cb6-30" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb6-31"><a href="#cb6-31" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-32"><a href="#cb6-32" aria-hidden="true" tabindex="-1"></a>**Common pitfall.** "I will skip the reference and tune the Triton kernel directly." You will spend the next four hours arguing with yourself about whether a 0.003 mismatch is a real bug or a tolerance issue. Write the reference.</span>
+<span id="cb6-33"><a href="#cb6-33" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-34"><a href="#cb6-34" aria-hidden="true" tabindex="-1"></a>**Chapter link.** Chapter 5 on softmax shows the pattern: PyTorch reference first, Triton second.</span>
+<span id="cb6-35"><a href="#cb6-35" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-36"><a href="#cb6-36" aria-hidden="true" tabindex="-1"></a><span class="fu">#### 2. Identify inputs/outputs and their shapes</span></span>
+<span id="cb6-37"><a href="#cb6-37" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-38"><a href="#cb6-38" aria-hidden="true" tabindex="-1"></a>**What to do.** Make a table. Tensor name, shape, dtype, role (input / output / scratch). Pin down which dims are batch, which are feature, which are reduced.</span>
+<span id="cb6-39"><a href="#cb6-39" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-40"><a href="#cb6-40" aria-hidden="true" tabindex="-1"></a>**Worked example.**</span>
+<span id="cb6-41"><a href="#cb6-41" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-42"><a href="#cb6-42" aria-hidden="true" tabindex="-1"></a>| name      | shape    | dtype | role             |</span>
+<span id="cb6-43"><a href="#cb6-43" aria-hidden="true" tabindex="-1"></a>|-----------|----------|-------|------------------|</span>
+<span id="cb6-44"><a href="#cb6-44" aria-hidden="true" tabindex="-1"></a>| <span class="in">`x`</span>       | (M, N)   | fp16  | input            |</span>
+<span id="cb6-45"><a href="#cb6-45" aria-hidden="true" tabindex="-1"></a>| <span class="in">`residual`</span>| (M, N)   | fp16  | input            |</span>
+<span id="cb6-46"><a href="#cb6-46" aria-hidden="true" tabindex="-1"></a>| <span class="in">`weight`</span>  | (N,)     | fp16  | input (param)    |</span>
+<span id="cb6-47"><a href="#cb6-47" aria-hidden="true" tabindex="-1"></a>| <span class="in">`bias`</span>    | (N,)     | fp16  | input (param)    |</span>
+<span id="cb6-48"><a href="#cb6-48" aria-hidden="true" tabindex="-1"></a>| <span class="in">`h`</span>       | (M, N)   | fp16  | output (residual)|</span>
+<span id="cb6-49"><a href="#cb6-49" aria-hidden="true" tabindex="-1"></a>| <span class="in">`y`</span>       | (M, N)   | fp16  | output (normed)  |</span>
+<span id="cb6-50"><a href="#cb6-50" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-51"><a href="#cb6-51" aria-hidden="true" tabindex="-1"></a><span class="in">`M = batch * sequence`</span>. The kernel does not care; it flattens.</span>
+<span id="cb6-52"><a href="#cb6-52" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-53"><a href="#cb6-53" aria-hidden="true" tabindex="-1"></a>**Common pitfall.** Forgetting that the kernel produces two outputs. Many fused kernels do.</span>
+<span id="cb6-54"><a href="#cb6-54" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-55"><a href="#cb6-55" aria-hidden="true" tabindex="-1"></a>**Chapter link.** Chapter 18 (residual + RMSNorm) is the canonical two-output case.</span>
+<span id="cb6-56"><a href="#cb6-56" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-57"><a href="#cb6-57" aria-hidden="true" tabindex="-1"></a><span class="fu">#### 3. Identify shape patterns and the reduction axis</span></span>
+<span id="cb6-58"><a href="#cb6-58" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-59"><a href="#cb6-59" aria-hidden="true" tabindex="-1"></a>**What to do.** Which dims are mapped over independently? Which dim is *reduced* (mean, max, sum)? Mapped dims become grid dims; reduced dims become loops or block-wise reductions inside the kernel.</span>
+<span id="cb6-60"><a href="#cb6-60" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-61"><a href="#cb6-61" aria-hidden="true" tabindex="-1"></a>**Worked example.** The N axis is reduced (mean and variance go over it). The M axis is mapped over: each row's normalization is independent of every other row.</span>
+<span id="cb6-62"><a href="#cb6-62" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-63"><a href="#cb6-63" aria-hidden="true" tabindex="-1"></a>**Common pitfall.** Confusing "broadcast" with "reduce". <span class="in">`weight`</span> is broadcast across rows (one weight vector for all <span class="in">`M`</span>); the N axis inside the row is reduced.</span>
+<span id="cb6-64"><a href="#cb6-64" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-65"><a href="#cb6-65" aria-hidden="true" tabindex="-1"></a>**Chapter link.** Chapter 4 on reductions.</span>
+<span id="cb6-66"><a href="#cb6-66" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-67"><a href="#cb6-67" aria-hidden="true" tabindex="-1"></a><span class="fu">#### 4. Decide program/block mapping</span></span>
+<span id="cb6-68"><a href="#cb6-68" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-69"><a href="#cb6-69" aria-hidden="true" tabindex="-1"></a>**What to do.** Pick the grid. The default for a row-wise layer is "one program per row". For 2D tile layers, it is "one program per (row tile, col tile)". For attention, it is "one program per (batch, head, query tile)".</span>
+<span id="cb6-70"><a href="#cb6-70" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-71"><a href="#cb6-71" aria-hidden="true" tabindex="-1"></a>**Worked example.** <span class="in">`grid = (M,)`</span>. One program owns one row. <span class="in">`BLOCK_SIZE = next_pow2(N)`</span>, one block covers the whole row. If <span class="in">`N`</span> is larger than your hardware's per-program register/SRAM budget, switch to a multi-block strategy (Chapter 5 covers this for softmax).</span>
+<span id="cb6-72"><a href="#cb6-72" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-73"><a href="#cb6-73" aria-hidden="true" tabindex="-1"></a>**Common pitfall.** Choosing the grid based on tensor shape alone, then discovering that one program needs more SRAM than the hardware has. Check the register budget early.</span>
+<span id="cb6-74"><a href="#cb6-74" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-75"><a href="#cb6-75" aria-hidden="true" tabindex="-1"></a>**Chapter link.** Chapter 2 on the mental model; Chapter 7 on RMSNorm for the row-per-program pattern.</span>
+<span id="cb6-76"><a href="#cb6-76" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-77"><a href="#cb6-77" aria-hidden="true" tabindex="-1"></a><span class="fu">#### 5. Decide what each program loads</span></span>
+<span id="cb6-78"><a href="#cb6-78" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-79"><a href="#cb6-79" aria-hidden="true" tabindex="-1"></a>**What to do.** Enumerate every <span class="in">`tl.load`</span>. For each, write down what the pointer expression looks like and what mask you will use.</span>
+<span id="cb6-80"><a href="#cb6-80" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-81"><a href="#cb6-81" aria-hidden="true" tabindex="-1"></a>**Worked example.** One program (row <span class="in">`pid`</span>) loads:</span>
+<span id="cb6-82"><a href="#cb6-82" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-83"><a href="#cb6-83" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span><span class="in">`x[pid, :]`</span> — <span class="in">`(BLOCK_SIZE,)`</span>, masked by <span class="in">`offs &lt; N`</span>, fp16, cast to fp32.</span>
+<span id="cb6-84"><a href="#cb6-84" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span><span class="in">`residual[pid, :]`</span> — same as above.</span>
+<span id="cb6-85"><a href="#cb6-85" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span><span class="in">`weight[:]`</span> — <span class="in">`(BLOCK_SIZE,)`</span>, masked, fp16, cast to fp32.</span>
+<span id="cb6-86"><a href="#cb6-86" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span><span class="in">`bias[:]`</span> — same as <span class="in">`weight`</span>.</span>
+<span id="cb6-87"><a href="#cb6-87" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-88"><a href="#cb6-88" aria-hidden="true" tabindex="-1"></a>**Common pitfall.** Loading <span class="in">`weight`</span> and <span class="in">`bias`</span> inside an inner loop instead of once at the top of the program. They are tiny; load them once.</span>
+<span id="cb6-89"><a href="#cb6-89" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-90"><a href="#cb6-90" aria-hidden="true" tabindex="-1"></a>**Chapter link.** Chapter 3 on pointers and strides.</span>
+<span id="cb6-91"><a href="#cb6-91" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-92"><a href="#cb6-92" aria-hidden="true" tabindex="-1"></a><span class="fu">#### 6. Decide what each program computes</span></span>
+<span id="cb6-93"><a href="#cb6-93" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-94"><a href="#cb6-94" aria-hidden="true" tabindex="-1"></a>**What to do.** Pseudocode the math. Mark every place the dtype changes. Mark every reduction.</span>
+<span id="cb6-95"><a href="#cb6-95" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-96"><a href="#cb6-96" aria-hidden="true" tabindex="-1"></a>**Worked example.**</span>
+<span id="cb6-97"><a href="#cb6-97" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-98"><a href="#cb6-98" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb6-99"><a href="#cb6-99" aria-hidden="true" tabindex="-1"></a><span class="in">h        = x + residual                  (fp32, BLOCK_SIZE)</span></span>
+<span id="cb6-100"><a href="#cb6-100" aria-hidden="true" tabindex="-1"></a><span class="in">mean     = sum(h) / N                    (fp32, scalar)</span></span>
+<span id="cb6-101"><a href="#cb6-101" aria-hidden="true" tabindex="-1"></a><span class="in">centered = (h - mean) * mask             (fp32, BLOCK_SIZE)</span></span>
+<span id="cb6-102"><a href="#cb6-102" aria-hidden="true" tabindex="-1"></a><span class="in">var      = sum(centered ** 2) / N        (fp32, scalar)</span></span>
+<span id="cb6-103"><a href="#cb6-103" aria-hidden="true" tabindex="-1"></a><span class="in">inv      = rsqrt(var + eps)              (fp32, scalar)</span></span>
+<span id="cb6-104"><a href="#cb6-104" aria-hidden="true" tabindex="-1"></a><span class="in">n        = centered * inv * weight + bias (fp32, BLOCK_SIZE)</span></span>
+<span id="cb6-105"><a href="#cb6-105" aria-hidden="true" tabindex="-1"></a><span class="in">if dropout:</span></span>
+<span id="cb6-106"><a href="#cb6-106" aria-hidden="true" tabindex="-1"></a><span class="in">    rand = tl.rand(seed, row * BLOCK_SIZE + offs)  (fp32, BLOCK_SIZE)</span></span>
+<span id="cb6-107"><a href="#cb6-107" aria-hidden="true" tabindex="-1"></a><span class="in">    n    = n * (rand &lt; p_keep) / p_keep</span></span>
+<span id="cb6-108"><a href="#cb6-108" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb6-109"><a href="#cb6-109" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-110"><a href="#cb6-110" aria-hidden="true" tabindex="-1"></a>**Common pitfall.** Computing <span class="in">`centered`</span> without masking the out-of-range lanes back to zero before the variance sum. Masked-off lanes will contribute garbage to the reduction.</span>
+<span id="cb6-111"><a href="#cb6-111" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-112"><a href="#cb6-112" aria-hidden="true" tabindex="-1"></a>**Chapter link.** Chapter 6 on LayerNorm for the mean-then-variance pattern; Chapter 5 for the "shift by max" trick that motivates fp32 in reductions.</span>
+<span id="cb6-113"><a href="#cb6-113" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-114"><a href="#cb6-114" aria-hidden="true" tabindex="-1"></a><span class="fu">#### 7. Decide what each program stores</span></span>
+<span id="cb6-115"><a href="#cb6-115" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-116"><a href="#cb6-116" aria-hidden="true" tabindex="-1"></a>**What to do.** Two outputs need two <span class="in">`tl.store`</span>s. Same mask as the input loads.</span>
+<span id="cb6-117"><a href="#cb6-117" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-118"><a href="#cb6-118" aria-hidden="true" tabindex="-1"></a>**Worked example.**</span>
+<span id="cb6-119"><a href="#cb6-119" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-120"><a href="#cb6-120" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb6-121"><a href="#cb6-121" aria-hidden="true" tabindex="-1"></a><span class="in">tl.store(h_ptr + row * stride_hm + offs, h, mask)</span></span>
+<span id="cb6-122"><a href="#cb6-122" aria-hidden="true" tabindex="-1"></a><span class="in">tl.store(y_ptr + row * stride_ym + offs, n, mask)</span></span>
+<span id="cb6-123"><a href="#cb6-123" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb6-124"><a href="#cb6-124" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-125"><a href="#cb6-125" aria-hidden="true" tabindex="-1"></a>**Common pitfall.** Forgetting to mask the store and scribbling past the last valid element. Memory checkers will not catch this on power-of-two <span class="in">`N`</span>; it manifests as a flaky test on <span class="in">`N=257`</span>.</span>
+<span id="cb6-126"><a href="#cb6-126" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-127"><a href="#cb6-127" aria-hidden="true" tabindex="-1"></a>**Chapter link.** Chapter 3 on masks.</span>
+<span id="cb6-128"><a href="#cb6-128" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-129"><a href="#cb6-129" aria-hidden="true" tabindex="-1"></a><span class="fu">#### 8. Add masks for boundary conditions</span></span>
+<span id="cb6-130"><a href="#cb6-130" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-131"><a href="#cb6-131" aria-hidden="true" tabindex="-1"></a>**What to do.** Every load and store touching a partial tile needs <span class="in">`mask=`</span>. Every reduction whose summand could include masked-off lanes needs <span class="in">`other=`</span> set to the reduction's identity (<span class="in">`0.0`</span> for sum, <span class="in">`-inf`</span> for max).</span>
+<span id="cb6-132"><a href="#cb6-132" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-133"><a href="#cb6-133" aria-hidden="true" tabindex="-1"></a>**Worked example.** <span class="in">`mask = offs &lt; N`</span>. Load with <span class="in">`other=0.0`</span> (because we are summing). The dropout mask uses the same <span class="in">`mask`</span>; out-of-range lanes are not stored, so their RNG draws are wasted but harmless.</span>
+<span id="cb6-134"><a href="#cb6-134" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-135"><a href="#cb6-135" aria-hidden="true" tabindex="-1"></a>**Common pitfall.** Using <span class="in">`other=0.0`</span> for a max reduction or <span class="in">`other=-inf`</span> for a sum. The kernel runs, gives wrong answers, and passes any test where <span class="in">`N`</span> is a multiple of <span class="in">`BLOCK_SIZE`</span>.</span>
+<span id="cb6-136"><a href="#cb6-136" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-137"><a href="#cb6-137" aria-hidden="true" tabindex="-1"></a>**Chapter link.** Chapter 3 on masks and <span class="in">`other=`</span>.</span>
+<span id="cb6-138"><a href="#cb6-138" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-139"><a href="#cb6-139" aria-hidden="true" tabindex="-1"></a><span class="fu">#### 9. Decide dtype policy</span></span>
+<span id="cb6-140"><a href="#cb6-140" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-141"><a href="#cb6-141" aria-hidden="true" tabindex="-1"></a>**What to do.** Write down: input dtype, accumulator dtype, output dtype. For every reduction, sum in fp32. For softmax exponents, fp32. For matmul accumulator, fp32 unless you have explicit fp64 needs.</span>
+<span id="cb6-142"><a href="#cb6-142" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-143"><a href="#cb6-143" aria-hidden="true" tabindex="-1"></a>**Worked example.** Input fp16. Compute fp32 (loads cast on read). Output fp16 (stores cast on write). Weight/bias loaded in their stored dtype, cast to fp32 for the multiply-add.</span>
+<span id="cb6-144"><a href="#cb6-144" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-145"><a href="#cb6-145" aria-hidden="true" tabindex="-1"></a>**Common pitfall.** Accumulating fp16 inputs in fp16. The variance of even moderate-magnitude activations will saturate fp16's range.</span>
+<span id="cb6-146"><a href="#cb6-146" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-147"><a href="#cb6-147" aria-hidden="true" tabindex="-1"></a>**Chapter link.** Chapter 7 on RMSNorm spells out the fp32 accumulator policy.</span>
+<span id="cb6-148"><a href="#cb6-148" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-149"><a href="#cb6-149" aria-hidden="true" tabindex="-1"></a><span class="fu">#### 10. Test tiny shapes first</span></span>
+<span id="cb6-150"><a href="#cb6-150" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-151"><a href="#cb6-151" aria-hidden="true" tabindex="-1"></a>**What to do.** Pick <span class="in">`N=7, M=3`</span>. Run the kernel. Compare to the reference element-wise. If this fails you cannot debug a larger shape.</span>
+<span id="cb6-152"><a href="#cb6-152" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-153"><a href="#cb6-153" aria-hidden="true" tabindex="-1"></a>**Worked example.** The Chapter 30 test file's first case is <span class="in">`N=7`</span>. It catches mask bugs and stride bugs before anything else.</span>
+<span id="cb6-154"><a href="#cb6-154" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-155"><a href="#cb6-155" aria-hidden="true" tabindex="-1"></a>**Common pitfall.** Jumping to <span class="in">`N=4096`</span> and seeing a 1e-3 deviation, then spending an hour wondering if it is precision or correctness. Start small.</span>
+<span id="cb6-156"><a href="#cb6-156" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-157"><a href="#cb6-157" aria-hidden="true" tabindex="-1"></a>**Chapter link.** Chapter 24 on debugging.</span>
+<span id="cb6-158"><a href="#cb6-158" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-159"><a href="#cb6-159" aria-hidden="true" tabindex="-1"></a><span class="fu">#### 11. Test weird shapes</span></span>
+<span id="cb6-160"><a href="#cb6-160" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-161"><a href="#cb6-161" aria-hidden="true" tabindex="-1"></a>**What to do.** Non-power-of-two <span class="in">`N`</span> (e.g. 511, 1023). <span class="in">`N`</span> equal to <span class="in">`BLOCK_SIZE`</span>, <span class="in">`BLOCK_SIZE - 1`</span>, <span class="in">`BLOCK_SIZE + 1`</span>. Non-contiguous inputs if you claim to support them (otherwise mark them <span class="in">`xfail`</span> with a comment).</span>
+<span id="cb6-162"><a href="#cb6-162" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-163"><a href="#cb6-163" aria-hidden="true" tabindex="-1"></a>**Worked example.** <span class="in">`tests/test_ch30_playbook.py`</span> parametrizes over <span class="in">`N in [7, 64, 511, 1024]`</span>. 7 is hand-traceable, 64 is power-of-two, 511 forces the mask, 1024 is the realistic case.</span>
+<span id="cb6-164"><a href="#cb6-164" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-165"><a href="#cb6-165" aria-hidden="true" tabindex="-1"></a>**Common pitfall.** "It works on <span class="in">`N=4096`</span> so it works." It does not. The mask path is a separate code path and you must exercise it.</span>
+<span id="cb6-166"><a href="#cb6-166" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-167"><a href="#cb6-167" aria-hidden="true" tabindex="-1"></a>**Chapter link.** Chapter 24 on debugging.</span>
+<span id="cb6-168"><a href="#cb6-168" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-169"><a href="#cb6-169" aria-hidden="true" tabindex="-1"></a><span class="fu">#### 12. Benchmark</span></span>
+<span id="cb6-170"><a href="#cb6-170" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-171"><a href="#cb6-171" aria-hidden="true" tabindex="-1"></a>**What to do.** <span class="in">`triton.testing.do_bench`</span> against the PyTorch reference. Same shapes. Median ms. Compute GB/s for memory-bound kernels and TFLOP/s for compute-bound ones. Report both numbers, plus the GPU you ran on.</span>
+<span id="cb6-172"><a href="#cb6-172" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-173"><a href="#cb6-173" aria-hidden="true" tabindex="-1"></a>**Worked example.** See <span class="in">`benchmarks/bench_ch30_playbook.py`</span>. Four shapes, fp16, dropout p=0.1. The Triton kernel saves the round-trip of <span class="in">`h`</span> between the residual op and the LayerNorm, and the round-trip of <span class="in">`n`</span> between the LayerNorm and the dropout. Both wins are real and measurable.</span>
+<span id="cb6-174"><a href="#cb6-174" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-175"><a href="#cb6-175" aria-hidden="true" tabindex="-1"></a>**Common pitfall.** Benchmarking the kernel and reporting "10x faster" because PyTorch was running on fp32 and your kernel on fp16. Apples to apples.</span>
+<span id="cb6-176"><a href="#cb6-176" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-177"><a href="#cb6-177" aria-hidden="true" tabindex="-1"></a>**Chapter link.** Chapter 25 on benchmarking.</span>
+<span id="cb6-178"><a href="#cb6-178" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-179"><a href="#cb6-179" aria-hidden="true" tabindex="-1"></a><span class="fu">#### 13. Optimize</span></span>
+<span id="cb6-180"><a href="#cb6-180" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-181"><a href="#cb6-181" aria-hidden="true" tabindex="-1"></a>**What to do.** Identify the bound (memory or compute). Try larger <span class="in">`BLOCK_SIZE`</span>, more <span class="in">`num_warps`</span>, more <span class="in">`num_stages`</span>. Look for fusion opportunities with neighboring ops.</span>
+<span id="cb6-182"><a href="#cb6-182" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-183"><a href="#cb6-183" aria-hidden="true" tabindex="-1"></a>**Worked example.** Our kernel is memory-bound (one read per input byte, one write per output byte). <span class="in">`BLOCK_SIZE`</span> is already covering the whole row; the knobs left are <span class="in">`num_warps`</span> (try 2, 4, 8) and potentially fusing the *next* layer's residual-add into the same kernel. (At which point you are reinventing Chapter 18.)</span>
+<span id="cb6-184"><a href="#cb6-184" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-185"><a href="#cb6-185" aria-hidden="true" tabindex="-1"></a>**Common pitfall.** Optimizing before establishing the baseline. Without the baseline you cannot tell whether a change is a 5% win or a 5% loss.</span>
+<span id="cb6-186"><a href="#cb6-186" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-187"><a href="#cb6-187" aria-hidden="true" tabindex="-1"></a>**Chapter link.** Chapter 27 on perf tuning.</span>
+<span id="cb6-188"><a href="#cb6-188" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-189"><a href="#cb6-189" aria-hidden="true" tabindex="-1"></a><span class="fu">#### 14. Autotune</span></span>
+<span id="cb6-190"><a href="#cb6-190" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-191"><a href="#cb6-191" aria-hidden="true" tabindex="-1"></a>**What to do.** Wrap the kernel with <span class="in">`triton.autotune`</span> over a handful of configs that span the realistic shape space. Three to six configs is usually enough. <span class="in">`key=`</span> should list the shape dims the optimal config depends on.</span>
+<span id="cb6-192"><a href="#cb6-192" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-193"><a href="#cb6-193" aria-hidden="true" tabindex="-1"></a>**Worked example.** For our kernel:</span>
+<span id="cb6-194"><a href="#cb6-194" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-197"><a href="#cb6-197" aria-hidden="true" tabindex="-1"></a><span class="in">```{python}</span></span>
+<span id="cb6-198"><a href="#cb6-198" aria-hidden="true" tabindex="-1"></a><span class="co">#| eval: false</span></span>
+<span id="cb6-199"><a href="#cb6-199" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.autotune</span>(</span>
+<span id="cb6-200"><a href="#cb6-200" aria-hidden="true" tabindex="-1"></a>    configs<span class="op">=</span>[</span>
+<span id="cb6-201"><a href="#cb6-201" aria-hidden="true" tabindex="-1"></a>        triton.Config({}, num_warps<span class="op">=</span><span class="dv">2</span>),</span>
+<span id="cb6-202"><a href="#cb6-202" aria-hidden="true" tabindex="-1"></a>        triton.Config({}, num_warps<span class="op">=</span><span class="dv">4</span>),</span>
+<span id="cb6-203"><a href="#cb6-203" aria-hidden="true" tabindex="-1"></a>        triton.Config({}, num_warps<span class="op">=</span><span class="dv">8</span>),</span>
+<span id="cb6-204"><a href="#cb6-204" aria-hidden="true" tabindex="-1"></a>    ],</span>
+<span id="cb6-205"><a href="#cb6-205" aria-hidden="true" tabindex="-1"></a>    key<span class="op">=</span>[<span class="st">"N"</span>],</span>
+<span id="cb6-206"><a href="#cb6-206" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb6-207"><a href="#cb6-207" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb6-208"><a href="#cb6-208" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-209"><a href="#cb6-209" aria-hidden="true" tabindex="-1"></a><span class="in">`BLOCK_SIZE`</span> is computed from <span class="in">`N`</span> at launch time, so it does not appear in the autotuner.</span>
+<span id="cb6-210"><a href="#cb6-210" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-211"><a href="#cb6-211" aria-hidden="true" tabindex="-1"></a>**Common pitfall.** Autotuning over fifty configs. Every config adds compile time and warmup overhead. Three to six is usually the sweet spot.</span>
+<span id="cb6-212"><a href="#cb6-212" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-213"><a href="#cb6-213" aria-hidden="true" tabindex="-1"></a>**Chapter link.** Chapter 26 on autotuning.</span>
+<span id="cb6-214"><a href="#cb6-214" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-215"><a href="#cb6-215" aria-hidden="true" tabindex="-1"></a><span class="fu">#### 15. Document limitations</span></span>
+<span id="cb6-216"><a href="#cb6-216" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-217"><a href="#cb6-217" aria-hidden="true" tabindex="-1"></a>**What to do.** Docstring on the launcher, in three sections: supported shapes, supported dtypes, known limitations. Add a "future work" note for anything you punted on.</span>
+<span id="cb6-218"><a href="#cb6-218" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-219"><a href="#cb6-219" aria-hidden="true" tabindex="-1"></a>**Worked example.**</span>
+<span id="cb6-220"><a href="#cb6-220" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-221"><a href="#cb6-221" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb6-222"><a href="#cb6-222" aria-hidden="true" tabindex="-1"></a><span class="in">"""</span></span>
+<span id="cb6-223"><a href="#cb6-223" aria-hidden="true" tabindex="-1"></a><span class="in">Supported shapes: any (..., N) with N &lt;= 16384.</span></span>
+<span id="cb6-224"><a href="#cb6-224" aria-hidden="true" tabindex="-1"></a><span class="in">Supported dtypes: fp16, bf16, fp32.</span></span>
+<span id="cb6-225"><a href="#cb6-225" aria-hidden="true" tabindex="-1"></a><span class="in">Limitations:</span></span>
+<span id="cb6-226"><a href="#cb6-226" aria-hidden="true" tabindex="-1"></a><span class="in">  - dropout is forward-only; no autograd support.</span></span>
+<span id="cb6-227"><a href="#cb6-227" aria-hidden="true" tabindex="-1"></a><span class="in">  - row width N &gt; 16384 will OOM the SRAM; split rows or move to a</span></span>
+<span id="cb6-228"><a href="#cb6-228" aria-hidden="true" tabindex="-1"></a><span class="in">    multi-block reduction (Chapter 5 pattern).</span></span>
+<span id="cb6-229"><a href="#cb6-229" aria-hidden="true" tabindex="-1"></a><span class="in">"""</span></span>
+<span id="cb6-230"><a href="#cb6-230" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb6-231"><a href="#cb6-231" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-232"><a href="#cb6-232" aria-hidden="true" tabindex="-1"></a>**Common pitfall.** Documenting at launch time and never updating. Update the docstring when you add a feature or hit a regression.</span>
+<span id="cb6-233"><a href="#cb6-233" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-234"><a href="#cb6-234" aria-hidden="true" tabindex="-1"></a>**Chapter link.** Chapter 25 on benchmark reporting; the checklist in <span class="in">`kernel_checklist.qmd`</span>.</span>
+<span id="cb6-235"><a href="#cb6-235" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-236"><a href="#cb6-236" aria-hidden="true" tabindex="-1"></a><span class="fu">### The checklist, inline</span></span>
+<span id="cb6-237"><a href="#cb6-237" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-238"><a href="#cb6-238" aria-hidden="true" tabindex="-1"></a>Keep this on your wall. It is the Phase summary of <span class="in">`kernel_checklist.qmd`</span>.</span>
+<span id="cb6-239"><a href="#cb6-239" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-240"><a href="#cb6-240" aria-hidden="true" tabindex="-1"></a>**Phase 1 — Design.** Plain-math statement. PyTorch oracle. Shape table. Reduction axis. One-program ownership. Grid shape. Block sizes. Accumulator dtype. SRAM vs registers. Numerical hazards listed.</span>
+<span id="cb6-241"><a href="#cb6-241" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-242"><a href="#cb6-242" aria-hidden="true" tabindex="-1"></a>**Phase 2 — Implement.** Kernel signature. <span class="in">`pid`</span> per axis. Offsets from <span class="in">`pid`</span> * <span class="in">`stride`</span>. <span class="in">`tl.arange`</span> per-element. Masks on partial tiles. <span class="in">`tl.load`</span> with safe <span class="in">`other=`</span>. Compute. <span class="in">`tl.store`</span> with mask. Launcher allocates output and validates inputs.</span>
+<span id="cb6-243"><a href="#cb6-243" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-244"><a href="#cb6-244" aria-hidden="true" tabindex="-1"></a>**Phase 3 — Test.** Tiny shape. Power-of-two. Non-power-of-two. Boundary (<span class="in">`BS`</span>, <span class="in">`BS-1`</span>, <span class="in">`BS+1`</span>). Every dtype. Non-contiguous if supported. Compare to PyTorch with <span class="in">`assert_close`</span> and dtype-appropriate tolerances.</span>
+<span id="cb6-245"><a href="#cb6-245" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-246"><a href="#cb6-246" aria-hidden="true" tabindex="-1"></a>**Phase 4 — Optimize.** Baseline. Identify bound. Sweep <span class="in">`BLOCK_SIZE`</span>. Sweep <span class="in">`num_warps`</span>. Sweep <span class="in">`num_stages`</span>. Autotune. Re-measure.</span>
+<span id="cb6-247"><a href="#cb6-247" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-248"><a href="#cb6-248" aria-hidden="true" tabindex="-1"></a>**Phase 5 — Document.** Signature, shapes, dtypes, hardware. Numerical contract. Benchmark numbers and the GPU.</span>
+<span id="cb6-249"><a href="#cb6-249" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-250"><a href="#cb6-250" aria-hidden="true" tabindex="-1"></a><span class="fu">### Summary table: LLM components to library functions</span></span>
+<span id="cb6-251"><a href="#cb6-251" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-252"><a href="#cb6-252" aria-hidden="true" tabindex="-1"></a>When you sit down to wire up a new model, this is the lookup table.</span>
+<span id="cb6-253"><a href="#cb6-253" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-254"><a href="#cb6-254" aria-hidden="true" tabindex="-1"></a>| Component                          | Chapter | Library function                  |</span>
+<span id="cb6-255"><a href="#cb6-255" aria-hidden="true" tabindex="-1"></a>|------------------------------------|---------|-----------------------------------|</span>
+<span id="cb6-256"><a href="#cb6-256" aria-hidden="true" tabindex="-1"></a>| Embedding lookup                   | 3       | (PyTorch is fine)                 |</span>
+<span id="cb6-257"><a href="#cb6-257" aria-hidden="true" tabindex="-1"></a>| Softmax (logits, attention)        | 5       | <span class="in">`mini_triton_llm.softmax`</span>         |</span>
+<span id="cb6-258"><a href="#cb6-258" aria-hidden="true" tabindex="-1"></a>| LayerNorm                          | 6       | (Chapter 6 kernel, not in lib)    |</span>
+<span id="cb6-259"><a href="#cb6-259" aria-hidden="true" tabindex="-1"></a>| RMSNorm                            | 7       | <span class="in">`mini_triton_llm.rmsnorm`</span>         |</span>
+<span id="cb6-260"><a href="#cb6-260" aria-hidden="true" tabindex="-1"></a>| SiLU / SwiGLU                      | 8, 19   | <span class="in">`mini_triton_llm.swiglu`</span>          |</span>
+<span id="cb6-261"><a href="#cb6-261" aria-hidden="true" tabindex="-1"></a>| Linear (Q/K/V/O, up/down)          | 9, 10   | <span class="in">`torch.nn.Linear`</span> (cuBLAS)        |</span>
+<span id="cb6-262"><a href="#cb6-262" aria-hidden="true" tabindex="-1"></a>| Persistent matmul (large hidden)   | 11      | (Chapter 11 kernel, not in lib)   |</span>
+<span id="cb6-263"><a href="#cb6-263" aria-hidden="true" tabindex="-1"></a>| Attention (naive)                  | 13      | (Chapter 13 kernel, debug only)   |</span>
+<span id="cb6-264"><a href="#cb6-264" aria-hidden="true" tabindex="-1"></a>| FlashAttention forward             | 14      | <span class="in">`mini_triton_llm.flash_attention`</span> |</span>
+<span id="cb6-265"><a href="#cb6-265" aria-hidden="true" tabindex="-1"></a>| Attention backward                 | 15      | (Chapter 15 kernel, not in lib)   |</span>
+<span id="cb6-266"><a href="#cb6-266" aria-hidden="true" tabindex="-1"></a>| RoPE                               | 16      | <span class="in">`mini_triton_llm.rope`</span>            |</span>
+<span id="cb6-267"><a href="#cb6-267" aria-hidden="true" tabindex="-1"></a>| KV cache decode                    | 17      | (Chapter 17 kernel, not in lib)   |</span>
+<span id="cb6-268"><a href="#cb6-268" aria-hidden="true" tabindex="-1"></a>| Residual + RMSNorm fusion          | 18      | <span class="in">`mini_triton_llm.residual_rmsnorm`</span>|</span>
+<span id="cb6-269"><a href="#cb6-269" aria-hidden="true" tabindex="-1"></a>| Cross-entropy loss                 | 20      | <span class="in">`mini_triton_llm.cross_entropy`</span>   |</span>
+<span id="cb6-270"><a href="#cb6-270" aria-hidden="true" tabindex="-1"></a>| Sampling                           | 21      | (Chapter 21 kernels, not in lib)  |</span>
+<span id="cb6-271"><a href="#cb6-271" aria-hidden="true" tabindex="-1"></a>| Quantized matmul (int8/int4)       | 23      | (Chapter 23 kernel, not in lib)   |</span>
+<span id="cb6-272"><a href="#cb6-272" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-273"><a href="#cb6-273" aria-hidden="true" tabindex="-1"></a>Items marked "not in lib" are intentional. The library exposes the components you would actually drop into a forward pass. The chapter-only kernels are educational scaffolding (the naive attention) or kernels that need more maturation before they belong in a shared library (LayerNorm, persistent matmul, quantized matmul, attention backward).</span>
+<span id="cb6-274"><a href="#cb6-274" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-275"><a href="#cb6-275" aria-hidden="true" tabindex="-1"></a><span class="fu">### Where to look next</span></span>
+<span id="cb6-276"><a href="#cb6-276" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-277"><a href="#cb6-277" aria-hidden="true" tabindex="-1"></a>This book stopped at the kernels you need for a modern transformer forward pass. There is a lot more out there. Pointers:</span>
+<span id="cb6-278"><a href="#cb6-278" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-279"><a href="#cb6-279" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**FlashAttention v3.** Asynchronous TMA loads, warp specialization, FP8 compute. Hopper-only.</span>
+<span id="cb6-280"><a href="#cb6-280" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**Persistent kernels with TMA.** Chapter 11 introduced persistent; TMA is the H100 instruction that makes the inner loop cheaper.</span>
+<span id="cb6-281"><a href="#cb6-281" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**FP8 training and inference.** Chapter 22 introduced the dtype; the production story is <span class="in">`transformer_engine`</span> and FlashAttention v3.</span>
+<span id="cb6-282"><a href="#cb6-282" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**vLLM internals.** The paged KV cache and the continuous-batching scheduler are kernel-level engineering on top of Chapter 17.</span>
+<span id="cb6-283"><a href="#cb6-283" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**AMD ROCm Triton.** Triton compiles for AMD. The mental model carries over; the autotune configs do not.</span>
+<span id="cb6-284"><a href="#cb6-284" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-285"><a href="#cb6-285" aria-hidden="true" tabindex="-1"></a>The appendix that follows has a study plan, a list of kernels worth reimplementing from memory, and the capstone challenge. Read it once. Pick one project. Build it.</span>
+</code><button title="Copy to Clipboard" class="code-copy-button" data-in-quarto-modal=""><i class="bi"></i></button></pre></div>
+</div></div></div></div></div>
+</div> <!-- /content -->
+
+
+
+
+</body></html>

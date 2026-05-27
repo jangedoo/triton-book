@@ -1,0 +1,1545 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"><head>
+
+<meta charset="utf-8">
+<meta name="generator" content="quarto-1.5.57">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+
+<title>28&nbsp; Chapter 26: Autotuning – Learning Triton by Rebuilding Modern LLM Kernels</title>
+<style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+  width: 0.8em;
+  margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
+  vertical-align: middle;
+}
+/* CSS for syntax highlighting */
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { display: inline-block; text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+  { counter-reset: source-line 0; }
+pre.numberSource code > span
+  { position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+  { content: counter(source-line);
+    position: relative; left: -1em; text-align: right; vertical-align: baseline;
+    border: none; display: inline-block;
+    -webkit-touch-callout: none; -webkit-user-select: none;
+    -khtml-user-select: none; -moz-user-select: none;
+    -ms-user-select: none; user-select: none;
+    padding: 0 4px; width: 4em;
+  }
+pre.numberSource { margin-left: 3em;  padding-left: 4px; }
+div.sourceCode
+  {   }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+</style>
+
+
+<script src="../../site_libs/quarto-nav/quarto-nav.js"></script>
+<script src="../../site_libs/quarto-nav/headroom.min.js"></script>
+<script src="../../site_libs/clipboard/clipboard.min.js"></script>
+<script src="../../site_libs/quarto-search/autocomplete.umd.js"></script>
+<script src="../../site_libs/quarto-search/fuse.min.js"></script>
+<script src="../../site_libs/quarto-search/quarto-search.js"></script>
+<meta name="quarto:offset" content="../../">
+<link href="../../book/07-debug-perf/27-perf-tuning.html" rel="next">
+<link href="../../book/07-debug-perf/25-benchmarking.html" rel="prev">
+<script src="../../site_libs/quarto-html/quarto.js"></script>
+<script src="../../site_libs/quarto-html/popper.min.js"></script>
+<script src="../../site_libs/quarto-html/tippy.umd.min.js"></script>
+<script src="../../site_libs/quarto-html/anchor.min.js"></script>
+<link href="../../site_libs/quarto-html/tippy.css" rel="stylesheet">
+<link href="../../site_libs/quarto-html/quarto-syntax-highlighting.css" rel="stylesheet" id="quarto-text-highlighting-styles">
+<script src="../../site_libs/bootstrap/bootstrap.min.js"></script>
+<link href="../../site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
+<link href="../../site_libs/bootstrap/bootstrap.min.css" rel="stylesheet" id="quarto-bootstrap" data-mode="light">
+<script id="quarto-search-options" type="application/json">{
+  "location": "sidebar",
+  "copy-button": false,
+  "collapse-after": 3,
+  "panel-placement": "start",
+  "type": "textbox",
+  "limit": 50,
+  "keyboard-shortcut": [
+    "f",
+    "/",
+    "s"
+  ],
+  "show-item-context": false,
+  "language": {
+    "search-no-results-text": "No results",
+    "search-matching-documents-text": "matching documents",
+    "search-copy-link-title": "Copy link to search",
+    "search-hide-matches-text": "Hide additional matches",
+    "search-more-match-text": "more match in this document",
+    "search-more-matches-text": "more matches in this document",
+    "search-clear-button-title": "Clear",
+    "search-text-placeholder": "",
+    "search-detached-cancel-button-title": "Cancel",
+    "search-submit-button-title": "Submit",
+    "search-label": "Search"
+  }
+}</script>
+<script type="module" src="../../site_libs/quarto-ojs/quarto-ojs-runtime.js"></script>
+<link href="../../site_libs/quarto-ojs/quarto-ojs.css" rel="stylesheet">
+
+
+</head>
+
+<body class="nav-sidebar floating">
+
+<div id="quarto-search-results"></div>
+  <header id="quarto-header" class="headroom fixed-top">
+  <nav class="quarto-secondary-nav">
+    <div class="container-fluid d-flex">
+      <button type="button" class="quarto-btn-toggle btn" data-bs-toggle="collapse" role="button" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">
+        <i class="bi bi-layout-text-sidebar-reverse"></i>
+      </button>
+        <nav class="quarto-page-breadcrumbs" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="../../book/07-debug-perf/24-debugging.html">Part 7: Debugging, Testing, Profiling, Optimization</a></li><li class="breadcrumb-item"><a href="../../book/07-debug-perf/26-autotuning.html"><span class="chapter-number">28</span>&nbsp; <span class="chapter-title">Chapter 26: Autotuning</span></a></li></ol></nav>
+        <a class="flex-grow-1" role="navigation" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">      
+        </a>
+      <button type="button" class="btn quarto-search-button" aria-label="Search" onclick="window.quartoOpenSearch();">
+        <i class="bi bi-search"></i>
+      </button>
+    </div>
+  </nav>
+</header>
+<!-- content -->
+<div id="quarto-content" class="quarto-container page-columns page-rows-contents page-layout-article">
+<!-- sidebar -->
+  <nav id="quarto-sidebar" class="sidebar collapse collapse-horizontal quarto-sidebar-collapse-item sidebar-navigation floating overflow-auto">
+    <div class="pt-lg-2 mt-2 text-left sidebar-header">
+    <div class="sidebar-title mb-0 py-0">
+      <a href="../../">Learning Triton by Rebuilding Modern LLM Kernels</a> 
+    </div>
+      </div>
+        <div class="mt-2 flex-shrink-0 align-items-center">
+        <div class="sidebar-search">
+        <div id="quarto-search" class="" title="Search"></div>
+        </div>
+        </div>
+    <div class="sidebar-menu-container"> 
+    <ul class="list-unstyled mt-1">
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../index.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">1</span>&nbsp; <span class="chapter-title">Learning Triton by Rebuilding Modern LLM Kernels</span></span></a>
+  </div>
+</li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-1" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 0: Orientation</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-1" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-1" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/00-orientation/00-why-triton.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">2</span>&nbsp; <span class="chapter-title">Chapter 00: Why Triton Exists</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/00-orientation/01-setup.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">3</span>&nbsp; <span class="chapter-title">Chapter 01: Environment Setup</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-2" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 1: Triton Fundamentals</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-2" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-2" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/01-fundamentals/02-mental-model.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">4</span>&nbsp; <span class="chapter-title">Chapter 2: The Triton Mental Model</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/01-fundamentals/03-memory-pointers-strides.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">5</span>&nbsp; <span class="chapter-title">Chapter 3: Memory, Pointers, Strides, and Masks</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/01-fundamentals/04-reductions.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">6</span>&nbsp; <span class="chapter-title">Chapter 4: Reductions</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-3" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 2: Basic Neural Network Kernels</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-3" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-3" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/02-basic-nn/05-fused-softmax.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">7</span>&nbsp; <span class="chapter-title">Chapter 5: Fused Softmax</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/02-basic-nn/06-layernorm.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">8</span>&nbsp; <span class="chapter-title">Chapter 6: LayerNorm</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/02-basic-nn/07-rmsnorm.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">9</span>&nbsp; <span class="chapter-title">Chapter 7: RMSNorm</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/02-basic-nn/08-activations-swiglu.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">10</span>&nbsp; <span class="chapter-title">Chapter 8: Activation Functions and Gated MLPs</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-4" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 3: Matrix Multiplication</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-4" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-4" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/03-matmul/09-matmul.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">11</span>&nbsp; <span class="chapter-title">Chapter 9: Matmul From Scratch</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/03-matmul/10-batched-matmul-linear.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">12</span>&nbsp; <span class="chapter-title">Chapter 10: Batched Matmul and Linear Layers</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/03-matmul/11-persistent-matmul.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">13</span>&nbsp; <span class="chapter-title">Chapter 11: Persistent Matmul and Advanced Matmul Concepts</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-5" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 4: Attention and Transformer Kernels</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-5" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-5" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/12-attention-math.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">14</span>&nbsp; <span class="chapter-title">Chapter 12: Attention Math Refresher for Kernel Writers</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/13-naive-attention.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">15</span>&nbsp; <span class="chapter-title">Chapter 13: Naive Attention in PyTorch and Triton Pieces</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/14-flashattention-fwd.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">16</span>&nbsp; <span class="chapter-title">Chapter 14: FlashAttention Forward in Triton</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/15-attention-backward.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">17</span>&nbsp; <span class="chapter-title">Chapter 15: Attention Backward — Conceptual and Optional Implementation</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/16-rope-alibi.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">18</span>&nbsp; <span class="chapter-title">Chapter 16: Rotary Positional Embeddings, ALiBi, and Position Kernels</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/17-kv-cache.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">19</span>&nbsp; <span class="chapter-title">Chapter 17: KV Cache Kernels for Inference</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-6" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 5: Modern LLM Layer Fusion</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-6" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-6" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/05-llm-fusion/18-residual-rmsnorm.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">20</span>&nbsp; <span class="chapter-title">Chapter 18: Residual Add + RMSNorm Fusion</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/05-llm-fusion/19-fused-bias-act-gate.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">21</span>&nbsp; <span class="chapter-title">Chapter 19: Fused Bias + Activation + Gate</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/05-llm-fusion/20-cross-entropy.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">22</span>&nbsp; <span class="chapter-title">Chapter 20: Cross Entropy and Logits Kernels</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/05-llm-fusion/21-sampling.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">23</span>&nbsp; <span class="chapter-title">Chapter 21: Sampling Kernels for Inference</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-7" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 6: Quantization-Oriented Kernels</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-7" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-7" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/06-quantization/22-low-precision.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">24</span>&nbsp; <span class="chapter-title">Chapter 22: Low Precision Basics</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/06-quantization/23-dequant-matmul.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">25</span>&nbsp; <span class="chapter-title">Chapter 23: Int8 / FP8 Style Dequant + Matmul Concepts</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-8" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 7: Debugging, Testing, Profiling, Optimization</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-8" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-8" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/07-debug-perf/24-debugging.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">26</span>&nbsp; <span class="chapter-title">Chapter 24: Debugging Triton Kernels</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/07-debug-perf/25-benchmarking.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">27</span>&nbsp; <span class="chapter-title">Chapter 25: Benchmarking Correctly</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/07-debug-perf/26-autotuning.html" class="sidebar-item-text sidebar-link active">
+ <span class="menu-text"><span class="chapter-number">28</span>&nbsp; <span class="chapter-title">Chapter 26: Autotuning</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/07-debug-perf/27-perf-tuning.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">29</span>&nbsp; <span class="chapter-title">Chapter 27: Performance Tuning Mental Model</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-9" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 8: Capstone Projects</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-9" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-9" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/08-capstone/28-mini-library.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">30</span>&nbsp; <span class="chapter-title">Chapter 28: Build a Mini Triton LLM Kernel Library</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/08-capstone/29-replace-transformer-pieces.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">31</span>&nbsp; <span class="chapter-title">Chapter 29: Replace Pieces of a Tiny Transformer</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/08-capstone/30-design-playbook.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">32</span>&nbsp; <span class="chapter-title">Chapter 30: Final Kernel Design Playbook</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/appendix-study-plan.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">33</span>&nbsp; <span class="chapter-title">Appendix: Study Plan, Memory Kernels, and the Capstone Challenge</span></span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../kernel_checklist.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">34</span>&nbsp; <span class="chapter-title">Triton Kernel Design Checklist</span></span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../llm_kernel_map.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">35</span>&nbsp; <span class="chapter-title">LLM Component → Triton Kernel Map</span></span></a>
+  </div>
+</li>
+    </ul>
+    </div>
+</nav>
+<div id="quarto-sidebar-glass" class="quarto-sidebar-collapse-item" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item"></div>
+<!-- margin-sidebar -->
+    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar">
+        <nav id="TOC" role="doc-toc" class="toc-active">
+    <h2 id="toc-title">Table of contents</h2>
+   
+  <ul>
+  <li><a href="#triton.autotune" id="toc-triton.autotune" class="nav-link active" data-scroll-target="#triton.autotune"><span class="header-section-number">28.1</span> <code>triton.autotune</code></a></li>
+  <li><a href="#what-the-knobs-do" id="toc-what-the-knobs-do" class="nav-link" data-scroll-target="#what-the-knobs-do"><span class="header-section-number">28.2</span> What the knobs do</a>
+  <ul class="collapse">
+  <li><a href="#block_m-block_n-block_k" id="toc-block_m-block_n-block_k" class="nav-link" data-scroll-target="#block_m-block_n-block_k"><span class="header-section-number">28.2.1</span> <code>BLOCK_M</code>, <code>BLOCK_N</code>, <code>BLOCK_K</code></a></li>
+  <li><a href="#group_size_m" id="toc-group_size_m" class="nav-link" data-scroll-target="#group_size_m"><span class="header-section-number">28.2.2</span> <code>GROUP_SIZE_M</code></a></li>
+  <li><a href="#num_warps" id="toc-num_warps" class="nav-link" data-scroll-target="#num_warps"><span class="header-section-number">28.2.3</span> <code>num_warps</code></a></li>
+  <li><a href="#num_stages" id="toc-num_stages" class="nav-link" data-scroll-target="#num_stages"><span class="header-section-number">28.2.4</span> <code>num_stages</code></a></li>
+  </ul></li>
+  <li><a href="#triton.heuristics" id="toc-triton.heuristics" class="nav-link" data-scroll-target="#triton.heuristics"><span class="header-section-number">28.3</span> <code>triton.heuristics</code></a></li>
+  <li><a href="#kernel-1-autotuned-softmax" id="toc-kernel-1-autotuned-softmax" class="nav-link" data-scroll-target="#kernel-1-autotuned-softmax"><span class="header-section-number">28.4</span> Kernel 1: autotuned softmax</a></li>
+  <li><a href="#kernel-2-autotuned-matmul" id="toc-kernel-2-autotuned-matmul" class="nav-link" data-scroll-target="#kernel-2-autotuned-matmul"><span class="header-section-number">28.5</span> Kernel 2: autotuned matmul</a></li>
+  <li><a href="#inspecting-and-persisting-the-cache" id="toc-inspecting-and-persisting-the-cache" class="nav-link" data-scroll-target="#inspecting-and-persisting-the-cache"><span class="header-section-number">28.6</span> Inspecting and persisting the cache</a></li>
+  <li><a href="#correctness-test" id="toc-correctness-test" class="nav-link" data-scroll-target="#correctness-test"><span class="header-section-number">28.7</span> Correctness test</a></li>
+  <li><a href="#benchmark" id="toc-benchmark" class="nav-link" data-scroll-target="#benchmark"><span class="header-section-number">28.8</span> Benchmark</a></li>
+  <li><a href="#optimization-discussion" id="toc-optimization-discussion" class="nav-link" data-scroll-target="#optimization-discussion"><span class="header-section-number">28.9</span> Optimization discussion</a></li>
+  <li><a href="#common-bugs" id="toc-common-bugs" class="nav-link" data-scroll-target="#common-bugs"><span class="header-section-number">28.10</span> Common bugs</a></li>
+  <li><a href="#exercises" id="toc-exercises" class="nav-link" data-scroll-target="#exercises"><span class="header-section-number">28.11</span> Exercises</a></li>
+  </ul>
+</nav>
+    </div>
+<!-- main -->
+<main class="content" id="quarto-document-content">
+
+<header id="title-block-header" class="quarto-title-block default"><nav class="quarto-page-breadcrumbs quarto-title-breadcrumbs d-none d-lg-block" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="../../book/07-debug-perf/24-debugging.html">Part 7: Debugging, Testing, Profiling, Optimization</a></li><li class="breadcrumb-item"><a href="../../book/07-debug-perf/26-autotuning.html"><span class="chapter-number">28</span>&nbsp; <span class="chapter-title">Chapter 26: Autotuning</span></a></li></ol></nav>
+<div class="quarto-title">
+<div class="quarto-title-block"><div><h1 class="title"><span class="chapter-number">28</span>&nbsp; <span class="chapter-title">Chapter 26: Autotuning</span></h1><button type="button" class="btn code-tools-button" id="quarto-code-tools-source"><i class="bi"></i> Code</button></div></div>
+</div>
+
+
+
+<div class="quarto-title-meta">
+
+    
+  
+    
+  </div>
+  
+
+
+</header>
+
+
+<p>Up to this chapter, every BLOCK_SIZE in this book has been a number you picked by intuition or trial. That works for the chapter exercises and breaks the moment you ship a kernel and someone runs it on a different GPU or a different shape. <code>triton.autotune</code> is the tool that says: “here is a list of plausible configs; pick the best one for this shape, cache the choice, and reuse it forever”. This chapter is how to use it without shooting yourself in the foot.</p>
+<div class="callout callout-style-default callout-warning callout-titled">
+<div class="callout-header d-flex align-content-center">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-title-container flex-fill">
+Hardware caveat
+</div>
+</div>
+<div class="callout-body-container callout-body">
+<p><code>num_stages</code> controls software pipelining for the K-loop on Ampere (sm_80) and newer. On the author’s 2070 SUPER (Turing, sm_75), <code>num_stages &gt; 2</code> compiles but has no measurable effect. We keep a few high-stage configs in this chapter’s matmul anyway because the autotune cost is small and the configs help Ampere+ readers; the autotuner on a Turing card will quickly pick a <code>num_stages=2</code> config and move on.</p>
+</div>
+</div>
+<section id="triton.autotune" class="level2" data-number="28.1">
+<h2 data-number="28.1" class="anchored" data-anchor-id="triton.autotune"><span class="header-section-number">28.1</span> <code>triton.autotune</code></h2>
+<div class="sourceCode" id="cb1"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.autotune</span>(</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a>    configs<span class="op">=</span>[</span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>        triton.Config({<span class="st">"BLOCK_M"</span>:  <span class="dv">64</span>, <span class="st">"BLOCK_N"</span>: <span class="dv">128</span>, <span class="st">"BLOCK_K"</span>: <span class="dv">32</span>, <span class="st">"GROUP_SIZE_M"</span>: <span class="dv">8</span>},</span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a>                      num_warps<span class="op">=</span><span class="dv">4</span>, num_stages<span class="op">=</span><span class="dv">2</span>),</span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a>        triton.Config({<span class="st">"BLOCK_M"</span>: <span class="dv">128</span>, <span class="st">"BLOCK_N"</span>: <span class="dv">128</span>, <span class="st">"BLOCK_K"</span>: <span class="dv">32</span>, <span class="st">"GROUP_SIZE_M"</span>: <span class="dv">8</span>},</span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a>                      num_warps<span class="op">=</span><span class="dv">4</span>, num_stages<span class="op">=</span><span class="dv">3</span>),</span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a>        <span class="co"># ... more configs ...</span></span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a>    ],</span>
+<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a>    key<span class="op">=</span>[<span class="st">"M"</span>, <span class="st">"N"</span>, <span class="st">"K"</span>],</span>
+<span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb1-11"><a href="#cb1-11" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.jit</span></span>
+<span id="cb1-12"><a href="#cb1-12" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> my_matmul_kernel(a_ptr, b_ptr, c_ptr, M, N, K, ...):</span>
+<span id="cb1-13"><a href="#cb1-13" aria-hidden="true" tabindex="-1"></a>    ...</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<p>Three things to internalize.</p>
+<p><strong>The configs.</strong> Each <code>triton.Config</code> is a dict of constexpr arguments plus <code>num_warps</code> and <code>num_stages</code>. The kernel accepts these as <code>tl.constexpr</code> parameters. The autotuner runs each config once on the actual input, times it, and remembers the winner.</p>
+<p><strong>The key.</strong> The <code>key=</code> argument lists the kernel parameters that determine which cached config to use. For matmul, <code>["M", "N", "K"]</code> is right — a different shape gets a different config. <strong>Omitting <code>key</code> is a bug</strong>: the autotuner runs once on the first call, caches that config under an empty key, and reuses it for every shape. You will silently use a config tuned for shape A on shape B.</p>
+<p><strong>The cost.</strong> Autotune compiles and benchmarks every config on the first call for a new shape. With 10 configs, that is roughly 10× the time of a single compile-and-launch — often 1–5 seconds wall clock per unique shape. After the first call, the cache hits and there is no overhead. In a training or inference loop where shapes are stable, this is a one-time cost paid at startup. In a benchmark loop that sweeps shapes, it is <strong>not</strong> the first-iteration cost you want to plot.</p>
+</section>
+<section id="what-the-knobs-do" class="level2" data-number="28.2">
+<h2 data-number="28.2" class="anchored" data-anchor-id="what-the-knobs-do"><span class="header-section-number">28.2</span> What the knobs do</h2>
+<section id="block_m-block_n-block_k" class="level3" data-number="28.2.1">
+<h3 data-number="28.2.1" class="anchored" data-anchor-id="block_m-block_n-block_k"><span class="header-section-number">28.2.1</span> <code>BLOCK_M</code>, <code>BLOCK_N</code>, <code>BLOCK_K</code></h3>
+<p>The matmul tile shape. Larger BLOCKs reuse each loaded element across more output elements (each fp16 weight in a <code>(BLOCK_M, BLOCK_K) @ (BLOCK_K, BLOCK_N)</code> tile contributes to <code>BLOCK_M * BLOCK_N</code> outputs). But larger BLOCKs cost more registers, and beyond a threshold (depends on GPU), the kernel <strong>spills</strong> registers to local memory and performance collapses.</p>
+<p>The autotuner detects spill empirically: the config compiles, runs, and is slower than a smaller-block alternative. You do not need to predict it; you just need to include some smaller configs as fallback.</p>
+</section>
+<section id="group_size_m" class="level3" data-number="28.2.2">
+<h3 data-number="28.2.2" class="anchored" data-anchor-id="group_size_m"><span class="header-section-number">28.2.2</span> <code>GROUP_SIZE_M</code></h3>
+<p>The super-grouping factor for L2 reuse from Chapter 9. Common values: 4, 8. Smaller for narrow matrices, larger for square or wide.</p>
+</section>
+<section id="num_warps" class="level3" data-number="28.2.3">
+<h3 data-number="28.2.3" class="anchored" data-anchor-id="num_warps"><span class="header-section-number">28.2.3</span> <code>num_warps</code></h3>
+<p>Each program runs on <code>num_warps * 32</code> threads. More warps means more parallelism inside a program (more <code>tl.load</code> calls in flight, more lanes for <code>tl.dot</code>), but also more register pressure and fewer concurrent programs per SM.</p>
+<p>Common values: 2 for small kernels (softmax row of 128), 4 as the matmul default, 8 for large tiles (<code>BLOCK_M = BLOCK_N = 256</code>). Beyond 8, you usually waste registers without speedup.</p>
+</section>
+<section id="num_stages" class="level3" data-number="28.2.4">
+<h3 data-number="28.2.4" class="anchored" data-anchor-id="num_stages"><span class="header-section-number">28.2.4</span> <code>num_stages</code></h3>
+<p>Software pipelining depth for the K-loop. On Ampere+, the compiler can issue the next K-tile’s <code>tl.load</code> while the current <code>tl.dot</code> is still running, hiding DRAM latency. <code>num_stages=2</code> is the conservative default; <code>num_stages=3</code> or <code>4</code> is common on Ampere. <strong>On Turing (sm_75), this knob has no effect</strong> — the hardware lacks the asynchronous copy instructions the compiler relies on.</p>
+</section>
+</section>
+<section id="triton.heuristics" class="level2" data-number="28.3">
+<h2 data-number="28.3" class="anchored" data-anchor-id="triton.heuristics"><span class="header-section-number">28.3</span> <code>triton.heuristics</code></h2>
+<p>When the right value of a constexpr is a <strong>deterministic function</strong> of the input — most commonly <code>BLOCK_SIZE = next_pow2(N)</code> for a reduction kernel — autotuning is overkill. You pay search cost for a search whose answer you already know.</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.heuristics</span>({<span class="st">"BLOCK_SIZE"</span>: <span class="kw">lambda</span> args: triton.next_power_of_2(args[<span class="st">"N"</span>])})</span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.jit</span></span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> my_kernel(..., N, BLOCK_SIZE: tl.constexpr):</span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a>    ...</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<p>The lambda receives the kernel arguments as a dict and returns the constexpr value. It runs at launch time, before the kernel is compiled — so different N values trigger different compilations, exactly like autotune, but without the search.</p>
+<p>Use <code>heuristics</code> when:</p>
+<ul>
+<li>The right value is a closed-form function of the input shape.</li>
+<li>You only need to set constexprs, not <code>num_warps</code> / <code>num_stages</code>.</li>
+<li>You want zero search cost.</li>
+</ul>
+<p>Use <code>autotune</code> when:</p>
+<ul>
+<li>The right value depends on the GPU as well as the input.</li>
+<li>You want to tune <code>num_warps</code> or <code>num_stages</code>.</li>
+<li>The right value is non-obvious and you want the search to find it.</li>
+</ul>
+</section>
+<section id="kernel-1-autotuned-softmax" class="level2" data-number="28.4">
+<h2 data-number="28.4" class="anchored" data-anchor-id="kernel-1-autotuned-softmax"><span class="header-section-number">28.4</span> Kernel 1: autotuned softmax</h2>
+<p>This is <code>src/ch26_autotune/autotuned_softmax.py</code>. We autotune <code>BLOCK_SIZE</code> over a small grid:</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.autotune</span>(</span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>    configs<span class="op">=</span>[</span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>        triton.Config({<span class="st">"BLOCK_SIZE"</span>: <span class="dv">128</span>},  num_warps<span class="op">=</span><span class="dv">2</span>),</span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>        triton.Config({<span class="st">"BLOCK_SIZE"</span>: <span class="dv">256</span>},  num_warps<span class="op">=</span><span class="dv">4</span>),</span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a>        triton.Config({<span class="st">"BLOCK_SIZE"</span>: <span class="dv">512</span>},  num_warps<span class="op">=</span><span class="dv">4</span>),</span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a>        triton.Config({<span class="st">"BLOCK_SIZE"</span>: <span class="dv">1024</span>}, num_warps<span class="op">=</span><span class="dv">8</span>),</span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a>        triton.Config({<span class="st">"BLOCK_SIZE"</span>: <span class="dv">2048</span>}, num_warps<span class="op">=</span><span class="dv">8</span>),</span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a>        triton.Config({<span class="st">"BLOCK_SIZE"</span>: <span class="dv">4096</span>}, num_warps<span class="op">=</span><span class="dv">16</span>),</span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a>    ],</span>
+<span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a>    key<span class="op">=</span>[<span class="st">"N"</span>],</span>
+<span id="cb3-11"><a href="#cb3-11" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb3-12"><a href="#cb3-12" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.jit</span></span>
+<span id="cb3-13"><a href="#cb3-13" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> _softmax_kernel(x_ptr, y_ptr, stride_xm, stride_ym, M, N,</span>
+<span id="cb3-14"><a href="#cb3-14" aria-hidden="true" tabindex="-1"></a>                    BLOCK_SIZE: tl.constexpr):</span>
+<span id="cb3-15"><a href="#cb3-15" aria-hidden="true" tabindex="-1"></a>    pid <span class="op">=</span> tl.program_id(<span class="dv">0</span>)</span>
+<span id="cb3-16"><a href="#cb3-16" aria-hidden="true" tabindex="-1"></a>    offs <span class="op">=</span> tl.arange(<span class="dv">0</span>, BLOCK_SIZE)</span>
+<span id="cb3-17"><a href="#cb3-17" aria-hidden="true" tabindex="-1"></a>    mask <span class="op">=</span> offs <span class="op">&lt;</span> N</span>
+<span id="cb3-18"><a href="#cb3-18" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> tl.load(x_ptr <span class="op">+</span> pid <span class="op">*</span> stride_xm <span class="op">+</span> offs, mask<span class="op">=</span>mask, other<span class="op">=-</span><span class="bu">float</span>(<span class="st">"inf"</span>))</span>
+<span id="cb3-19"><a href="#cb3-19" aria-hidden="true" tabindex="-1"></a>    m <span class="op">=</span> tl.<span class="bu">max</span>(x, axis<span class="op">=</span><span class="dv">0</span>)</span>
+<span id="cb3-20"><a href="#cb3-20" aria-hidden="true" tabindex="-1"></a>    e <span class="op">=</span> tl.exp((x <span class="op">-</span> m).to(tl.float32))</span>
+<span id="cb3-21"><a href="#cb3-21" aria-hidden="true" tabindex="-1"></a>    denom <span class="op">=</span> tl.<span class="bu">sum</span>(e, axis<span class="op">=</span><span class="dv">0</span>)</span>
+<span id="cb3-22"><a href="#cb3-22" aria-hidden="true" tabindex="-1"></a>    y <span class="op">=</span> (e <span class="op">/</span> denom).to(x.dtype)</span>
+<span id="cb3-23"><a href="#cb3-23" aria-hidden="true" tabindex="-1"></a>    tl.store(y_ptr <span class="op">+</span> pid <span class="op">*</span> stride_ym <span class="op">+</span> offs, y, mask<span class="op">=</span>mask)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<p><code>BLOCK_SIZE</code> must be <code>&gt;= N</code> for this kernel (one program handles a whole row). The configs cover N up to 4096. For wider rows, add larger configs or switch to a multi-program-per-row layout.</p>
+<p>The <code>num_warps</code> scales with <code>BLOCK_SIZE</code>: a 4096-element block has more parallel work to do than a 128-element block.</p>
+<div class="callout callout-style-simple callout-warning">
+<div class="callout-body d-flex">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-body-container">
+<p><strong>Placeholder data.</strong> The numbers below are hardcoded illustrative values, not measurements. Replace with output from your own <code>triton.testing.do_bench</code> run before drawing conclusions.</p>
+</div>
+</div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code hidden" id="cb4" data-startfrom="126" data-source-offset="0"><pre class="sourceCode js code-with-copy"><code class="sourceCode javascript" style="counter-reset: source-line 125;"><span id="cb4-126"><a href="#cb4-126" aria-hidden="true" tabindex="-1"></a>{</span>
+<span id="cb4-127"><a href="#cb4-127" aria-hidden="true" tabindex="-1"></a>  <span class="kw">const</span> data <span class="op">=</span> [</span>
+<span id="cb4-128"><a href="#cb4-128" aria-hidden="true" tabindex="-1"></a>    {<span class="dt">N</span><span class="op">:</span> <span class="dv">128</span><span class="op">,</span>  <span class="dt">ms</span><span class="op">:</span> <span class="fl">0.04</span><span class="op">,</span> <span class="dt">picked_block</span><span class="op">:</span> <span class="dv">128</span>}<span class="op">,</span></span>
+<span id="cb4-129"><a href="#cb4-129" aria-hidden="true" tabindex="-1"></a>    {<span class="dt">N</span><span class="op">:</span> <span class="dv">512</span><span class="op">,</span>  <span class="dt">ms</span><span class="op">:</span> <span class="fl">0.08</span><span class="op">,</span> <span class="dt">picked_block</span><span class="op">:</span> <span class="dv">512</span>}<span class="op">,</span></span>
+<span id="cb4-130"><a href="#cb4-130" aria-hidden="true" tabindex="-1"></a>    {<span class="dt">N</span><span class="op">:</span> <span class="dv">2048</span><span class="op">,</span> <span class="dt">ms</span><span class="op">:</span> <span class="fl">0.18</span><span class="op">,</span> <span class="dt">picked_block</span><span class="op">:</span> <span class="dv">2048</span>}<span class="op">,</span></span>
+<span id="cb4-131"><a href="#cb4-131" aria-hidden="true" tabindex="-1"></a>    {<span class="dt">N</span><span class="op">:</span> <span class="dv">4096</span><span class="op">,</span> <span class="dt">ms</span><span class="op">:</span> <span class="fl">0.30</span><span class="op">,</span> <span class="dt">picked_block</span><span class="op">:</span> <span class="dv">4096</span>}<span class="op">,</span></span>
+<span id="cb4-132"><a href="#cb4-132" aria-hidden="true" tabindex="-1"></a>  ]<span class="op">;</span></span>
+<span id="cb4-133"><a href="#cb4-133" aria-hidden="true" tabindex="-1"></a>  <span class="cf">return</span> Plot<span class="op">.</span><span class="fu">plot</span>({</span>
+<span id="cb4-134"><a href="#cb4-134" aria-hidden="true" tabindex="-1"></a>    <span class="dt">color</span><span class="op">:</span> {<span class="dt">legend</span><span class="op">:</span> <span class="kw">true</span><span class="op">,</span> <span class="dt">domain</span><span class="op">:</span> [<span class="st">"triton autotuned"</span>]<span class="op">,</span> <span class="dt">range</span><span class="op">:</span> [<span class="st">"steelblue"</span>]}<span class="op">,</span></span>
+<span id="cb4-135"><a href="#cb4-135" aria-hidden="true" tabindex="-1"></a>    <span class="dt">x</span><span class="op">:</span> {<span class="dt">label</span><span class="op">:</span> <span class="st">"N (row width, elements)"</span>}<span class="op">,</span></span>
+<span id="cb4-136"><a href="#cb4-136" aria-hidden="true" tabindex="-1"></a>    <span class="dt">y</span><span class="op">:</span> {<span class="dt">label</span><span class="op">:</span> <span class="st">"median latency (ms) — lower is better"</span>}<span class="op">,</span></span>
+<span id="cb4-137"><a href="#cb4-137" aria-hidden="true" tabindex="-1"></a>    <span class="dt">marks</span><span class="op">:</span> [</span>
+<span id="cb4-138"><a href="#cb4-138" aria-hidden="true" tabindex="-1"></a>      Plot<span class="op">.</span><span class="fu">line</span>(data<span class="op">,</span> {<span class="dt">x</span><span class="op">:</span> <span class="st">"N"</span><span class="op">,</span> <span class="dt">y</span><span class="op">:</span> <span class="st">"ms"</span><span class="op">,</span> <span class="dt">stroke</span><span class="op">:</span> <span class="st">"steelblue"</span>})<span class="op">,</span></span>
+<span id="cb4-139"><a href="#cb4-139" aria-hidden="true" tabindex="-1"></a>      Plot<span class="op">.</span><span class="fu">dot</span>(data<span class="op">,</span> {<span class="dt">x</span><span class="op">:</span> <span class="st">"N"</span><span class="op">,</span> <span class="dt">y</span><span class="op">:</span> <span class="st">"ms"</span><span class="op">,</span> <span class="dt">fill</span><span class="op">:</span> <span class="st">"steelblue"</span><span class="op">,</span></span>
+<span id="cb4-140"><a href="#cb4-140" aria-hidden="true" tabindex="-1"></a>                      <span class="dt">title</span><span class="op">:</span> d <span class="kw">=&gt;</span> <span class="vs">`N=</span><span class="sc">${</span>d<span class="op">.</span><span class="at">N</span><span class="sc">}</span><span class="vs">, picked BLOCK_SIZE=</span><span class="sc">${</span>d<span class="op">.</span><span class="at">picked_block</span><span class="sc">}</span><span class="vs">, </span><span class="sc">${</span>d<span class="op">.</span><span class="at">ms</span><span class="sc">}</span><span class="vs"> ms`</span>})</span>
+<span id="cb4-141"><a href="#cb4-141" aria-hidden="true" tabindex="-1"></a>    ]</span>
+<span id="cb4-142"><a href="#cb4-142" aria-hidden="true" tabindex="-1"></a>  })<span class="op">;</span></span>
+<span id="cb4-143"><a href="#cb4-143" aria-hidden="true" tabindex="-1"></a>}</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div id="fig-autotuned-softmax-bench" class="cell-output cell-output-display quarto-float quarto-figure quarto-figure-center anchored">
+<figure class="quarto-float quarto-float-fig figure">
+<div aria-describedby="fig-autotuned-softmax-bench-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+<div id="ojs-cell-1" data-nodetype="expression">
+
+</div>
+</div>
+<figcaption class="quarto-float-caption-bottom quarto-float-caption quarto-float-fig" id="fig-autotuned-softmax-bench-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+Figure&nbsp;28.1: Autotuned softmax kernel median latency vs row width N. Lower is better. Marker hover shows the BLOCK_SIZE the autotuner picked for each N.
+</figcaption>
+</figure>
+</div>
+</div>
+</section>
+<section id="kernel-2-autotuned-matmul" class="level2" data-number="28.5">
+<h2 data-number="28.5" class="anchored" data-anchor-id="kernel-2-autotuned-matmul"><span class="header-section-number">28.5</span> Kernel 2: autotuned matmul</h2>
+<p>The full kernel lives in <code>src/ch26_autotune/autotuned_matmul.py</code>. It is the Chapter 9 grouped matmul with the decorator stack:</p>
+<div class="sourceCode" id="cb5"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.autotune</span>(configs<span class="op">=</span>[</span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a>    triton.Config({<span class="st">"BLOCK_M"</span>:  <span class="dv">64</span>, <span class="st">"BLOCK_N"</span>:  <span class="dv">64</span>, <span class="st">"BLOCK_K"</span>: <span class="dv">32</span>, <span class="st">"GROUP_SIZE_M"</span>: <span class="dv">8</span>}, num_warps<span class="op">=</span><span class="dv">2</span>, num_stages<span class="op">=</span><span class="dv">2</span>),</span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>    triton.Config({<span class="st">"BLOCK_M"</span>:  <span class="dv">64</span>, <span class="st">"BLOCK_N"</span>: <span class="dv">128</span>, <span class="st">"BLOCK_K"</span>: <span class="dv">32</span>, <span class="st">"GROUP_SIZE_M"</span>: <span class="dv">8</span>}, num_warps<span class="op">=</span><span class="dv">4</span>, num_stages<span class="op">=</span><span class="dv">2</span>),</span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a>    triton.Config({<span class="st">"BLOCK_M"</span>: <span class="dv">128</span>, <span class="st">"BLOCK_N"</span>:  <span class="dv">64</span>, <span class="st">"BLOCK_K"</span>: <span class="dv">32</span>, <span class="st">"GROUP_SIZE_M"</span>: <span class="dv">8</span>}, num_warps<span class="op">=</span><span class="dv">4</span>, num_stages<span class="op">=</span><span class="dv">2</span>),</span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a>    triton.Config({<span class="st">"BLOCK_M"</span>: <span class="dv">128</span>, <span class="st">"BLOCK_N"</span>: <span class="dv">128</span>, <span class="st">"BLOCK_K"</span>: <span class="dv">32</span>, <span class="st">"GROUP_SIZE_M"</span>: <span class="dv">8</span>}, num_warps<span class="op">=</span><span class="dv">4</span>, num_stages<span class="op">=</span><span class="dv">3</span>),</span>
+<span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a>    triton.Config({<span class="st">"BLOCK_M"</span>: <span class="dv">128</span>, <span class="st">"BLOCK_N"</span>: <span class="dv">128</span>, <span class="st">"BLOCK_K"</span>: <span class="dv">64</span>, <span class="st">"GROUP_SIZE_M"</span>: <span class="dv">8</span>}, num_warps<span class="op">=</span><span class="dv">8</span>, num_stages<span class="op">=</span><span class="dv">3</span>),</span>
+<span id="cb5-7"><a href="#cb5-7" aria-hidden="true" tabindex="-1"></a>    triton.Config({<span class="st">"BLOCK_M"</span>: <span class="dv">128</span>, <span class="st">"BLOCK_N"</span>: <span class="dv">256</span>, <span class="st">"BLOCK_K"</span>: <span class="dv">32</span>, <span class="st">"GROUP_SIZE_M"</span>: <span class="dv">8</span>}, num_warps<span class="op">=</span><span class="dv">8</span>, num_stages<span class="op">=</span><span class="dv">3</span>),</span>
+<span id="cb5-8"><a href="#cb5-8" aria-hidden="true" tabindex="-1"></a>    triton.Config({<span class="st">"BLOCK_M"</span>: <span class="dv">256</span>, <span class="st">"BLOCK_N"</span>: <span class="dv">128</span>, <span class="st">"BLOCK_K"</span>: <span class="dv">32</span>, <span class="st">"GROUP_SIZE_M"</span>: <span class="dv">8</span>}, num_warps<span class="op">=</span><span class="dv">8</span>, num_stages<span class="op">=</span><span class="dv">3</span>),</span>
+<span id="cb5-9"><a href="#cb5-9" aria-hidden="true" tabindex="-1"></a>], key<span class="op">=</span>[<span class="st">"M"</span>, <span class="st">"N"</span>, <span class="st">"K"</span>])</span>
+<span id="cb5-10"><a href="#cb5-10" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.jit</span></span>
+<span id="cb5-11"><a href="#cb5-11" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> _matmul_kernel(...):</span>
+<span id="cb5-12"><a href="#cb5-12" aria-hidden="true" tabindex="-1"></a>    ...</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<p>The launcher’s grid must be a <strong>lambda</strong> that depends on the autotuned BLOCK sizes, because the grid is <code>cdiv(M, BLOCK_M) * cdiv(N, BLOCK_N)</code> for the linear-pid layout:</p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a>grid <span class="op">=</span> <span class="kw">lambda</span> meta: (triton.cdiv(M, meta[<span class="st">"BLOCK_M"</span>]) <span class="op">*</span> triton.cdiv(N, meta[<span class="st">"BLOCK_N"</span>]),)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<p>If you write <code>grid = (triton.cdiv(M, 128) * triton.cdiv(N, 128),)</code> with a fixed BLOCK_M=128, the autotuner picks a <code>BLOCK_M=256</code> config and the grid launches half as many programs as it should — half the output is uninitialized.</p>
+</section>
+<section id="inspecting-and-persisting-the-cache" class="level2" data-number="28.6">
+<h2 data-number="28.6" class="anchored" data-anchor-id="inspecting-and-persisting-the-cache"><span class="header-section-number">28.6</span> Inspecting and persisting the cache</h2>
+<p><code>triton.autotune</code> stores the chosen config in two places on the kernel object:</p>
+<div class="sourceCode" id="cb7"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a>_matmul_kernel.cache        <span class="co"># dict: key tuple -&gt; triton.Config</span></span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>_matmul_kernel.best_config  <span class="co"># the config from the most recent call</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<p>Read these to see what the picker chose. For a benchmark script that sweeps shapes, print <code>_matmul_kernel.cache</code> at the end to confirm the autotuner found different configs for different shapes.</p>
+<p>To <strong>persist</strong> the cache across script runs (so a production server doesn’t pay search cost on every startup), serialize <code>cache</code> to disk on shutdown and rebuild it on next run by re-seeding the dict from the file. The solution file has a full implementation. The catch: the cache key is a tuple of the <code>key=</code> values, and the value is a <code>triton.Config</code> — both serialize cleanly to JSON if you destructure the Config.</p>
+</section>
+<section id="correctness-test" class="level2" data-number="28.7">
+<h2 data-number="28.7" class="anchored" data-anchor-id="correctness-test"><span class="header-section-number">28.7</span> Correctness test</h2>
+<div id="db6b4149" class="cell">
+<div class="sourceCode cell-code" id="cb8"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> test_autotuned_softmax():</span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a>    <span class="im">from</span> src.ch26_autotune <span class="im">import</span> autotuned_softmax</span>
+<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> torch.randn(<span class="dv">1024</span>, <span class="dv">4096</span>, device<span class="op">=</span><span class="st">"cuda"</span>)</span>
+<span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a>    y <span class="op">=</span> autotuned_softmax(x)</span>
+<span id="cb8-5"><a href="#cb8-5" aria-hidden="true" tabindex="-1"></a>    torch.testing.assert_close(y, torch.softmax(x, dim<span class="op">=-</span><span class="dv">1</span>), rtol<span class="op">=</span><span class="fl">1e-4</span>, atol<span class="op">=</span><span class="fl">1e-4</span>)</span>
+<span id="cb8-6"><a href="#cb8-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-7"><a href="#cb8-7" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> test_autotuned_matmul():</span>
+<span id="cb8-8"><a href="#cb8-8" aria-hidden="true" tabindex="-1"></a>    <span class="im">from</span> src.ch26_autotune <span class="im">import</span> autotuned_matmul</span>
+<span id="cb8-9"><a href="#cb8-9" aria-hidden="true" tabindex="-1"></a>    a <span class="op">=</span> torch.randn(<span class="dv">513</span>, <span class="dv">257</span>, device<span class="op">=</span><span class="st">"cuda"</span>, dtype<span class="op">=</span>torch.float16) <span class="op">*</span> <span class="fl">0.5</span></span>
+<span id="cb8-10"><a href="#cb8-10" aria-hidden="true" tabindex="-1"></a>    b <span class="op">=</span> torch.randn(<span class="dv">257</span>, <span class="dv">129</span>, device<span class="op">=</span><span class="st">"cuda"</span>, dtype<span class="op">=</span>torch.float16) <span class="op">*</span> <span class="fl">0.5</span></span>
+<span id="cb8-11"><a href="#cb8-11" aria-hidden="true" tabindex="-1"></a>    c <span class="op">=</span> autotuned_matmul(a, b)</span>
+<span id="cb8-12"><a href="#cb8-12" aria-hidden="true" tabindex="-1"></a>    ref <span class="op">=</span> (a.to(torch.float32) <span class="op">@</span> b.to(torch.float32)).to(torch.float16)</span>
+<span id="cb8-13"><a href="#cb8-13" aria-hidden="true" tabindex="-1"></a>    torch.testing.assert_close(c, ref, rtol<span class="op">=</span><span class="fl">2e-2</span>, atol<span class="op">=</span><span class="fl">2e-2</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+</div>
+<p>Non-multiple shapes catch the most common autotune-related bug: a config whose BLOCK is wrong for the shape, combined with a launcher whose grid was computed for a different BLOCK.</p>
+</section>
+<section id="benchmark" class="level2" data-number="28.8">
+<h2 data-number="28.8" class="anchored" data-anchor-id="benchmark"><span class="header-section-number">28.8</span> Benchmark</h2>
+<p>The benchmark script in <code>benchmarks/bench_ch26_autotune.py</code> sweeps three shapes and reports the chosen config for each. On the 2070 SUPER, expect to see:</p>
+<ul>
+<li>Small shape (256, 256, 256): <code>BLOCK_M=64, BLOCK_N=64</code> wins. Larger blocks have too few programs to fill the SMs.</li>
+<li>Medium shape (1024, 1024, 1024): <code>BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, num_warps=4, num_stages=2</code> wins.</li>
+<li>Large shape (4096, 4096, 4096): <code>BLOCK_M=128, BLOCK_N=256</code> or <code>BLOCK_M=256, BLOCK_N=128</code> wins, both with <code>num_warps=8</code>.</li>
+</ul>
+<p>The “best config” differs by shape; this is the point of autotuning.</p>
+<div class="callout callout-style-simple callout-warning">
+<div class="callout-body d-flex">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-body-container">
+<p><strong>Placeholder data.</strong> The numbers below are hardcoded illustrative values, not measurements. Replace with output from your own <code>triton.testing.do_bench</code> run before drawing conclusions.</p>
+</div>
+</div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code hidden" id="cb9" data-startfrom="225" data-source-offset="0"><pre class="sourceCode js code-with-copy"><code class="sourceCode javascript" style="counter-reset: source-line 224;"><span id="cb9-225"><a href="#cb9-225" aria-hidden="true" tabindex="-1"></a>{</span>
+<span id="cb9-226"><a href="#cb9-226" aria-hidden="true" tabindex="-1"></a>  <span class="kw">const</span> data <span class="op">=</span> [</span>
+<span id="cb9-227"><a href="#cb9-227" aria-hidden="true" tabindex="-1"></a>    {<span class="dt">shape</span><span class="op">:</span> <span class="st">"256"</span><span class="op">,</span>  <span class="dt">ms</span><span class="op">:</span> <span class="fl">0.06</span><span class="op">,</span> <span class="dt">tflops</span><span class="op">:</span> <span class="fl">0.55</span>}<span class="op">,</span></span>
+<span id="cb9-228"><a href="#cb9-228" aria-hidden="true" tabindex="-1"></a>    {<span class="dt">shape</span><span class="op">:</span> <span class="st">"1024"</span><span class="op">,</span> <span class="dt">ms</span><span class="op">:</span> <span class="fl">1.10</span><span class="op">,</span> <span class="dt">tflops</span><span class="op">:</span> <span class="fl">1.95</span>}<span class="op">,</span></span>
+<span id="cb9-229"><a href="#cb9-229" aria-hidden="true" tabindex="-1"></a>    {<span class="dt">shape</span><span class="op">:</span> <span class="st">"4096"</span><span class="op">,</span> <span class="dt">ms</span><span class="op">:</span> <span class="fl">35.0</span><span class="op">,</span> <span class="dt">tflops</span><span class="op">:</span> <span class="fl">3.92</span>}<span class="op">,</span></span>
+<span id="cb9-230"><a href="#cb9-230" aria-hidden="true" tabindex="-1"></a>  ]<span class="op">;</span></span>
+<span id="cb9-231"><a href="#cb9-231" aria-hidden="true" tabindex="-1"></a>  <span class="cf">return</span> Plot<span class="op">.</span><span class="fu">plot</span>({</span>
+<span id="cb9-232"><a href="#cb9-232" aria-hidden="true" tabindex="-1"></a>    <span class="dt">color</span><span class="op">:</span> {<span class="dt">legend</span><span class="op">:</span> <span class="kw">true</span><span class="op">,</span> <span class="dt">domain</span><span class="op">:</span> [<span class="st">"triton autotuned"</span>]<span class="op">,</span> <span class="dt">range</span><span class="op">:</span> [<span class="st">"steelblue"</span>]}<span class="op">,</span></span>
+<span id="cb9-233"><a href="#cb9-233" aria-hidden="true" tabindex="-1"></a>    <span class="dt">y</span><span class="op">:</span> {<span class="dt">label</span><span class="op">:</span> <span class="st">"TFLOP/s — higher is better"</span>}<span class="op">,</span></span>
+<span id="cb9-234"><a href="#cb9-234" aria-hidden="true" tabindex="-1"></a>    <span class="dt">x</span><span class="op">:</span> {<span class="dt">label</span><span class="op">:</span> <span class="st">"square side (M = N = K)"</span>}<span class="op">,</span></span>
+<span id="cb9-235"><a href="#cb9-235" aria-hidden="true" tabindex="-1"></a>    <span class="dt">marks</span><span class="op">:</span> [</span>
+<span id="cb9-236"><a href="#cb9-236" aria-hidden="true" tabindex="-1"></a>      Plot<span class="op">.</span><span class="fu">barY</span>(data<span class="op">,</span> {<span class="dt">x</span><span class="op">:</span> <span class="st">"shape"</span><span class="op">,</span> <span class="dt">y</span><span class="op">:</span> <span class="st">"tflops"</span><span class="op">,</span> <span class="dt">fill</span><span class="op">:</span> () <span class="kw">=&gt;</span> <span class="st">"triton autotuned"</span>})</span>
+<span id="cb9-237"><a href="#cb9-237" aria-hidden="true" tabindex="-1"></a>    ]</span>
+<span id="cb9-238"><a href="#cb9-238" aria-hidden="true" tabindex="-1"></a>  })<span class="op">;</span></span>
+<span id="cb9-239"><a href="#cb9-239" aria-hidden="true" tabindex="-1"></a>}</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div id="fig-autotuned-matmul-bench" class="cell-output cell-output-display quarto-float quarto-figure quarto-figure-center anchored">
+<figure class="quarto-float quarto-float-fig figure">
+<div aria-describedby="fig-autotuned-matmul-bench-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+<div id="ojs-cell-2" data-nodetype="expression">
+
+</div>
+</div>
+<figcaption class="quarto-float-caption-bottom quarto-float-caption quarto-float-fig" id="fig-autotuned-matmul-bench-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+Figure&nbsp;28.2: Autotuned matmul throughput in TFLOP/s vs square side length (M=N=K). Higher is better.
+</figcaption>
+</figure>
+</div>
+</div>
+</section>
+<section id="optimization-discussion" class="level2" data-number="28.9">
+<h2 data-number="28.9" class="anchored" data-anchor-id="optimization-discussion"><span class="header-section-number">28.9</span> Optimization discussion</h2>
+<p>Autotuning is not a replacement for understanding the kernel. The autotuner picks among the configs <strong>you give it</strong>; if every config is bad, the best-of-bad-configs is still bad. The mental model:</p>
+<ol type="1">
+<li>Reason about a small set of plausible configs from first principles (BLOCK_M and BLOCK_N each multiples of 16; BLOCK_K = 32 or 64 for fp16; <code>num_warps</code> proportional to tile size).</li>
+<li>Add a few variants around the most plausible config.</li>
+<li>Let the autotuner pick.</li>
+</ol>
+<p>If autotuning sweeps a 50-config grid and the difference between the top 5 is 2%, you have already converged — stop adding configs and start optimizing the kernel itself.</p>
+<p>For a production system, autotune <strong>once</strong> during deployment (or as part of CI), serialize the cache, and ship it with the model. End users should never wait for autotune.</p>
+</section>
+<section id="common-bugs" class="level2" data-number="28.10">
+<h2 data-number="28.10" class="anchored" data-anchor-id="common-bugs"><span class="header-section-number">28.10</span> Common bugs</h2>
+<ul>
+<li><strong>Forgetting <code>key=</code>.</strong> The autotuner runs once and reuses the chosen config for every shape. The fix is <code>key=["M", "N", "K"]</code> (or whatever shapes matter).</li>
+<li><strong>Grid computed with fixed BLOCK.</strong> If your grid says <code>triton.cdiv(M, 128)</code> and the autotuner picks BLOCK_M=64, you launch half as many programs as needed and half the output is wrong. Use <code>grid = lambda meta: ...</code>.</li>
+<li><strong><code>num_stages &gt; 2</code> on Turing.</strong> Compiles and runs but does nothing. Drop those configs if your only target is Turing, or leave them and accept the small autotune-time overhead.</li>
+<li><strong>Spilling configs.</strong> <code>BLOCK_M=256, BLOCK_N=256, BLOCK_K=64, num_warps=4</code> will spill registers and run 10× slower than a saner config. The autotuner catches this — but you should know it can happen.</li>
+<li><strong>Benchmarking the first call.</strong> The first call to an autotuned kernel pays search cost (often seconds). Always warm up before timing.</li>
+</ul>
+</section>
+<section id="exercises" class="level2" data-number="28.11">
+<h2 data-number="28.11" class="anchored" data-anchor-id="exercises"><span class="header-section-number">28.11</span> Exercises</h2>
+<p>See <code>exercises/ch26_exercises.md</code>. Solutions in <code>solutions/ch26_solutions.py</code>.</p>
+
+
+<!-- -->
+
+</section>
+
+</main> <!-- /main -->
+<script type="ojs-module-contents">
+eyJjb250ZW50cyI6W3sibWV0aG9kTmFtZSI6ImludGVycHJldCIsImNlbGxOYW1lIjoib2pzLWNlbGwtMSIsImlubGluZSI6ZmFsc2UsInNvdXJjZSI6IntcbiAgY29uc3QgZGF0YSA9IFtcbiAgICB7TjogMTI4LCAgbXM6IDAuMDQsIHBpY2tlZF9ibG9jazogMTI4fSxcbiAgICB7TjogNTEyLCAgbXM6IDAuMDgsIHBpY2tlZF9ibG9jazogNTEyfSxcbiAgICB7TjogMjA0OCwgbXM6IDAuMTgsIHBpY2tlZF9ibG9jazogMjA0OH0sXG4gICAge046IDQwOTYsIG1zOiAwLjMwLCBwaWNrZWRfYmxvY2s6IDQwOTZ9LFxuICBdO1xuICByZXR1cm4gUGxvdC5wbG90KHtcbiAgICBjb2xvcjoge2xlZ2VuZDogdHJ1ZSwgZG9tYWluOiBbXCJ0cml0b24gYXV0b3R1bmVkXCJdLCByYW5nZTogW1wic3RlZWxibHVlXCJdfSxcbiAgICB4OiB7bGFiZWw6IFwiTiAocm93IHdpZHRoLCBlbGVtZW50cylcIn0sXG4gICAgeToge2xhYmVsOiBcIm1lZGlhbiBsYXRlbmN5IChtcykg4oCUIGxvd2VyIGlzIGJldHRlclwifSxcbiAgICBtYXJrczogW1xuICAgICAgUGxvdC5saW5lKGRhdGEsIHt4OiBcIk5cIiwgeTogXCJtc1wiLCBzdHJva2U6IFwic3RlZWxibHVlXCJ9KSxcbiAgICAgIFBsb3QuZG90KGRhdGEsIHt4OiBcIk5cIiwgeTogXCJtc1wiLCBmaWxsOiBcInN0ZWVsYmx1ZVwiLFxuICAgICAgICAgICAgICAgICAgICAgIHRpdGxlOiBkID0+IGBOPSR7ZC5OfSwgcGlja2VkIEJMT0NLX1NJWkU9JHtkLnBpY2tlZF9ibG9ja30sICR7ZC5tc30gbXNgfSlcbiAgICBdXG4gIH0pO1xufVxuIn0seyJtZXRob2ROYW1lIjoiaW50ZXJwcmV0IiwiY2VsbE5hbWUiOiJvanMtY2VsbC0yIiwiaW5saW5lIjpmYWxzZSwic291cmNlIjoie1xuICBjb25zdCBkYXRhID0gW1xuICAgIHtzaGFwZTogXCIyNTZcIiwgIG1zOiAwLjA2LCB0ZmxvcHM6IDAuNTV9LFxuICAgIHtzaGFwZTogXCIxMDI0XCIsIG1zOiAxLjEwLCB0ZmxvcHM6IDEuOTV9LFxuICAgIHtzaGFwZTogXCI0MDk2XCIsIG1zOiAzNS4wLCB0ZmxvcHM6IDMuOTJ9LFxuICBdO1xuICByZXR1cm4gUGxvdC5wbG90KHtcbiAgICBjb2xvcjoge2xlZ2VuZDogdHJ1ZSwgZG9tYWluOiBbXCJ0cml0b24gYXV0b3R1bmVkXCJdLCByYW5nZTogW1wic3RlZWxibHVlXCJdfSxcbiAgICB5OiB7bGFiZWw6IFwiVEZMT1AvcyDigJQgaGlnaGVyIGlzIGJldHRlclwifSxcbiAgICB4OiB7bGFiZWw6IFwic3F1YXJlIHNpZGUgKE0gPSBOID0gSylcIn0sXG4gICAgbWFya3M6IFtcbiAgICAgIFBsb3QuYmFyWShkYXRhLCB7eDogXCJzaGFwZVwiLCB5OiBcInRmbG9wc1wiLCBmaWxsOiAoKSA9PiBcInRyaXRvbiBhdXRvdHVuZWRcIn0pXG4gICAgXVxuICB9KTtcbn1cbiJ9XX0=
+</script>
+<script type="module">
+if (window.location.protocol === "file:") { alert("The OJS runtime does not work with file:// URLs. Please use a web server to view this document."); }
+window._ojs.paths.runtimeToDoc = "../../book/07-debug-perf";
+window._ojs.paths.runtimeToRoot = "../..";
+window._ojs.paths.docToRoot = "../..";
+window._ojs.selfContained = false;
+window._ojs.runtime.interpretFromScriptTags();
+</script>
+<script id="quarto-html-after-body" type="application/javascript">
+window.document.addEventListener("DOMContentLoaded", function (event) {
+  const toggleBodyColorMode = (bsSheetEl) => {
+    const mode = bsSheetEl.getAttribute("data-mode");
+    const bodyEl = window.document.querySelector("body");
+    if (mode === "dark") {
+      bodyEl.classList.add("quarto-dark");
+      bodyEl.classList.remove("quarto-light");
+    } else {
+      bodyEl.classList.add("quarto-light");
+      bodyEl.classList.remove("quarto-dark");
+    }
+  }
+  const toggleBodyColorPrimary = () => {
+    const bsSheetEl = window.document.querySelector("link#quarto-bootstrap");
+    if (bsSheetEl) {
+      toggleBodyColorMode(bsSheetEl);
+    }
+  }
+  toggleBodyColorPrimary();  
+  const icon = "";
+  const anchorJS = new window.AnchorJS();
+  anchorJS.options = {
+    placement: 'right',
+    icon: icon
+  };
+  anchorJS.add('.anchored');
+  const isCodeAnnotation = (el) => {
+    for (const clz of el.classList) {
+      if (clz.startsWith('code-annotation-')) {                     
+        return true;
+      }
+    }
+    return false;
+  }
+  const onCopySuccess = function(e) {
+    // button target
+    const button = e.trigger;
+    // don't keep focus
+    button.blur();
+    // flash "checked"
+    button.classList.add('code-copy-button-checked');
+    var currentTitle = button.getAttribute("title");
+    button.setAttribute("title", "Copied!");
+    let tooltip;
+    if (window.bootstrap) {
+      button.setAttribute("data-bs-toggle", "tooltip");
+      button.setAttribute("data-bs-placement", "left");
+      button.setAttribute("data-bs-title", "Copied!");
+      tooltip = new bootstrap.Tooltip(button, 
+        { trigger: "manual", 
+          customClass: "code-copy-button-tooltip",
+          offset: [0, -8]});
+      tooltip.show();    
+    }
+    setTimeout(function() {
+      if (tooltip) {
+        tooltip.hide();
+        button.removeAttribute("data-bs-title");
+        button.removeAttribute("data-bs-toggle");
+        button.removeAttribute("data-bs-placement");
+      }
+      button.setAttribute("title", currentTitle);
+      button.classList.remove('code-copy-button-checked');
+    }, 1000);
+    // clear code selection
+    e.clearSelection();
+  }
+  const getTextToCopy = function(trigger) {
+      const codeEl = trigger.previousElementSibling.cloneNode(true);
+      for (const childEl of codeEl.children) {
+        if (isCodeAnnotation(childEl)) {
+          childEl.remove();
+        }
+      }
+      return codeEl.innerText;
+  }
+  const clipboard = new window.ClipboardJS('.code-copy-button:not([data-in-quarto-modal])', {
+    text: getTextToCopy
+  });
+  clipboard.on('success', onCopySuccess);
+  if (window.document.getElementById('quarto-embedded-source-code-modal')) {
+    // For code content inside modals, clipBoardJS needs to be initialized with a container option
+    // TODO: Check when it could be a function (https://github.com/zenorocha/clipboard.js/issues/860)
+    const clipboardModal = new window.ClipboardJS('.code-copy-button[data-in-quarto-modal]', {
+      text: getTextToCopy,
+      container: window.document.getElementById('quarto-embedded-source-code-modal')
+    });
+    clipboardModal.on('success', onCopySuccess);
+  }
+  const viewSource = window.document.getElementById('quarto-view-source') ||
+                     window.document.getElementById('quarto-code-tools-source');
+  if (viewSource) {
+    const sourceUrl = viewSource.getAttribute("data-quarto-source-url");
+    viewSource.addEventListener("click", function(e) {
+      if (sourceUrl) {
+        // rstudio viewer pane
+        if (/\bcapabilities=\b/.test(window.location)) {
+          window.open(sourceUrl);
+        } else {
+          window.location.href = sourceUrl;
+        }
+      } else {
+        const modal = new bootstrap.Modal(document.getElementById('quarto-embedded-source-code-modal'));
+        modal.show();
+      }
+      return false;
+    });
+  }
+  function toggleCodeHandler(show) {
+    return function(e) {
+      const detailsSrc = window.document.querySelectorAll(".cell > details > .sourceCode");
+      for (let i=0; i<detailsSrc.length; i++) {
+        const details = detailsSrc[i].parentElement;
+        if (show) {
+          details.open = true;
+        } else {
+          details.removeAttribute("open");
+        }
+      }
+      const cellCodeDivs = window.document.querySelectorAll(".cell > .sourceCode");
+      const fromCls = show ? "hidden" : "unhidden";
+      const toCls = show ? "unhidden" : "hidden";
+      for (let i=0; i<cellCodeDivs.length; i++) {
+        const codeDiv = cellCodeDivs[i];
+        if (codeDiv.classList.contains(fromCls)) {
+          codeDiv.classList.remove(fromCls);
+          codeDiv.classList.add(toCls);
+        } 
+      }
+      return false;
+    }
+  }
+  const hideAllCode = window.document.getElementById("quarto-hide-all-code");
+  if (hideAllCode) {
+    hideAllCode.addEventListener("click", toggleCodeHandler(false));
+  }
+  const showAllCode = window.document.getElementById("quarto-show-all-code");
+  if (showAllCode) {
+    showAllCode.addEventListener("click", toggleCodeHandler(true));
+  }
+    var localhostRegex = new RegExp(/^(?:http|https):\/\/localhost\:?[0-9]*\//);
+    var mailtoRegex = new RegExp(/^mailto:/);
+      var filterRegex = new RegExp('/' + window.location.host + '/');
+    var isInternal = (href) => {
+        return filterRegex.test(href) || localhostRegex.test(href) || mailtoRegex.test(href);
+    }
+    // Inspect non-navigation links and adorn them if external
+ 	var links = window.document.querySelectorAll('a[href]:not(.nav-link):not(.navbar-brand):not(.toc-action):not(.sidebar-link):not(.sidebar-item-toggle):not(.pagination-link):not(.no-external):not([aria-hidden]):not(.dropdown-item):not(.quarto-navigation-tool):not(.about-link)');
+    for (var i=0; i<links.length; i++) {
+      const link = links[i];
+      if (!isInternal(link.href)) {
+        // undo the damage that might have been done by quarto-nav.js in the case of
+        // links that we want to consider external
+        if (link.dataset.originalHref !== undefined) {
+          link.href = link.dataset.originalHref;
+        }
+      }
+    }
+  function tippyHover(el, contentFn, onTriggerFn, onUntriggerFn) {
+    const config = {
+      allowHTML: true,
+      maxWidth: 500,
+      delay: 100,
+      arrow: false,
+      appendTo: function(el) {
+          return el.parentElement;
+      },
+      interactive: true,
+      interactiveBorder: 10,
+      theme: 'quarto',
+      placement: 'bottom-start',
+    };
+    if (contentFn) {
+      config.content = contentFn;
+    }
+    if (onTriggerFn) {
+      config.onTrigger = onTriggerFn;
+    }
+    if (onUntriggerFn) {
+      config.onUntrigger = onUntriggerFn;
+    }
+    window.tippy(el, config); 
+  }
+  const noterefs = window.document.querySelectorAll('a[role="doc-noteref"]');
+  for (var i=0; i<noterefs.length; i++) {
+    const ref = noterefs[i];
+    tippyHover(ref, function() {
+      // use id or data attribute instead here
+      let href = ref.getAttribute('data-footnote-href') || ref.getAttribute('href');
+      try { href = new URL(href).hash; } catch {}
+      const id = href.replace(/^#\/?/, "");
+      const note = window.document.getElementById(id);
+      if (note) {
+        return note.innerHTML;
+      } else {
+        return "";
+      }
+    });
+  }
+  const xrefs = window.document.querySelectorAll('a.quarto-xref');
+  const processXRef = (id, note) => {
+    // Strip column container classes
+    const stripColumnClz = (el) => {
+      el.classList.remove("page-full", "page-columns");
+      if (el.children) {
+        for (const child of el.children) {
+          stripColumnClz(child);
+        }
+      }
+    }
+    stripColumnClz(note)
+    if (id === null || id.startsWith('sec-')) {
+      // Special case sections, only their first couple elements
+      const container = document.createElement("div");
+      if (note.children && note.children.length > 2) {
+        container.appendChild(note.children[0].cloneNode(true));
+        for (let i = 1; i < note.children.length; i++) {
+          const child = note.children[i];
+          if (child.tagName === "P" && child.innerText === "") {
+            continue;
+          } else {
+            container.appendChild(child.cloneNode(true));
+            break;
+          }
+        }
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(container);
+        }
+        return container.innerHTML
+      } else {
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(note);
+        }
+        return note.innerHTML;
+      }
+    } else {
+      // Remove any anchor links if they are present
+      const anchorLink = note.querySelector('a.anchorjs-link');
+      if (anchorLink) {
+        anchorLink.remove();
+      }
+      if (window.Quarto?.typesetMath) {
+        window.Quarto.typesetMath(note);
+      }
+      // TODO in 1.5, we should make sure this works without a callout special case
+      if (note.classList.contains("callout")) {
+        return note.outerHTML;
+      } else {
+        return note.innerHTML;
+      }
+    }
+  }
+  for (var i=0; i<xrefs.length; i++) {
+    const xref = xrefs[i];
+    tippyHover(xref, undefined, function(instance) {
+      instance.disable();
+      let url = xref.getAttribute('href');
+      let hash = undefined; 
+      if (url.startsWith('#')) {
+        hash = url;
+      } else {
+        try { hash = new URL(url).hash; } catch {}
+      }
+      if (hash) {
+        const id = hash.replace(/^#\/?/, "");
+        const note = window.document.getElementById(id);
+        if (note !== null) {
+          try {
+            const html = processXRef(id, note.cloneNode(true));
+            instance.setContent(html);
+          } finally {
+            instance.enable();
+            instance.show();
+          }
+        } else {
+          // See if we can fetch this
+          fetch(url.split('#')[0])
+          .then(res => res.text())
+          .then(html => {
+            const parser = new DOMParser();
+            const htmlDoc = parser.parseFromString(html, "text/html");
+            const note = htmlDoc.getElementById(id);
+            if (note !== null) {
+              const html = processXRef(id, note);
+              instance.setContent(html);
+            } 
+          }).finally(() => {
+            instance.enable();
+            instance.show();
+          });
+        }
+      } else {
+        // See if we can fetch a full url (with no hash to target)
+        // This is a special case and we should probably do some content thinning / targeting
+        fetch(url)
+        .then(res => res.text())
+        .then(html => {
+          const parser = new DOMParser();
+          const htmlDoc = parser.parseFromString(html, "text/html");
+          const note = htmlDoc.querySelector('main.content');
+          if (note !== null) {
+            // This should only happen for chapter cross references
+            // (since there is no id in the URL)
+            // remove the first header
+            if (note.children.length > 0 && note.children[0].tagName === "HEADER") {
+              note.children[0].remove();
+            }
+            const html = processXRef(null, note);
+            instance.setContent(html);
+          } 
+        }).finally(() => {
+          instance.enable();
+          instance.show();
+        });
+      }
+    }, function(instance) {
+    });
+  }
+      let selectedAnnoteEl;
+      const selectorForAnnotation = ( cell, annotation) => {
+        let cellAttr = 'data-code-cell="' + cell + '"';
+        let lineAttr = 'data-code-annotation="' +  annotation + '"';
+        const selector = 'span[' + cellAttr + '][' + lineAttr + ']';
+        return selector;
+      }
+      const selectCodeLines = (annoteEl) => {
+        const doc = window.document;
+        const targetCell = annoteEl.getAttribute("data-target-cell");
+        const targetAnnotation = annoteEl.getAttribute("data-target-annotation");
+        const annoteSpan = window.document.querySelector(selectorForAnnotation(targetCell, targetAnnotation));
+        const lines = annoteSpan.getAttribute("data-code-lines").split(",");
+        const lineIds = lines.map((line) => {
+          return targetCell + "-" + line;
+        })
+        let top = null;
+        let height = null;
+        let parent = null;
+        if (lineIds.length > 0) {
+            //compute the position of the single el (top and bottom and make a div)
+            const el = window.document.getElementById(lineIds[0]);
+            top = el.offsetTop;
+            height = el.offsetHeight;
+            parent = el.parentElement.parentElement;
+          if (lineIds.length > 1) {
+            const lastEl = window.document.getElementById(lineIds[lineIds.length - 1]);
+            const bottom = lastEl.offsetTop + lastEl.offsetHeight;
+            height = bottom - top;
+          }
+          if (top !== null && height !== null && parent !== null) {
+            // cook up a div (if necessary) and position it 
+            let div = window.document.getElementById("code-annotation-line-highlight");
+            if (div === null) {
+              div = window.document.createElement("div");
+              div.setAttribute("id", "code-annotation-line-highlight");
+              div.style.position = 'absolute';
+              parent.appendChild(div);
+            }
+            div.style.top = top - 2 + "px";
+            div.style.height = height + 4 + "px";
+            div.style.left = 0;
+            let gutterDiv = window.document.getElementById("code-annotation-line-highlight-gutter");
+            if (gutterDiv === null) {
+              gutterDiv = window.document.createElement("div");
+              gutterDiv.setAttribute("id", "code-annotation-line-highlight-gutter");
+              gutterDiv.style.position = 'absolute';
+              const codeCell = window.document.getElementById(targetCell);
+              const gutter = codeCell.querySelector('.code-annotation-gutter');
+              gutter.appendChild(gutterDiv);
+            }
+            gutterDiv.style.top = top - 2 + "px";
+            gutterDiv.style.height = height + 4 + "px";
+          }
+          selectedAnnoteEl = annoteEl;
+        }
+      };
+      const unselectCodeLines = () => {
+        const elementsIds = ["code-annotation-line-highlight", "code-annotation-line-highlight-gutter"];
+        elementsIds.forEach((elId) => {
+          const div = window.document.getElementById(elId);
+          if (div) {
+            div.remove();
+          }
+        });
+        selectedAnnoteEl = undefined;
+      };
+        // Handle positioning of the toggle
+    window.addEventListener(
+      "resize",
+      throttle(() => {
+        elRect = undefined;
+        if (selectedAnnoteEl) {
+          selectCodeLines(selectedAnnoteEl);
+        }
+      }, 10)
+    );
+    function throttle(fn, ms) {
+    let throttle = false;
+    let timer;
+      return (...args) => {
+        if(!throttle) { // first call gets through
+            fn.apply(this, args);
+            throttle = true;
+        } else { // all the others get throttled
+            if(timer) clearTimeout(timer); // cancel #2
+            timer = setTimeout(() => {
+              fn.apply(this, args);
+              timer = throttle = false;
+            }, ms);
+        }
+      };
+    }
+      // Attach click handler to the DT
+      const annoteDls = window.document.querySelectorAll('dt[data-target-cell]');
+      for (const annoteDlNode of annoteDls) {
+        annoteDlNode.addEventListener('click', (event) => {
+          const clickedEl = event.target;
+          if (clickedEl !== selectedAnnoteEl) {
+            unselectCodeLines();
+            const activeEl = window.document.querySelector('dt[data-target-cell].code-annotation-active');
+            if (activeEl) {
+              activeEl.classList.remove('code-annotation-active');
+            }
+            selectCodeLines(clickedEl);
+            clickedEl.classList.add('code-annotation-active');
+          } else {
+            // Unselect the line
+            unselectCodeLines();
+            clickedEl.classList.remove('code-annotation-active');
+          }
+        });
+      }
+  const findCites = (el) => {
+    const parentEl = el.parentElement;
+    if (parentEl) {
+      const cites = parentEl.dataset.cites;
+      if (cites) {
+        return {
+          el,
+          cites: cites.split(' ')
+        };
+      } else {
+        return findCites(el.parentElement)
+      }
+    } else {
+      return undefined;
+    }
+  };
+  var bibliorefs = window.document.querySelectorAll('a[role="doc-biblioref"]');
+  for (var i=0; i<bibliorefs.length; i++) {
+    const ref = bibliorefs[i];
+    const citeInfo = findCites(ref);
+    if (citeInfo) {
+      tippyHover(citeInfo.el, function() {
+        var popup = window.document.createElement('div');
+        citeInfo.cites.forEach(function(cite) {
+          var citeDiv = window.document.createElement('div');
+          citeDiv.classList.add('hanging-indent');
+          citeDiv.classList.add('csl-entry');
+          var biblioDiv = window.document.getElementById('ref-' + cite);
+          if (biblioDiv) {
+            citeDiv.innerHTML = biblioDiv.innerHTML;
+          }
+          popup.appendChild(citeDiv);
+        });
+        return popup.innerHTML;
+      });
+    }
+  }
+});
+</script>
+<nav class="page-navigation">
+  <div class="nav-page nav-page-previous">
+      <a href="../../book/07-debug-perf/25-benchmarking.html" class="pagination-link" aria-label="Chapter 25: Benchmarking Correctly">
+        <i class="bi bi-arrow-left-short"></i> <span class="nav-page-text"><span class="chapter-number">27</span>&nbsp; <span class="chapter-title">Chapter 25: Benchmarking Correctly</span></span>
+      </a>          
+  </div>
+  <div class="nav-page nav-page-next">
+      <a href="../../book/07-debug-perf/27-perf-tuning.html" class="pagination-link" aria-label="Chapter 27: Performance Tuning Mental Model">
+        <span class="nav-page-text"><span class="chapter-number">29</span>&nbsp; <span class="chapter-title">Chapter 27: Performance Tuning Mental Model</span></span> <i class="bi bi-arrow-right-short"></i>
+      </a>
+  </div>
+</nav><div class="modal fade" id="quarto-embedded-source-code-modal" tabindex="-1" aria-labelledby="quarto-embedded-source-code-modal-label" aria-hidden="true"><div class="modal-dialog modal-dialog-scrollable"><div class="modal-content"><div class="modal-header"><h5 class="modal-title" id="quarto-embedded-source-code-modal-label">Source Code</h5><button class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><div class="">
+<div class="sourceCode" id="cb10" data-shortcodes="false"><pre class="sourceCode markdown code-with-copy"><code class="sourceCode markdown"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="co">---</span></span>
+<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a><span class="an">title:</span><span class="co"> "Chapter 26: Autotuning"</span></span>
+<span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a><span class="co">---</span></span>
+<span id="cb10-4"><a href="#cb10-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-5"><a href="#cb10-5" aria-hidden="true" tabindex="-1"></a>Up to this chapter, every BLOCK_SIZE in this book has been a number you picked by intuition or trial. That works for the chapter exercises and breaks the moment you ship a kernel and someone runs it on a different GPU or a different shape. <span class="in">`triton.autotune`</span> is the tool that says: "here is a list of plausible configs; pick the best one for this shape, cache the choice, and reuse it forever". This chapter is how to use it without shooting yourself in the foot.</span>
+<span id="cb10-6"><a href="#cb10-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-7"><a href="#cb10-7" aria-hidden="true" tabindex="-1"></a>::: {.callout-warning}</span>
+<span id="cb10-8"><a href="#cb10-8" aria-hidden="true" tabindex="-1"></a><span class="fu">## Hardware caveat</span></span>
+<span id="cb10-9"><a href="#cb10-9" aria-hidden="true" tabindex="-1"></a><span class="in">`num_stages`</span> controls software pipelining for the K-loop on Ampere (sm_80) and newer. On the author's 2070 SUPER (Turing, sm_75), <span class="in">`num_stages &gt; 2`</span> compiles but has no measurable effect. We keep a few high-stage configs in this chapter's matmul anyway because the autotune cost is small and the configs help Ampere+ readers; the autotuner on a Turing card will quickly pick a <span class="in">`num_stages=2`</span> config and move on.</span>
+<span id="cb10-10"><a href="#cb10-10" aria-hidden="true" tabindex="-1"></a>:::</span>
+<span id="cb10-11"><a href="#cb10-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-12"><a href="#cb10-12" aria-hidden="true" tabindex="-1"></a><span class="fu">## `triton.autotune`</span></span>
+<span id="cb10-13"><a href="#cb10-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-14"><a href="#cb10-14" aria-hidden="true" tabindex="-1"></a><span class="in">```python</span></span>
+<span id="cb10-15"><a href="#cb10-15" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.autotune</span>(</span>
+<span id="cb10-16"><a href="#cb10-16" aria-hidden="true" tabindex="-1"></a>    configs<span class="op">=</span>[</span>
+<span id="cb10-17"><a href="#cb10-17" aria-hidden="true" tabindex="-1"></a>        triton.Config({<span class="st">"BLOCK_M"</span>:  <span class="dv">64</span>, <span class="st">"BLOCK_N"</span>: <span class="dv">128</span>, <span class="st">"BLOCK_K"</span>: <span class="dv">32</span>, <span class="st">"GROUP_SIZE_M"</span>: <span class="dv">8</span>},</span>
+<span id="cb10-18"><a href="#cb10-18" aria-hidden="true" tabindex="-1"></a>                      num_warps<span class="op">=</span><span class="dv">4</span>, num_stages<span class="op">=</span><span class="dv">2</span>),</span>
+<span id="cb10-19"><a href="#cb10-19" aria-hidden="true" tabindex="-1"></a>        triton.Config({<span class="st">"BLOCK_M"</span>: <span class="dv">128</span>, <span class="st">"BLOCK_N"</span>: <span class="dv">128</span>, <span class="st">"BLOCK_K"</span>: <span class="dv">32</span>, <span class="st">"GROUP_SIZE_M"</span>: <span class="dv">8</span>},</span>
+<span id="cb10-20"><a href="#cb10-20" aria-hidden="true" tabindex="-1"></a>                      num_warps<span class="op">=</span><span class="dv">4</span>, num_stages<span class="op">=</span><span class="dv">3</span>),</span>
+<span id="cb10-21"><a href="#cb10-21" aria-hidden="true" tabindex="-1"></a>        <span class="co"># ... more configs ...</span></span>
+<span id="cb10-22"><a href="#cb10-22" aria-hidden="true" tabindex="-1"></a>    ],</span>
+<span id="cb10-23"><a href="#cb10-23" aria-hidden="true" tabindex="-1"></a>    key<span class="op">=</span>[<span class="st">"M"</span>, <span class="st">"N"</span>, <span class="st">"K"</span>],</span>
+<span id="cb10-24"><a href="#cb10-24" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb10-25"><a href="#cb10-25" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.jit</span></span>
+<span id="cb10-26"><a href="#cb10-26" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> my_matmul_kernel(a_ptr, b_ptr, c_ptr, M, N, K, ...):</span>
+<span id="cb10-27"><a href="#cb10-27" aria-hidden="true" tabindex="-1"></a>    ...</span>
+<span id="cb10-28"><a href="#cb10-28" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb10-29"><a href="#cb10-29" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-30"><a href="#cb10-30" aria-hidden="true" tabindex="-1"></a>Three things to internalize.</span>
+<span id="cb10-31"><a href="#cb10-31" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-32"><a href="#cb10-32" aria-hidden="true" tabindex="-1"></a>**The configs.** Each <span class="in">`triton.Config`</span> is a dict of constexpr arguments plus <span class="in">`num_warps`</span> and <span class="in">`num_stages`</span>. The kernel accepts these as <span class="in">`tl.constexpr`</span> parameters. The autotuner runs each config once on the actual input, times it, and remembers the winner.</span>
+<span id="cb10-33"><a href="#cb10-33" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-34"><a href="#cb10-34" aria-hidden="true" tabindex="-1"></a>**The key.** The `key=` argument lists the kernel parameters that determine which cached config to use. For matmul, `["M", "N", "K"]` is right — a different shape gets a different config. **Omitting `key` is a bug**: the autotuner runs once on the first call, caches that config under an empty key, and reuses it for every shape. You will silently use a config tuned for shape A on shape B.</span>
+<span id="cb10-35"><a href="#cb10-35" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-36"><a href="#cb10-36" aria-hidden="true" tabindex="-1"></a>**The cost.** Autotune compiles and benchmarks every config on the first call for a new shape. With 10 configs, that is roughly 10× the time of a single compile-and-launch — often 1–5 seconds wall clock per unique shape. After the first call, the cache hits and there is no overhead. In a training or inference loop where shapes are stable, this is a one-time cost paid at startup. In a benchmark loop that sweeps shapes, it is **not** the first-iteration cost you want to plot.</span>
+<span id="cb10-37"><a href="#cb10-37" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-38"><a href="#cb10-38" aria-hidden="true" tabindex="-1"></a><span class="fu">## What the knobs do</span></span>
+<span id="cb10-39"><a href="#cb10-39" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-40"><a href="#cb10-40" aria-hidden="true" tabindex="-1"></a><span class="fu">### `BLOCK_M`, `BLOCK_N`, `BLOCK_K`</span></span>
+<span id="cb10-41"><a href="#cb10-41" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-42"><a href="#cb10-42" aria-hidden="true" tabindex="-1"></a>The matmul tile shape. Larger BLOCKs reuse each loaded element across more output elements (each fp16 weight in a <span class="in">`(BLOCK_M, BLOCK_K) @ (BLOCK_K, BLOCK_N)`</span> tile contributes to <span class="in">`BLOCK_M * BLOCK_N`</span> outputs). But larger BLOCKs cost more registers, and beyond a threshold (depends on GPU), the kernel **spills** registers to local memory and performance collapses.</span>
+<span id="cb10-43"><a href="#cb10-43" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-44"><a href="#cb10-44" aria-hidden="true" tabindex="-1"></a>The autotuner detects spill empirically: the config compiles, runs, and is slower than a smaller-block alternative. You do not need to predict it; you just need to include some smaller configs as fallback.</span>
+<span id="cb10-45"><a href="#cb10-45" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-46"><a href="#cb10-46" aria-hidden="true" tabindex="-1"></a><span class="fu">### `GROUP_SIZE_M`</span></span>
+<span id="cb10-47"><a href="#cb10-47" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-48"><a href="#cb10-48" aria-hidden="true" tabindex="-1"></a>The super-grouping factor for L2 reuse from Chapter 9. Common values: 4, 8. Smaller for narrow matrices, larger for square or wide.</span>
+<span id="cb10-49"><a href="#cb10-49" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-50"><a href="#cb10-50" aria-hidden="true" tabindex="-1"></a><span class="fu">### `num_warps`</span></span>
+<span id="cb10-51"><a href="#cb10-51" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-52"><a href="#cb10-52" aria-hidden="true" tabindex="-1"></a>Each program runs on <span class="in">`num_warps * 32`</span> threads. More warps means more parallelism inside a program (more <span class="in">`tl.load`</span> calls in flight, more lanes for <span class="in">`tl.dot`</span>), but also more register pressure and fewer concurrent programs per SM.</span>
+<span id="cb10-53"><a href="#cb10-53" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-54"><a href="#cb10-54" aria-hidden="true" tabindex="-1"></a>Common values: 2 for small kernels (softmax row of 128), 4 as the matmul default, 8 for large tiles (<span class="in">`BLOCK_M = BLOCK_N = 256`</span>). Beyond 8, you usually waste registers without speedup.</span>
+<span id="cb10-55"><a href="#cb10-55" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-56"><a href="#cb10-56" aria-hidden="true" tabindex="-1"></a><span class="fu">### `num_stages`</span></span>
+<span id="cb10-57"><a href="#cb10-57" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-58"><a href="#cb10-58" aria-hidden="true" tabindex="-1"></a>Software pipelining depth for the K-loop. On Ampere+, the compiler can issue the next K-tile's <span class="in">`tl.load`</span> while the current <span class="in">`tl.dot`</span> is still running, hiding DRAM latency. <span class="in">`num_stages=2`</span> is the conservative default; <span class="in">`num_stages=3`</span> or <span class="in">`4`</span> is common on Ampere. **On Turing (sm_75), this knob has no effect** — the hardware lacks the asynchronous copy instructions the compiler relies on.</span>
+<span id="cb10-59"><a href="#cb10-59" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-60"><a href="#cb10-60" aria-hidden="true" tabindex="-1"></a><span class="fu">## `triton.heuristics`</span></span>
+<span id="cb10-61"><a href="#cb10-61" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-62"><a href="#cb10-62" aria-hidden="true" tabindex="-1"></a>When the right value of a constexpr is a **deterministic function** of the input — most commonly <span class="in">`BLOCK_SIZE = next_pow2(N)`</span> for a reduction kernel — autotuning is overkill. You pay search cost for a search whose answer you already know.</span>
+<span id="cb10-63"><a href="#cb10-63" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-64"><a href="#cb10-64" aria-hidden="true" tabindex="-1"></a><span class="in">```python</span></span>
+<span id="cb10-65"><a href="#cb10-65" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.heuristics</span>({<span class="st">"BLOCK_SIZE"</span>: <span class="kw">lambda</span> args: triton.next_power_of_2(args[<span class="st">"N"</span>])})</span>
+<span id="cb10-66"><a href="#cb10-66" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.jit</span></span>
+<span id="cb10-67"><a href="#cb10-67" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> my_kernel(..., N, BLOCK_SIZE: tl.constexpr):</span>
+<span id="cb10-68"><a href="#cb10-68" aria-hidden="true" tabindex="-1"></a>    ...</span>
+<span id="cb10-69"><a href="#cb10-69" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb10-70"><a href="#cb10-70" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-71"><a href="#cb10-71" aria-hidden="true" tabindex="-1"></a>The lambda receives the kernel arguments as a dict and returns the constexpr value. It runs at launch time, before the kernel is compiled — so different N values trigger different compilations, exactly like autotune, but without the search.</span>
+<span id="cb10-72"><a href="#cb10-72" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-73"><a href="#cb10-73" aria-hidden="true" tabindex="-1"></a>Use <span class="in">`heuristics`</span> when:</span>
+<span id="cb10-74"><a href="#cb10-74" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-75"><a href="#cb10-75" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>The right value is a closed-form function of the input shape.</span>
+<span id="cb10-76"><a href="#cb10-76" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>You only need to set constexprs, not <span class="in">`num_warps`</span> / <span class="in">`num_stages`</span>.</span>
+<span id="cb10-77"><a href="#cb10-77" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>You want zero search cost.</span>
+<span id="cb10-78"><a href="#cb10-78" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-79"><a href="#cb10-79" aria-hidden="true" tabindex="-1"></a>Use <span class="in">`autotune`</span> when:</span>
+<span id="cb10-80"><a href="#cb10-80" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-81"><a href="#cb10-81" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>The right value depends on the GPU as well as the input.</span>
+<span id="cb10-82"><a href="#cb10-82" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>You want to tune <span class="in">`num_warps`</span> or <span class="in">`num_stages`</span>.</span>
+<span id="cb10-83"><a href="#cb10-83" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>The right value is non-obvious and you want the search to find it.</span>
+<span id="cb10-84"><a href="#cb10-84" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-85"><a href="#cb10-85" aria-hidden="true" tabindex="-1"></a><span class="fu">## Kernel 1: autotuned softmax</span></span>
+<span id="cb10-86"><a href="#cb10-86" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-87"><a href="#cb10-87" aria-hidden="true" tabindex="-1"></a>This is <span class="in">`src/ch26_autotune/autotuned_softmax.py`</span>. We autotune <span class="in">`BLOCK_SIZE`</span> over a small grid:</span>
+<span id="cb10-88"><a href="#cb10-88" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-89"><a href="#cb10-89" aria-hidden="true" tabindex="-1"></a><span class="in">```python</span></span>
+<span id="cb10-90"><a href="#cb10-90" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.autotune</span>(</span>
+<span id="cb10-91"><a href="#cb10-91" aria-hidden="true" tabindex="-1"></a>    configs<span class="op">=</span>[</span>
+<span id="cb10-92"><a href="#cb10-92" aria-hidden="true" tabindex="-1"></a>        triton.Config({<span class="st">"BLOCK_SIZE"</span>: <span class="dv">128</span>},  num_warps<span class="op">=</span><span class="dv">2</span>),</span>
+<span id="cb10-93"><a href="#cb10-93" aria-hidden="true" tabindex="-1"></a>        triton.Config({<span class="st">"BLOCK_SIZE"</span>: <span class="dv">256</span>},  num_warps<span class="op">=</span><span class="dv">4</span>),</span>
+<span id="cb10-94"><a href="#cb10-94" aria-hidden="true" tabindex="-1"></a>        triton.Config({<span class="st">"BLOCK_SIZE"</span>: <span class="dv">512</span>},  num_warps<span class="op">=</span><span class="dv">4</span>),</span>
+<span id="cb10-95"><a href="#cb10-95" aria-hidden="true" tabindex="-1"></a>        triton.Config({<span class="st">"BLOCK_SIZE"</span>: <span class="dv">1024</span>}, num_warps<span class="op">=</span><span class="dv">8</span>),</span>
+<span id="cb10-96"><a href="#cb10-96" aria-hidden="true" tabindex="-1"></a>        triton.Config({<span class="st">"BLOCK_SIZE"</span>: <span class="dv">2048</span>}, num_warps<span class="op">=</span><span class="dv">8</span>),</span>
+<span id="cb10-97"><a href="#cb10-97" aria-hidden="true" tabindex="-1"></a>        triton.Config({<span class="st">"BLOCK_SIZE"</span>: <span class="dv">4096</span>}, num_warps<span class="op">=</span><span class="dv">16</span>),</span>
+<span id="cb10-98"><a href="#cb10-98" aria-hidden="true" tabindex="-1"></a>    ],</span>
+<span id="cb10-99"><a href="#cb10-99" aria-hidden="true" tabindex="-1"></a>    key<span class="op">=</span>[<span class="st">"N"</span>],</span>
+<span id="cb10-100"><a href="#cb10-100" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb10-101"><a href="#cb10-101" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.jit</span></span>
+<span id="cb10-102"><a href="#cb10-102" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> _softmax_kernel(x_ptr, y_ptr, stride_xm, stride_ym, M, N,</span>
+<span id="cb10-103"><a href="#cb10-103" aria-hidden="true" tabindex="-1"></a>                    BLOCK_SIZE: tl.constexpr):</span>
+<span id="cb10-104"><a href="#cb10-104" aria-hidden="true" tabindex="-1"></a>    pid <span class="op">=</span> tl.program_id(<span class="dv">0</span>)</span>
+<span id="cb10-105"><a href="#cb10-105" aria-hidden="true" tabindex="-1"></a>    offs <span class="op">=</span> tl.arange(<span class="dv">0</span>, BLOCK_SIZE)</span>
+<span id="cb10-106"><a href="#cb10-106" aria-hidden="true" tabindex="-1"></a>    mask <span class="op">=</span> offs <span class="op">&lt;</span> N</span>
+<span id="cb10-107"><a href="#cb10-107" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> tl.load(x_ptr <span class="op">+</span> pid <span class="op">*</span> stride_xm <span class="op">+</span> offs, mask<span class="op">=</span>mask, other<span class="op">=-</span><span class="bu">float</span>(<span class="st">"inf"</span>))</span>
+<span id="cb10-108"><a href="#cb10-108" aria-hidden="true" tabindex="-1"></a>    m <span class="op">=</span> tl.<span class="bu">max</span>(x, axis<span class="op">=</span><span class="dv">0</span>)</span>
+<span id="cb10-109"><a href="#cb10-109" aria-hidden="true" tabindex="-1"></a>    e <span class="op">=</span> tl.exp((x <span class="op">-</span> m).to(tl.float32))</span>
+<span id="cb10-110"><a href="#cb10-110" aria-hidden="true" tabindex="-1"></a>    denom <span class="op">=</span> tl.<span class="bu">sum</span>(e, axis<span class="op">=</span><span class="dv">0</span>)</span>
+<span id="cb10-111"><a href="#cb10-111" aria-hidden="true" tabindex="-1"></a>    y <span class="op">=</span> (e <span class="op">/</span> denom).to(x.dtype)</span>
+<span id="cb10-112"><a href="#cb10-112" aria-hidden="true" tabindex="-1"></a>    tl.store(y_ptr <span class="op">+</span> pid <span class="op">*</span> stride_ym <span class="op">+</span> offs, y, mask<span class="op">=</span>mask)</span>
+<span id="cb10-113"><a href="#cb10-113" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb10-114"><a href="#cb10-114" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-115"><a href="#cb10-115" aria-hidden="true" tabindex="-1"></a><span class="in">`BLOCK_SIZE`</span> must be <span class="in">`&gt;= N`</span> for this kernel (one program handles a whole row). The configs cover N up to 4096. For wider rows, add larger configs or switch to a multi-program-per-row layout.</span>
+<span id="cb10-116"><a href="#cb10-116" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-117"><a href="#cb10-117" aria-hidden="true" tabindex="-1"></a>The <span class="in">`num_warps`</span> scales with <span class="in">`BLOCK_SIZE`</span>: a 4096-element block has more parallel work to do than a 128-element block.</span>
+<span id="cb10-118"><a href="#cb10-118" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-119"><a href="#cb10-119" aria-hidden="true" tabindex="-1"></a>::: {.callout-warning appearance="simple"}</span>
+<span id="cb10-120"><a href="#cb10-120" aria-hidden="true" tabindex="-1"></a>**Placeholder data.** The numbers below are hardcoded illustrative values, not measurements. Replace with output from your own <span class="in">`triton.testing.do_bench`</span> run before drawing conclusions.</span>
+<span id="cb10-121"><a href="#cb10-121" aria-hidden="true" tabindex="-1"></a>:::</span>
+<span id="cb10-122"><a href="#cb10-122" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-125"><a href="#cb10-125" aria-hidden="true" tabindex="-1"></a><span class="in">```{ojs}</span></span>
+<span id="cb10-126"><a href="#cb10-126" aria-hidden="true" tabindex="-1"></a><span class="in">//| echo: false</span></span>
+<span id="cb10-127"><a href="#cb10-127" aria-hidden="true" tabindex="-1"></a><span class="in">//| label: fig-autotuned-softmax-bench</span></span>
+<span id="cb10-128"><a href="#cb10-128" aria-hidden="true" tabindex="-1"></a><span class="in">//| fig-cap: "Autotuned softmax kernel median latency vs row width N. Lower is better. Marker hover shows the BLOCK_SIZE the autotuner picked for each N."</span></span>
+<span id="cb10-129"><a href="#cb10-129" aria-hidden="true" tabindex="-1"></a><span class="in">{</span></span>
+<span id="cb10-130"><a href="#cb10-130" aria-hidden="true" tabindex="-1"></a><span class="in">  const data = [</span></span>
+<span id="cb10-131"><a href="#cb10-131" aria-hidden="true" tabindex="-1"></a><span class="in">    {N: 128,  ms: 0.04, picked_block: 128},</span></span>
+<span id="cb10-132"><a href="#cb10-132" aria-hidden="true" tabindex="-1"></a><span class="in">    {N: 512,  ms: 0.08, picked_block: 512},</span></span>
+<span id="cb10-133"><a href="#cb10-133" aria-hidden="true" tabindex="-1"></a><span class="in">    {N: 2048, ms: 0.18, picked_block: 2048},</span></span>
+<span id="cb10-134"><a href="#cb10-134" aria-hidden="true" tabindex="-1"></a><span class="in">    {N: 4096, ms: 0.30, picked_block: 4096},</span></span>
+<span id="cb10-135"><a href="#cb10-135" aria-hidden="true" tabindex="-1"></a><span class="in">  ];</span></span>
+<span id="cb10-136"><a href="#cb10-136" aria-hidden="true" tabindex="-1"></a><span class="in">  return Plot.plot({</span></span>
+<span id="cb10-137"><a href="#cb10-137" aria-hidden="true" tabindex="-1"></a><span class="in">    color: {legend: true, domain: ["triton autotuned"], range: ["steelblue"]},</span></span>
+<span id="cb10-138"><a href="#cb10-138" aria-hidden="true" tabindex="-1"></a><span class="in">    x: {label: "N (row width, elements)"},</span></span>
+<span id="cb10-139"><a href="#cb10-139" aria-hidden="true" tabindex="-1"></a><span class="in">    y: {label: "median latency (ms) — lower is better"},</span></span>
+<span id="cb10-140"><a href="#cb10-140" aria-hidden="true" tabindex="-1"></a><span class="in">    marks: [</span></span>
+<span id="cb10-141"><a href="#cb10-141" aria-hidden="true" tabindex="-1"></a><span class="in">      Plot.line(data, {x: "N", y: "ms", stroke: "steelblue"}),</span></span>
+<span id="cb10-142"><a href="#cb10-142" aria-hidden="true" tabindex="-1"></a><span class="in">      Plot.dot(data, {x: "N", y: "ms", fill: "steelblue",</span></span>
+<span id="cb10-143"><a href="#cb10-143" aria-hidden="true" tabindex="-1"></a><span class="in">                      title: d =&gt; `N=${d.N}, picked BLOCK_SIZE=${d.picked_block}, ${d.ms} ms`})</span></span>
+<span id="cb10-144"><a href="#cb10-144" aria-hidden="true" tabindex="-1"></a><span class="in">    ]</span></span>
+<span id="cb10-145"><a href="#cb10-145" aria-hidden="true" tabindex="-1"></a><span class="in">  });</span></span>
+<span id="cb10-146"><a href="#cb10-146" aria-hidden="true" tabindex="-1"></a><span class="in">}</span></span>
+<span id="cb10-147"><a href="#cb10-147" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb10-148"><a href="#cb10-148" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-149"><a href="#cb10-149" aria-hidden="true" tabindex="-1"></a><span class="fu">## Kernel 2: autotuned matmul</span></span>
+<span id="cb10-150"><a href="#cb10-150" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-151"><a href="#cb10-151" aria-hidden="true" tabindex="-1"></a>The full kernel lives in <span class="in">`src/ch26_autotune/autotuned_matmul.py`</span>. It is the Chapter 9 grouped matmul with the decorator stack:</span>
+<span id="cb10-152"><a href="#cb10-152" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-153"><a href="#cb10-153" aria-hidden="true" tabindex="-1"></a><span class="in">```python</span></span>
+<span id="cb10-154"><a href="#cb10-154" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.autotune</span>(configs<span class="op">=</span>[</span>
+<span id="cb10-155"><a href="#cb10-155" aria-hidden="true" tabindex="-1"></a>    triton.Config({<span class="st">"BLOCK_M"</span>:  <span class="dv">64</span>, <span class="st">"BLOCK_N"</span>:  <span class="dv">64</span>, <span class="st">"BLOCK_K"</span>: <span class="dv">32</span>, <span class="st">"GROUP_SIZE_M"</span>: <span class="dv">8</span>}, num_warps<span class="op">=</span><span class="dv">2</span>, num_stages<span class="op">=</span><span class="dv">2</span>),</span>
+<span id="cb10-156"><a href="#cb10-156" aria-hidden="true" tabindex="-1"></a>    triton.Config({<span class="st">"BLOCK_M"</span>:  <span class="dv">64</span>, <span class="st">"BLOCK_N"</span>: <span class="dv">128</span>, <span class="st">"BLOCK_K"</span>: <span class="dv">32</span>, <span class="st">"GROUP_SIZE_M"</span>: <span class="dv">8</span>}, num_warps<span class="op">=</span><span class="dv">4</span>, num_stages<span class="op">=</span><span class="dv">2</span>),</span>
+<span id="cb10-157"><a href="#cb10-157" aria-hidden="true" tabindex="-1"></a>    triton.Config({<span class="st">"BLOCK_M"</span>: <span class="dv">128</span>, <span class="st">"BLOCK_N"</span>:  <span class="dv">64</span>, <span class="st">"BLOCK_K"</span>: <span class="dv">32</span>, <span class="st">"GROUP_SIZE_M"</span>: <span class="dv">8</span>}, num_warps<span class="op">=</span><span class="dv">4</span>, num_stages<span class="op">=</span><span class="dv">2</span>),</span>
+<span id="cb10-158"><a href="#cb10-158" aria-hidden="true" tabindex="-1"></a>    triton.Config({<span class="st">"BLOCK_M"</span>: <span class="dv">128</span>, <span class="st">"BLOCK_N"</span>: <span class="dv">128</span>, <span class="st">"BLOCK_K"</span>: <span class="dv">32</span>, <span class="st">"GROUP_SIZE_M"</span>: <span class="dv">8</span>}, num_warps<span class="op">=</span><span class="dv">4</span>, num_stages<span class="op">=</span><span class="dv">3</span>),</span>
+<span id="cb10-159"><a href="#cb10-159" aria-hidden="true" tabindex="-1"></a>    triton.Config({<span class="st">"BLOCK_M"</span>: <span class="dv">128</span>, <span class="st">"BLOCK_N"</span>: <span class="dv">128</span>, <span class="st">"BLOCK_K"</span>: <span class="dv">64</span>, <span class="st">"GROUP_SIZE_M"</span>: <span class="dv">8</span>}, num_warps<span class="op">=</span><span class="dv">8</span>, num_stages<span class="op">=</span><span class="dv">3</span>),</span>
+<span id="cb10-160"><a href="#cb10-160" aria-hidden="true" tabindex="-1"></a>    triton.Config({<span class="st">"BLOCK_M"</span>: <span class="dv">128</span>, <span class="st">"BLOCK_N"</span>: <span class="dv">256</span>, <span class="st">"BLOCK_K"</span>: <span class="dv">32</span>, <span class="st">"GROUP_SIZE_M"</span>: <span class="dv">8</span>}, num_warps<span class="op">=</span><span class="dv">8</span>, num_stages<span class="op">=</span><span class="dv">3</span>),</span>
+<span id="cb10-161"><a href="#cb10-161" aria-hidden="true" tabindex="-1"></a>    triton.Config({<span class="st">"BLOCK_M"</span>: <span class="dv">256</span>, <span class="st">"BLOCK_N"</span>: <span class="dv">128</span>, <span class="st">"BLOCK_K"</span>: <span class="dv">32</span>, <span class="st">"GROUP_SIZE_M"</span>: <span class="dv">8</span>}, num_warps<span class="op">=</span><span class="dv">8</span>, num_stages<span class="op">=</span><span class="dv">3</span>),</span>
+<span id="cb10-162"><a href="#cb10-162" aria-hidden="true" tabindex="-1"></a>], key<span class="op">=</span>[<span class="st">"M"</span>, <span class="st">"N"</span>, <span class="st">"K"</span>])</span>
+<span id="cb10-163"><a href="#cb10-163" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.jit</span></span>
+<span id="cb10-164"><a href="#cb10-164" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> _matmul_kernel(...):</span>
+<span id="cb10-165"><a href="#cb10-165" aria-hidden="true" tabindex="-1"></a>    ...</span>
+<span id="cb10-166"><a href="#cb10-166" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb10-167"><a href="#cb10-167" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-168"><a href="#cb10-168" aria-hidden="true" tabindex="-1"></a>The launcher's grid must be a **lambda** that depends on the autotuned BLOCK sizes, because the grid is <span class="in">`cdiv(M, BLOCK_M) * cdiv(N, BLOCK_N)`</span> for the linear-pid layout:</span>
+<span id="cb10-169"><a href="#cb10-169" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-170"><a href="#cb10-170" aria-hidden="true" tabindex="-1"></a><span class="in">```python</span></span>
+<span id="cb10-171"><a href="#cb10-171" aria-hidden="true" tabindex="-1"></a>grid <span class="op">=</span> <span class="kw">lambda</span> meta: (triton.cdiv(M, meta[<span class="st">"BLOCK_M"</span>]) <span class="op">*</span> triton.cdiv(N, meta[<span class="st">"BLOCK_N"</span>]),)</span>
+<span id="cb10-172"><a href="#cb10-172" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb10-173"><a href="#cb10-173" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-174"><a href="#cb10-174" aria-hidden="true" tabindex="-1"></a>If you write <span class="in">`grid = (triton.cdiv(M, 128) * triton.cdiv(N, 128),)`</span> with a fixed BLOCK_M=128, the autotuner picks a <span class="in">`BLOCK_M=256`</span> config and the grid launches half as many programs as it should — half the output is uninitialized.</span>
+<span id="cb10-175"><a href="#cb10-175" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-176"><a href="#cb10-176" aria-hidden="true" tabindex="-1"></a><span class="fu">## Inspecting and persisting the cache</span></span>
+<span id="cb10-177"><a href="#cb10-177" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-178"><a href="#cb10-178" aria-hidden="true" tabindex="-1"></a><span class="in">`triton.autotune`</span> stores the chosen config in two places on the kernel object:</span>
+<span id="cb10-179"><a href="#cb10-179" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-180"><a href="#cb10-180" aria-hidden="true" tabindex="-1"></a><span class="in">```python</span></span>
+<span id="cb10-181"><a href="#cb10-181" aria-hidden="true" tabindex="-1"></a>_matmul_kernel.cache        <span class="co"># dict: key tuple -&gt; triton.Config</span></span>
+<span id="cb10-182"><a href="#cb10-182" aria-hidden="true" tabindex="-1"></a>_matmul_kernel.best_config  <span class="co"># the config from the most recent call</span></span>
+<span id="cb10-183"><a href="#cb10-183" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb10-184"><a href="#cb10-184" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-185"><a href="#cb10-185" aria-hidden="true" tabindex="-1"></a>Read these to see what the picker chose. For a benchmark script that sweeps shapes, print <span class="in">`_matmul_kernel.cache`</span> at the end to confirm the autotuner found different configs for different shapes.</span>
+<span id="cb10-186"><a href="#cb10-186" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-187"><a href="#cb10-187" aria-hidden="true" tabindex="-1"></a>To **persist** the cache across script runs (so a production server doesn't pay search cost on every startup), serialize <span class="in">`cache`</span> to disk on shutdown and rebuild it on next run by re-seeding the dict from the file. The solution file has a full implementation. The catch: the cache key is a tuple of the <span class="in">`key=`</span> values, and the value is a <span class="in">`triton.Config`</span> — both serialize cleanly to JSON if you destructure the Config.</span>
+<span id="cb10-188"><a href="#cb10-188" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-189"><a href="#cb10-189" aria-hidden="true" tabindex="-1"></a><span class="fu">## Correctness test</span></span>
+<span id="cb10-190"><a href="#cb10-190" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-193"><a href="#cb10-193" aria-hidden="true" tabindex="-1"></a><span class="in">```{python}</span></span>
+<span id="cb10-194"><a href="#cb10-194" aria-hidden="true" tabindex="-1"></a><span class="co">#| eval: false</span></span>
+<span id="cb10-195"><a href="#cb10-195" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> test_autotuned_softmax():</span>
+<span id="cb10-196"><a href="#cb10-196" aria-hidden="true" tabindex="-1"></a>    <span class="im">from</span> src.ch26_autotune <span class="im">import</span> autotuned_softmax</span>
+<span id="cb10-197"><a href="#cb10-197" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> torch.randn(<span class="dv">1024</span>, <span class="dv">4096</span>, device<span class="op">=</span><span class="st">"cuda"</span>)</span>
+<span id="cb10-198"><a href="#cb10-198" aria-hidden="true" tabindex="-1"></a>    y <span class="op">=</span> autotuned_softmax(x)</span>
+<span id="cb10-199"><a href="#cb10-199" aria-hidden="true" tabindex="-1"></a>    torch.testing.assert_close(y, torch.softmax(x, dim<span class="op">=-</span><span class="dv">1</span>), rtol<span class="op">=</span><span class="fl">1e-4</span>, atol<span class="op">=</span><span class="fl">1e-4</span>)</span>
+<span id="cb10-200"><a href="#cb10-200" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-201"><a href="#cb10-201" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> test_autotuned_matmul():</span>
+<span id="cb10-202"><a href="#cb10-202" aria-hidden="true" tabindex="-1"></a>    <span class="im">from</span> src.ch26_autotune <span class="im">import</span> autotuned_matmul</span>
+<span id="cb10-203"><a href="#cb10-203" aria-hidden="true" tabindex="-1"></a>    a <span class="op">=</span> torch.randn(<span class="dv">513</span>, <span class="dv">257</span>, device<span class="op">=</span><span class="st">"cuda"</span>, dtype<span class="op">=</span>torch.float16) <span class="op">*</span> <span class="fl">0.5</span></span>
+<span id="cb10-204"><a href="#cb10-204" aria-hidden="true" tabindex="-1"></a>    b <span class="op">=</span> torch.randn(<span class="dv">257</span>, <span class="dv">129</span>, device<span class="op">=</span><span class="st">"cuda"</span>, dtype<span class="op">=</span>torch.float16) <span class="op">*</span> <span class="fl">0.5</span></span>
+<span id="cb10-205"><a href="#cb10-205" aria-hidden="true" tabindex="-1"></a>    c <span class="op">=</span> autotuned_matmul(a, b)</span>
+<span id="cb10-206"><a href="#cb10-206" aria-hidden="true" tabindex="-1"></a>    ref <span class="op">=</span> (a.to(torch.float32) <span class="op">@</span> b.to(torch.float32)).to(torch.float16)</span>
+<span id="cb10-207"><a href="#cb10-207" aria-hidden="true" tabindex="-1"></a>    torch.testing.assert_close(c, ref, rtol<span class="op">=</span><span class="fl">2e-2</span>, atol<span class="op">=</span><span class="fl">2e-2</span>)</span>
+<span id="cb10-208"><a href="#cb10-208" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb10-209"><a href="#cb10-209" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-210"><a href="#cb10-210" aria-hidden="true" tabindex="-1"></a>Non-multiple shapes catch the most common autotune-related bug: a config whose BLOCK is wrong for the shape, combined with a launcher whose grid was computed for a different BLOCK.</span>
+<span id="cb10-211"><a href="#cb10-211" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-212"><a href="#cb10-212" aria-hidden="true" tabindex="-1"></a><span class="fu">## Benchmark</span></span>
+<span id="cb10-213"><a href="#cb10-213" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-214"><a href="#cb10-214" aria-hidden="true" tabindex="-1"></a>The benchmark script in <span class="in">`benchmarks/bench_ch26_autotune.py`</span> sweeps three shapes and reports the chosen config for each. On the 2070 SUPER, expect to see:</span>
+<span id="cb10-215"><a href="#cb10-215" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-216"><a href="#cb10-216" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>Small shape (256, 256, 256): <span class="in">`BLOCK_M=64, BLOCK_N=64`</span> wins. Larger blocks have too few programs to fill the SMs.</span>
+<span id="cb10-217"><a href="#cb10-217" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>Medium shape (1024, 1024, 1024): <span class="in">`BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, num_warps=4, num_stages=2`</span> wins.</span>
+<span id="cb10-218"><a href="#cb10-218" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>Large shape (4096, 4096, 4096): <span class="in">`BLOCK_M=128, BLOCK_N=256`</span> or <span class="in">`BLOCK_M=256, BLOCK_N=128`</span> wins, both with <span class="in">`num_warps=8`</span>.</span>
+<span id="cb10-219"><a href="#cb10-219" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-220"><a href="#cb10-220" aria-hidden="true" tabindex="-1"></a>The "best config" differs by shape; this is the point of autotuning.</span>
+<span id="cb10-221"><a href="#cb10-221" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-222"><a href="#cb10-222" aria-hidden="true" tabindex="-1"></a>::: {.callout-warning appearance="simple"}</span>
+<span id="cb10-223"><a href="#cb10-223" aria-hidden="true" tabindex="-1"></a>**Placeholder data.** The numbers below are hardcoded illustrative values, not measurements. Replace with output from your own <span class="in">`triton.testing.do_bench`</span> run before drawing conclusions.</span>
+<span id="cb10-224"><a href="#cb10-224" aria-hidden="true" tabindex="-1"></a>:::</span>
+<span id="cb10-225"><a href="#cb10-225" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-228"><a href="#cb10-228" aria-hidden="true" tabindex="-1"></a><span class="in">```{ojs}</span></span>
+<span id="cb10-229"><a href="#cb10-229" aria-hidden="true" tabindex="-1"></a><span class="in">//| echo: false</span></span>
+<span id="cb10-230"><a href="#cb10-230" aria-hidden="true" tabindex="-1"></a><span class="in">//| label: fig-autotuned-matmul-bench</span></span>
+<span id="cb10-231"><a href="#cb10-231" aria-hidden="true" tabindex="-1"></a><span class="in">//| fig-cap: "Autotuned matmul throughput in TFLOP/s vs square side length (M=N=K). Higher is better."</span></span>
+<span id="cb10-232"><a href="#cb10-232" aria-hidden="true" tabindex="-1"></a><span class="in">{</span></span>
+<span id="cb10-233"><a href="#cb10-233" aria-hidden="true" tabindex="-1"></a><span class="in">  const data = [</span></span>
+<span id="cb10-234"><a href="#cb10-234" aria-hidden="true" tabindex="-1"></a><span class="in">    {shape: "256",  ms: 0.06, tflops: 0.55},</span></span>
+<span id="cb10-235"><a href="#cb10-235" aria-hidden="true" tabindex="-1"></a><span class="in">    {shape: "1024", ms: 1.10, tflops: 1.95},</span></span>
+<span id="cb10-236"><a href="#cb10-236" aria-hidden="true" tabindex="-1"></a><span class="in">    {shape: "4096", ms: 35.0, tflops: 3.92},</span></span>
+<span id="cb10-237"><a href="#cb10-237" aria-hidden="true" tabindex="-1"></a><span class="in">  ];</span></span>
+<span id="cb10-238"><a href="#cb10-238" aria-hidden="true" tabindex="-1"></a><span class="in">  return Plot.plot({</span></span>
+<span id="cb10-239"><a href="#cb10-239" aria-hidden="true" tabindex="-1"></a><span class="in">    color: {legend: true, domain: ["triton autotuned"], range: ["steelblue"]},</span></span>
+<span id="cb10-240"><a href="#cb10-240" aria-hidden="true" tabindex="-1"></a><span class="in">    y: {label: "TFLOP/s — higher is better"},</span></span>
+<span id="cb10-241"><a href="#cb10-241" aria-hidden="true" tabindex="-1"></a><span class="in">    x: {label: "square side (M = N = K)"},</span></span>
+<span id="cb10-242"><a href="#cb10-242" aria-hidden="true" tabindex="-1"></a><span class="in">    marks: [</span></span>
+<span id="cb10-243"><a href="#cb10-243" aria-hidden="true" tabindex="-1"></a><span class="in">      Plot.barY(data, {x: "shape", y: "tflops", fill: () =&gt; "triton autotuned"})</span></span>
+<span id="cb10-244"><a href="#cb10-244" aria-hidden="true" tabindex="-1"></a><span class="in">    ]</span></span>
+<span id="cb10-245"><a href="#cb10-245" aria-hidden="true" tabindex="-1"></a><span class="in">  });</span></span>
+<span id="cb10-246"><a href="#cb10-246" aria-hidden="true" tabindex="-1"></a><span class="in">}</span></span>
+<span id="cb10-247"><a href="#cb10-247" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb10-248"><a href="#cb10-248" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-249"><a href="#cb10-249" aria-hidden="true" tabindex="-1"></a><span class="fu">## Optimization discussion</span></span>
+<span id="cb10-250"><a href="#cb10-250" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-251"><a href="#cb10-251" aria-hidden="true" tabindex="-1"></a>Autotuning is not a replacement for understanding the kernel. The autotuner picks among the configs **you give it**; if every config is bad, the best-of-bad-configs is still bad. The mental model:</span>
+<span id="cb10-252"><a href="#cb10-252" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-253"><a href="#cb10-253" aria-hidden="true" tabindex="-1"></a><span class="ss">1. </span>Reason about a small set of plausible configs from first principles (BLOCK_M and BLOCK_N each multiples of 16; BLOCK_K = 32 or 64 for fp16; <span class="in">`num_warps`</span> proportional to tile size).</span>
+<span id="cb10-254"><a href="#cb10-254" aria-hidden="true" tabindex="-1"></a><span class="ss">2. </span>Add a few variants around the most plausible config.</span>
+<span id="cb10-255"><a href="#cb10-255" aria-hidden="true" tabindex="-1"></a><span class="ss">3. </span>Let the autotuner pick.</span>
+<span id="cb10-256"><a href="#cb10-256" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-257"><a href="#cb10-257" aria-hidden="true" tabindex="-1"></a>If autotuning sweeps a 50-config grid and the difference between the top 5 is 2%, you have already converged — stop adding configs and start optimizing the kernel itself.</span>
+<span id="cb10-258"><a href="#cb10-258" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-259"><a href="#cb10-259" aria-hidden="true" tabindex="-1"></a>For a production system, autotune **once** during deployment (or as part of CI), serialize the cache, and ship it with the model. End users should never wait for autotune.</span>
+<span id="cb10-260"><a href="#cb10-260" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-261"><a href="#cb10-261" aria-hidden="true" tabindex="-1"></a><span class="fu">## Common bugs</span></span>
+<span id="cb10-262"><a href="#cb10-262" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-263"><a href="#cb10-263" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**Forgetting `key=`.** The autotuner runs once and reuses the chosen config for every shape. The fix is <span class="in">`key=["M", "N", "K"]`</span> (or whatever shapes matter).</span>
+<span id="cb10-264"><a href="#cb10-264" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**Grid computed with fixed BLOCK.** If your grid says <span class="in">`triton.cdiv(M, 128)`</span> and the autotuner picks BLOCK_M=64, you launch half as many programs as needed and half the output is wrong. Use <span class="in">`grid = lambda meta: ...`</span>.</span>
+<span id="cb10-265"><a href="#cb10-265" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**`num_stages &gt; 2` on Turing.** Compiles and runs but does nothing. Drop those configs if your only target is Turing, or leave them and accept the small autotune-time overhead.</span>
+<span id="cb10-266"><a href="#cb10-266" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**Spilling configs.** <span class="in">`BLOCK_M=256, BLOCK_N=256, BLOCK_K=64, num_warps=4`</span> will spill registers and run 10× slower than a saner config. The autotuner catches this — but you should know it can happen.</span>
+<span id="cb10-267"><a href="#cb10-267" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>**Benchmarking the first call.** The first call to an autotuned kernel pays search cost (often seconds). Always warm up before timing.</span>
+<span id="cb10-268"><a href="#cb10-268" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-269"><a href="#cb10-269" aria-hidden="true" tabindex="-1"></a><span class="fu">## Exercises</span></span>
+<span id="cb10-270"><a href="#cb10-270" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb10-271"><a href="#cb10-271" aria-hidden="true" tabindex="-1"></a>See <span class="in">`exercises/ch26_exercises.md`</span>. Solutions in <span class="in">`solutions/ch26_solutions.py`</span>.</span>
+</code><button title="Copy to Clipboard" class="code-copy-button" data-in-quarto-modal=""><i class="bi"></i></button></pre></div>
+</div></div></div></div></div>
+</div> <!-- /content -->
+
+
+
+
+</body></html>

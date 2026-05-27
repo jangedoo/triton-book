@@ -1,0 +1,1405 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"><head>
+
+<meta charset="utf-8">
+<meta name="generator" content="quarto-1.5.57">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+
+<title>2&nbsp; Chapter 00: Why Triton Exists – Learning Triton by Rebuilding Modern LLM Kernels</title>
+<style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+  width: 0.8em;
+  margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
+  vertical-align: middle;
+}
+/* CSS for syntax highlighting */
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { display: inline-block; text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+  { counter-reset: source-line 0; }
+pre.numberSource code > span
+  { position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+  { content: counter(source-line);
+    position: relative; left: -1em; text-align: right; vertical-align: baseline;
+    border: none; display: inline-block;
+    -webkit-touch-callout: none; -webkit-user-select: none;
+    -khtml-user-select: none; -moz-user-select: none;
+    -ms-user-select: none; user-select: none;
+    padding: 0 4px; width: 4em;
+  }
+pre.numberSource { margin-left: 3em;  padding-left: 4px; }
+div.sourceCode
+  {   }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+</style>
+
+
+<script src="../../site_libs/quarto-nav/quarto-nav.js"></script>
+<script src="../../site_libs/quarto-nav/headroom.min.js"></script>
+<script src="../../site_libs/clipboard/clipboard.min.js"></script>
+<script src="../../site_libs/quarto-search/autocomplete.umd.js"></script>
+<script src="../../site_libs/quarto-search/fuse.min.js"></script>
+<script src="../../site_libs/quarto-search/quarto-search.js"></script>
+<meta name="quarto:offset" content="../../">
+<link href="../../book/00-orientation/01-setup.html" rel="next">
+<link href="../../index.html" rel="prev">
+<script src="../../site_libs/quarto-html/quarto.js"></script>
+<script src="../../site_libs/quarto-html/popper.min.js"></script>
+<script src="../../site_libs/quarto-html/tippy.umd.min.js"></script>
+<script src="../../site_libs/quarto-html/anchor.min.js"></script>
+<link href="../../site_libs/quarto-html/tippy.css" rel="stylesheet">
+<link href="../../site_libs/quarto-html/quarto-syntax-highlighting.css" rel="stylesheet" id="quarto-text-highlighting-styles">
+<script src="../../site_libs/bootstrap/bootstrap.min.js"></script>
+<link href="../../site_libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
+<link href="../../site_libs/bootstrap/bootstrap.min.css" rel="stylesheet" id="quarto-bootstrap" data-mode="light">
+<script id="quarto-search-options" type="application/json">{
+  "location": "sidebar",
+  "copy-button": false,
+  "collapse-after": 3,
+  "panel-placement": "start",
+  "type": "textbox",
+  "limit": 50,
+  "keyboard-shortcut": [
+    "f",
+    "/",
+    "s"
+  ],
+  "show-item-context": false,
+  "language": {
+    "search-no-results-text": "No results",
+    "search-matching-documents-text": "matching documents",
+    "search-copy-link-title": "Copy link to search",
+    "search-hide-matches-text": "Hide additional matches",
+    "search-more-match-text": "more match in this document",
+    "search-more-matches-text": "more matches in this document",
+    "search-clear-button-title": "Clear",
+    "search-text-placeholder": "",
+    "search-detached-cancel-button-title": "Cancel",
+    "search-submit-button-title": "Submit",
+    "search-label": "Search"
+  }
+}</script>
+<script type="module" src="../../site_libs/quarto-ojs/quarto-ojs-runtime.js"></script>
+<link href="../../site_libs/quarto-ojs/quarto-ojs.css" rel="stylesheet">
+
+
+</head>
+
+<body class="nav-sidebar floating">
+
+<div id="quarto-search-results"></div>
+  <header id="quarto-header" class="headroom fixed-top">
+  <nav class="quarto-secondary-nav">
+    <div class="container-fluid d-flex">
+      <button type="button" class="quarto-btn-toggle btn" data-bs-toggle="collapse" role="button" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">
+        <i class="bi bi-layout-text-sidebar-reverse"></i>
+      </button>
+        <nav class="quarto-page-breadcrumbs" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="../../book/00-orientation/00-why-triton.html">Part 0: Orientation</a></li><li class="breadcrumb-item"><a href="../../book/00-orientation/00-why-triton.html"><span class="chapter-number">2</span>&nbsp; <span class="chapter-title">Chapter 00: Why Triton Exists</span></a></li></ol></nav>
+        <a class="flex-grow-1" role="navigation" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">      
+        </a>
+      <button type="button" class="btn quarto-search-button" aria-label="Search" onclick="window.quartoOpenSearch();">
+        <i class="bi bi-search"></i>
+      </button>
+    </div>
+  </nav>
+</header>
+<!-- content -->
+<div id="quarto-content" class="quarto-container page-columns page-rows-contents page-layout-article">
+<!-- sidebar -->
+  <nav id="quarto-sidebar" class="sidebar collapse collapse-horizontal quarto-sidebar-collapse-item sidebar-navigation floating overflow-auto">
+    <div class="pt-lg-2 mt-2 text-left sidebar-header">
+    <div class="sidebar-title mb-0 py-0">
+      <a href="../../">Learning Triton by Rebuilding Modern LLM Kernels</a> 
+    </div>
+      </div>
+        <div class="mt-2 flex-shrink-0 align-items-center">
+        <div class="sidebar-search">
+        <div id="quarto-search" class="" title="Search"></div>
+        </div>
+        </div>
+    <div class="sidebar-menu-container"> 
+    <ul class="list-unstyled mt-1">
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../index.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">1</span>&nbsp; <span class="chapter-title">Learning Triton by Rebuilding Modern LLM Kernels</span></span></a>
+  </div>
+</li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-1" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 0: Orientation</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-1" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-1" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/00-orientation/00-why-triton.html" class="sidebar-item-text sidebar-link active">
+ <span class="menu-text"><span class="chapter-number">2</span>&nbsp; <span class="chapter-title">Chapter 00: Why Triton Exists</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/00-orientation/01-setup.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">3</span>&nbsp; <span class="chapter-title">Chapter 01: Environment Setup</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-2" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 1: Triton Fundamentals</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-2" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-2" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/01-fundamentals/02-mental-model.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">4</span>&nbsp; <span class="chapter-title">Chapter 2: The Triton Mental Model</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/01-fundamentals/03-memory-pointers-strides.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">5</span>&nbsp; <span class="chapter-title">Chapter 3: Memory, Pointers, Strides, and Masks</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/01-fundamentals/04-reductions.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">6</span>&nbsp; <span class="chapter-title">Chapter 4: Reductions</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-3" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 2: Basic Neural Network Kernels</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-3" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-3" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/02-basic-nn/05-fused-softmax.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">7</span>&nbsp; <span class="chapter-title">Chapter 5: Fused Softmax</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/02-basic-nn/06-layernorm.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">8</span>&nbsp; <span class="chapter-title">Chapter 6: LayerNorm</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/02-basic-nn/07-rmsnorm.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">9</span>&nbsp; <span class="chapter-title">Chapter 7: RMSNorm</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/02-basic-nn/08-activations-swiglu.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">10</span>&nbsp; <span class="chapter-title">Chapter 8: Activation Functions and Gated MLPs</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-4" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 3: Matrix Multiplication</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-4" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-4" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/03-matmul/09-matmul.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">11</span>&nbsp; <span class="chapter-title">Chapter 9: Matmul From Scratch</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/03-matmul/10-batched-matmul-linear.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">12</span>&nbsp; <span class="chapter-title">Chapter 10: Batched Matmul and Linear Layers</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/03-matmul/11-persistent-matmul.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">13</span>&nbsp; <span class="chapter-title">Chapter 11: Persistent Matmul and Advanced Matmul Concepts</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-5" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 4: Attention and Transformer Kernels</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-5" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-5" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/12-attention-math.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">14</span>&nbsp; <span class="chapter-title">Chapter 12: Attention Math Refresher for Kernel Writers</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/13-naive-attention.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">15</span>&nbsp; <span class="chapter-title">Chapter 13: Naive Attention in PyTorch and Triton Pieces</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/14-flashattention-fwd.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">16</span>&nbsp; <span class="chapter-title">Chapter 14: FlashAttention Forward in Triton</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/15-attention-backward.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">17</span>&nbsp; <span class="chapter-title">Chapter 15: Attention Backward — Conceptual and Optional Implementation</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/16-rope-alibi.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">18</span>&nbsp; <span class="chapter-title">Chapter 16: Rotary Positional Embeddings, ALiBi, and Position Kernels</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/04-attention/17-kv-cache.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">19</span>&nbsp; <span class="chapter-title">Chapter 17: KV Cache Kernels for Inference</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-6" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 5: Modern LLM Layer Fusion</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-6" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-6" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/05-llm-fusion/18-residual-rmsnorm.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">20</span>&nbsp; <span class="chapter-title">Chapter 18: Residual Add + RMSNorm Fusion</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/05-llm-fusion/19-fused-bias-act-gate.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">21</span>&nbsp; <span class="chapter-title">Chapter 19: Fused Bias + Activation + Gate</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/05-llm-fusion/20-cross-entropy.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">22</span>&nbsp; <span class="chapter-title">Chapter 20: Cross Entropy and Logits Kernels</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/05-llm-fusion/21-sampling.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">23</span>&nbsp; <span class="chapter-title">Chapter 21: Sampling Kernels for Inference</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-7" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 6: Quantization-Oriented Kernels</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-7" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-7" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/06-quantization/22-low-precision.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">24</span>&nbsp; <span class="chapter-title">Chapter 22: Low Precision Basics</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/06-quantization/23-dequant-matmul.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">25</span>&nbsp; <span class="chapter-title">Chapter 23: Int8 / FP8 Style Dequant + Matmul Concepts</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-8" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 7: Debugging, Testing, Profiling, Optimization</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-8" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-8" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/07-debug-perf/24-debugging.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">26</span>&nbsp; <span class="chapter-title">Chapter 24: Debugging Triton Kernels</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/07-debug-perf/25-benchmarking.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">27</span>&nbsp; <span class="chapter-title">Chapter 25: Benchmarking Correctly</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/07-debug-perf/26-autotuning.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">28</span>&nbsp; <span class="chapter-title">Chapter 26: Autotuning</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/07-debug-perf/27-perf-tuning.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">29</span>&nbsp; <span class="chapter-title">Chapter 27: Performance Tuning Mental Model</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item sidebar-item-section">
+      <div class="sidebar-item-container"> 
+            <a class="sidebar-item-text sidebar-link text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-9" role="navigation" aria-expanded="true">
+ <span class="menu-text">Part 8: Capstone Projects</span></a>
+          <a class="sidebar-item-toggle text-start" data-bs-toggle="collapse" data-bs-target="#quarto-sidebar-section-9" role="navigation" aria-expanded="true" aria-label="Toggle section">
+            <i class="bi bi-chevron-right ms-2"></i>
+          </a> 
+      </div>
+      <ul id="quarto-sidebar-section-9" class="collapse list-unstyled sidebar-section depth1 show">  
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/08-capstone/28-mini-library.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">30</span>&nbsp; <span class="chapter-title">Chapter 28: Build a Mini Triton LLM Kernel Library</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/08-capstone/29-replace-transformer-pieces.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">31</span>&nbsp; <span class="chapter-title">Chapter 29: Replace Pieces of a Tiny Transformer</span></span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/08-capstone/30-design-playbook.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">32</span>&nbsp; <span class="chapter-title">Chapter 30: Final Kernel Design Playbook</span></span></a>
+  </div>
+</li>
+      </ul>
+  </li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../book/appendix-study-plan.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">33</span>&nbsp; <span class="chapter-title">Appendix: Study Plan, Memory Kernels, and the Capstone Challenge</span></span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../kernel_checklist.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">34</span>&nbsp; <span class="chapter-title">Triton Kernel Design Checklist</span></span></a>
+  </div>
+</li>
+        <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../../llm_kernel_map.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text"><span class="chapter-number">35</span>&nbsp; <span class="chapter-title">LLM Component → Triton Kernel Map</span></span></a>
+  </div>
+</li>
+    </ul>
+    </div>
+</nav>
+<div id="quarto-sidebar-glass" class="quarto-sidebar-collapse-item" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item"></div>
+<!-- margin-sidebar -->
+    <div id="quarto-margin-sidebar" class="sidebar margin-sidebar">
+        <nav id="TOC" role="doc-toc" class="toc-active">
+    <h2 id="toc-title">Table of contents</h2>
+   
+  <ul>
+  <li><a href="#the-landscape-four-ways-to-run-math-on-a-gpu" id="toc-the-landscape-four-ways-to-run-math-on-a-gpu" class="nav-link active" data-scroll-target="#the-landscape-four-ways-to-run-math-on-a-gpu"><span class="header-section-number">2.1</span> The landscape: four ways to run math on a GPU</a></li>
+  <li><a href="#why-custom-kernels-matter-for-llms" id="toc-why-custom-kernels-matter-for-llms" class="nav-link" data-scroll-target="#why-custom-kernels-matter-for-llms"><span class="header-section-number">2.2</span> Why custom kernels matter for LLMs</a></li>
+  <li><a href="#what-fusion-actually-does" id="toc-what-fusion-actually-does" class="nav-link" data-scroll-target="#what-fusion-actually-does"><span class="header-section-number">2.3</span> What fusion actually does</a></li>
+  <li><a href="#memory-bandwidth-vs.-compute" id="toc-memory-bandwidth-vs.-compute" class="nav-link" data-scroll-target="#memory-bandwidth-vs.-compute"><span class="header-section-number">2.4</span> Memory bandwidth vs.&nbsp;compute</a></li>
+  <li><a href="#three-motivating-examples" id="toc-three-motivating-examples" class="nav-link" data-scroll-target="#three-motivating-examples"><span class="header-section-number">2.5</span> Three motivating examples</a></li>
+  <li><a href="#when-not-to-write-a-triton-kernel" id="toc-when-not-to-write-a-triton-kernel" class="nav-link" data-scroll-target="#when-not-to-write-a-triton-kernel"><span class="header-section-number">2.6</span> When not to write a Triton kernel</a></li>
+  <li><a href="#what-the-rest-of-the-book-delivers" id="toc-what-the-rest-of-the-book-delivers" class="nav-link" data-scroll-target="#what-the-rest-of-the-book-delivers"><span class="header-section-number">2.7</span> What the rest of the book delivers</a></li>
+  </ul>
+</nav>
+    </div>
+<!-- main -->
+<main class="content" id="quarto-document-content">
+
+<header id="title-block-header" class="quarto-title-block default"><nav class="quarto-page-breadcrumbs quarto-title-breadcrumbs d-none d-lg-block" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="../../book/00-orientation/00-why-triton.html">Part 0: Orientation</a></li><li class="breadcrumb-item"><a href="../../book/00-orientation/00-why-triton.html"><span class="chapter-number">2</span>&nbsp; <span class="chapter-title">Chapter 00: Why Triton Exists</span></a></li></ol></nav>
+<div class="quarto-title">
+<div class="quarto-title-block"><div><h1 class="title"><span class="chapter-number">2</span>&nbsp; <span class="chapter-title">Chapter 00: Why Triton Exists</span></h1><button type="button" class="btn code-tools-button" id="quarto-code-tools-source"><i class="bi"></i> Code</button></div></div>
+</div>
+
+
+
+<div class="quarto-title-meta">
+
+    
+  
+    
+  </div>
+  
+
+
+</header>
+
+
+<p>You already know PyTorch. You know that <code>nn.Linear(x)</code> calls into cuBLAS, that <code>F.softmax(x, dim=-1)</code> dispatches to a hand-tuned CUDA kernel, and that most of the time you do not think about either. This book is about the times you do have to think about them — and what Triton gives you when you do.</p>
+<section id="the-landscape-four-ways-to-run-math-on-a-gpu" class="level2" data-number="2.1">
+<h2 data-number="2.1" class="anchored" data-anchor-id="the-landscape-four-ways-to-run-math-on-a-gpu"><span class="header-section-number">2.1</span> The landscape: four ways to run math on a GPU</h2>
+<p>For any operation you want to perform on a GPU, you have roughly four implementation tiers. Each one trades effort for control.</p>
+<p><strong>PyTorch eager</strong> is what you write by default. <code>y = x @ w + b</code>. Every operator is its own CUDA launch. You pay a fixed launch overhead per op (single-digit microseconds), and every intermediate tensor is materialized in HBM. For training loops dominated by large matmuls this is fine; cuBLAS does the heavy lifting and the launch overhead is amortized. For a long chain of small element-wise ops on a small tensor, the launch tax dominates and you are leaving most of the GPU idle.</p>
+<p><strong><code>torch.compile</code></strong> is the right next step nine times out of ten. It traces your forward (and optionally backward), groups element-wise and reduction ops into fused regions, and lowers them to Triton kernels behind the scenes. You write normal PyTorch; the compiler decides what to fuse. For most workloads where the bottleneck is “too many small ops”, <code>torch.compile</code> solves the problem with zero kernel code. Reach for it first.</p>
+<p><strong>Triton</strong> is what you use when <code>torch.compile</code> cannot express the fusion you want, when you need an <em>algorithmic</em> rewrite (FlashAttention is the canonical case), or when you want predictable control over tile sizes, accumulator dtypes, and memory layout. You write the kernel in a Python-like DSL. The compiler handles register allocation, instruction scheduling, and the lowering to PTX. You are still working at the tile level, not the thread level.</p>
+<p><strong>Raw CUDA</strong> is what you use when Triton’s abstractions get in your way: when you need warp-specialization patterns the Triton compiler does not yet expose, when you need WGMMA orchestration that the Hopper backend has not surfaced, or when you are squeezing the last 5% out of a kernel that already runs at 90% of peak. The effort cost jumps by an order of magnitude. For 95% of LLM kernels you will not need it.</p>
+<p>The rest of this book lives in the third tier. Before we commit, look at why it exists at all.</p>
+</section>
+<section id="why-custom-kernels-matter-for-llms" class="level2" data-number="2.2">
+<h2 data-number="2.2" class="anchored" data-anchor-id="why-custom-kernels-matter-for-llms"><span class="header-section-number">2.2</span> Why custom kernels matter for LLMs</h2>
+<p>A modern decoder-only transformer is mostly two things: matrix multiplications and “everything that connects them”. cuBLAS handles the matmuls — usually well, sometimes excellently. The connective tissue is where Triton earns its keep.</p>
+<p>Consider a single transformer block. RMSNorm, then Q/K/V projection, then RoPE, then attention, then output projection, then residual add, then RMSNorm again, then the MLP (up projection, SwiGLU gate, down projection), then another residual add. In eager PyTorch that is roughly 15 distinct kernel launches per block, with several gigabytes of intermediate activations written to HBM and then read back. At inference time, with small batch sizes, the launch overhead alone can exceed the compute time.</p>
+<p>Custom kernels let you collapse that chain. Fused residual + RMSNorm becomes one kernel that reads the residual once and the input once, computes the sum and the normalization in registers, and writes the normalized output once. Fused bias + SiLU + multiply (the SwiGLU body) collapses three element-wise passes into one. FlashAttention collapses the entire attention block — Q @ K^T, softmax, P @ V — into a single tiled kernel that never writes the N x N attention matrix to HBM. These are not micro-optimizations. They change the asymptotic memory traffic of the model.</p>
+</section>
+<section id="what-fusion-actually-does" class="level2" data-number="2.3">
+<h2 data-number="2.3" class="anchored" data-anchor-id="what-fusion-actually-does"><span class="header-section-number">2.3</span> What fusion actually does</h2>
+<p>Fusion is the art of doing more work per byte read from HBM. The mental model is simple: HBM is slow, registers and SRAM are fast, kernel launches have overhead. If you can chain two element-wise ops in registers — read once, compute twice, write once — you halve the memory traffic and remove one launch.</p>
+<p>What fuses well: element-wise ops on tensors of the same shape (add, multiply, ReLU, SiLU, sigmoid), broadcasts where one operand is small enough to live in registers, reductions that immediately feed an element-wise op (the softmax pattern: reduce to a max, broadcast back, subtract, exp, reduce to a sum, broadcast back, divide), and matmul-then-element-wise patterns where the element-wise op runs on the matmul tile while it is still in registers (bias add after a GEMM, activation after a GEMM).</p>
+<p>What does not fuse easily: ops where the producer’s output shape does not match the consumer’s input layout (e.g., a reduction along axis 0 followed by an operation that needs axis-1 locality), ops separated by a synchronization barrier across the whole tensor (a full softmax cannot fuse with an op that needs the output in row-major order if you computed it in column-major), and anything where the two ops need genuinely different block sizes. <code>torch.compile</code> knows most of these rules and will fuse what it can.</p>
+</section>
+<section id="memory-bandwidth-vs.-compute" class="level2" data-number="2.4">
+<h2 data-number="2.4" class="anchored" data-anchor-id="memory-bandwidth-vs.-compute"><span class="header-section-number">2.4</span> Memory bandwidth vs.&nbsp;compute</h2>
+<p>Every kernel sits on a roofline. The vertical axis is achievable throughput in FLOP/s. The horizontal axis is arithmetic intensity in FLOPs per byte of HBM traffic. The roof has two pieces: a sloped section equal to peak bandwidth times intensity, and a flat section equal to peak FLOPs. The intersection is the <strong>ridge point</strong>. Kernels to the left of the ridge are memory-bound — their performance is set by how fast you can move bytes. Kernels to the right are compute-bound — their performance is set by the math units.</p>
+<p>For an RTX 2070 SUPER, peak HBM bandwidth is roughly 448 GB/s and peak FP16 throughput is roughly 18 TFLOP/s. The ridge point sits near 40 FLOPs per byte. Most LLM kernels that are not matmul live well to the left of that ridge.</p>
+<p>The interactive plot below lets you slide an operation’s arithmetic intensity along the roofline. Watch where the dashed line crosses the roof: that is your achievable throughput. Notice how far you have to push intensity before you escape the bandwidth region.</p>
+<div class="cell">
+<div class="sourceCode cell-code hidden" id="cb1" data-startfrom="46" data-source-offset="0"><pre class="sourceCode js code-with-copy"><code class="sourceCode javascript" style="counter-reset: source-line 45;"><span id="cb1-46"><a href="#cb1-46" aria-hidden="true" tabindex="-1"></a>viewof intensity <span class="op">=</span> Inputs<span class="op">.</span><span class="fu">range</span>([<span class="fl">0.1</span><span class="op">,</span> <span class="dv">200</span>]<span class="op">,</span> {<span class="dt">value</span><span class="op">:</span> <span class="dv">5</span><span class="op">,</span> <span class="dt">step</span><span class="op">:</span> <span class="fl">0.1</span><span class="op">,</span> <span class="dt">label</span><span class="op">:</span> <span class="st">"Arithmetic intensity (FLOPs/byte)"</span>})</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-display">
+<div id="ojs-cell-1" data-nodetype="declaration">
+
+</div>
+</div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code hidden" id="cb2" data-startfrom="54" data-source-offset="-0"><pre class="sourceCode js code-with-copy"><code class="sourceCode javascript" style="counter-reset: source-line 53;"><span id="cb2-54"><a href="#cb2-54" aria-hidden="true" tabindex="-1"></a>peak_bw <span class="op">=</span> <span class="dv">448</span>        <span class="co">// GB/s, RTX 2070 SUPER (approximate)</span></span>
+<span id="cb2-55"><a href="#cb2-55" aria-hidden="true" tabindex="-1"></a>peak_flops <span class="op">=</span> <span class="dv">18000</span>   <span class="co">// GFLOP/s = 18 TFLOP/s FP16 (approximate)</span></span>
+<span id="cb2-56"><a href="#cb2-56" aria-hidden="true" tabindex="-1"></a>ridge <span class="op">=</span> peak_flops <span class="op">/</span> peak_bw</span>
+<span id="cb2-57"><a href="#cb2-57" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-58"><a href="#cb2-58" aria-hidden="true" tabindex="-1"></a>roof_xs <span class="op">=</span> d3<span class="op">.</span><span class="fu">range</span>(<span class="fl">0.1</span><span class="op">,</span> <span class="dv">200</span><span class="op">,</span> <span class="fl">0.5</span>)</span>
+<span id="cb2-59"><a href="#cb2-59" aria-hidden="true" tabindex="-1"></a>roof <span class="op">=</span> roof_xs<span class="op">.</span><span class="fu">map</span>(x <span class="kw">=&gt;</span> ({</span>
+<span id="cb2-60"><a href="#cb2-60" aria-hidden="true" tabindex="-1"></a>  <span class="dt">intensity</span><span class="op">:</span> x<span class="op">,</span></span>
+<span id="cb2-61"><a href="#cb2-61" aria-hidden="true" tabindex="-1"></a>  <span class="dt">achievable</span><span class="op">:</span> <span class="bu">Math</span><span class="op">.</span><span class="fu">min</span>(peak_bw <span class="op">*</span> x<span class="op">,</span> peak_flops)</span>
+<span id="cb2-62"><a href="#cb2-62" aria-hidden="true" tabindex="-1"></a>}))</span>
+<span id="cb2-63"><a href="#cb2-63" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-64"><a href="#cb2-64" aria-hidden="true" tabindex="-1"></a>op_point <span class="op">=</span> [{</span>
+<span id="cb2-65"><a href="#cb2-65" aria-hidden="true" tabindex="-1"></a>  <span class="dt">intensity</span><span class="op">:</span> intensity<span class="op">,</span></span>
+<span id="cb2-66"><a href="#cb2-66" aria-hidden="true" tabindex="-1"></a>  <span class="dt">achievable</span><span class="op">:</span> <span class="bu">Math</span><span class="op">.</span><span class="fu">min</span>(peak_bw <span class="op">*</span> intensity<span class="op">,</span> peak_flops)</span>
+<span id="cb2-67"><a href="#cb2-67" aria-hidden="true" tabindex="-1"></a>}]</span>
+<span id="cb2-68"><a href="#cb2-68" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-69"><a href="#cb2-69" aria-hidden="true" tabindex="-1"></a>bound_label <span class="op">=</span> intensity <span class="op">&lt;</span> ridge <span class="op">?</span> <span class="st">"memory-bound"</span> <span class="op">:</span> <span class="st">"compute-bound"</span></span>
+<span id="cb2-70"><a href="#cb2-70" aria-hidden="true" tabindex="-1"></a>achievable_gflops <span class="op">=</span> <span class="bu">Math</span><span class="op">.</span><span class="fu">min</span>(peak_bw <span class="op">*</span> intensity<span class="op">,</span> peak_flops)</span>
+<span id="cb2-71"><a href="#cb2-71" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-72"><a href="#cb2-72" aria-hidden="true" tabindex="-1"></a>Plot<span class="op">.</span><span class="fu">plot</span>({</span>
+<span id="cb2-73"><a href="#cb2-73" aria-hidden="true" tabindex="-1"></a>  <span class="dt">width</span><span class="op">:</span> <span class="dv">720</span><span class="op">,</span></span>
+<span id="cb2-74"><a href="#cb2-74" aria-hidden="true" tabindex="-1"></a>  <span class="dt">height</span><span class="op">:</span> <span class="dv">420</span><span class="op">,</span></span>
+<span id="cb2-75"><a href="#cb2-75" aria-hidden="true" tabindex="-1"></a>  <span class="dt">x</span><span class="op">:</span> {<span class="dt">type</span><span class="op">:</span> <span class="st">"log"</span><span class="op">,</span> <span class="dt">label</span><span class="op">:</span> <span class="st">"arithmetic intensity (FLOPs/byte)"</span><span class="op">,</span> <span class="dt">domain</span><span class="op">:</span> [<span class="fl">0.1</span><span class="op">,</span> <span class="dv">200</span>]}<span class="op">,</span></span>
+<span id="cb2-76"><a href="#cb2-76" aria-hidden="true" tabindex="-1"></a>  <span class="dt">y</span><span class="op">:</span> {<span class="dt">type</span><span class="op">:</span> <span class="st">"log"</span><span class="op">,</span> <span class="dt">label</span><span class="op">:</span> <span class="st">"achievable throughput (GFLOP/s) — higher is better"</span><span class="op">,</span> <span class="dt">domain</span><span class="op">:</span> [<span class="dv">10</span><span class="op">,</span> <span class="dv">30000</span>]}<span class="op">,</span></span>
+<span id="cb2-77"><a href="#cb2-77" aria-hidden="true" tabindex="-1"></a>  <span class="dt">marks</span><span class="op">:</span> [</span>
+<span id="cb2-78"><a href="#cb2-78" aria-hidden="true" tabindex="-1"></a>    Plot<span class="op">.</span><span class="fu">line</span>(roof<span class="op">,</span> {<span class="dt">x</span><span class="op">:</span> <span class="st">"intensity"</span><span class="op">,</span> <span class="dt">y</span><span class="op">:</span> <span class="st">"achievable"</span><span class="op">,</span> <span class="dt">stroke</span><span class="op">:</span> <span class="st">"steelblue"</span><span class="op">,</span> <span class="dt">strokeWidth</span><span class="op">:</span> <span class="dv">2</span>})<span class="op">,</span></span>
+<span id="cb2-79"><a href="#cb2-79" aria-hidden="true" tabindex="-1"></a>    Plot<span class="op">.</span><span class="fu">ruleX</span>([ridge]<span class="op">,</span> {<span class="dt">stroke</span><span class="op">:</span> <span class="st">"gray"</span><span class="op">,</span> <span class="dt">strokeDasharray</span><span class="op">:</span> <span class="st">"4,4"</span>})<span class="op">,</span></span>
+<span id="cb2-80"><a href="#cb2-80" aria-hidden="true" tabindex="-1"></a>    Plot<span class="op">.</span><span class="fu">dot</span>(op_point<span class="op">,</span> {<span class="dt">x</span><span class="op">:</span> <span class="st">"intensity"</span><span class="op">,</span> <span class="dt">y</span><span class="op">:</span> <span class="st">"achievable"</span><span class="op">,</span> <span class="dt">fill</span><span class="op">:</span> <span class="st">"crimson"</span><span class="op">,</span> <span class="dt">r</span><span class="op">:</span> <span class="dv">6</span>})<span class="op">,</span></span>
+<span id="cb2-81"><a href="#cb2-81" aria-hidden="true" tabindex="-1"></a>    Plot<span class="op">.</span><span class="fu">ruleX</span>([intensity]<span class="op">,</span> {<span class="dt">stroke</span><span class="op">:</span> <span class="st">"crimson"</span><span class="op">,</span> <span class="dt">strokeDasharray</span><span class="op">:</span> <span class="st">"2,2"</span>})<span class="op">,</span></span>
+<span id="cb2-82"><a href="#cb2-82" aria-hidden="true" tabindex="-1"></a>    Plot<span class="op">.</span><span class="fu">text</span>([{<span class="dt">x</span><span class="op">:</span> ridge<span class="op">,</span> <span class="dt">y</span><span class="op">:</span> <span class="dv">25000</span><span class="op">,</span> <span class="dt">t</span><span class="op">:</span> <span class="vs">`ridge ≈ </span><span class="sc">${</span>ridge<span class="op">.</span><span class="fu">toFixed</span>(<span class="dv">1</span>)<span class="sc">}</span><span class="vs"> FLOPs/byte (roof envelope, blue)`</span>}]<span class="op">,</span></span>
+<span id="cb2-83"><a href="#cb2-83" aria-hidden="true" tabindex="-1"></a>              {<span class="dt">x</span><span class="op">:</span> <span class="st">"x"</span><span class="op">,</span> <span class="dt">y</span><span class="op">:</span> <span class="st">"y"</span><span class="op">,</span> <span class="dt">text</span><span class="op">:</span> <span class="st">"t"</span><span class="op">,</span> <span class="dt">fill</span><span class="op">:</span> <span class="st">"gray"</span><span class="op">,</span> <span class="dt">textAnchor</span><span class="op">:</span> <span class="st">"start"</span><span class="op">,</span> <span class="dt">dx</span><span class="op">:</span> <span class="dv">6</span>})<span class="op">,</span></span>
+<span id="cb2-84"><a href="#cb2-84" aria-hidden="true" tabindex="-1"></a>    Plot<span class="op">.</span><span class="fu">text</span>([{<span class="dt">x</span><span class="op">:</span> intensity<span class="op">,</span> <span class="dt">y</span><span class="op">:</span> achievable_gflops<span class="op">,</span> <span class="dt">t</span><span class="op">:</span> <span class="vs">`op point: </span><span class="sc">${</span>bound_label<span class="sc">}</span><span class="vs">, </span><span class="sc">${</span>(achievable_gflops<span class="op">/</span><span class="dv">1000</span>)<span class="op">.</span><span class="fu">toFixed</span>(<span class="dv">2</span>)<span class="sc">}</span><span class="vs"> TFLOP/s`</span>}]<span class="op">,</span></span>
+<span id="cb2-85"><a href="#cb2-85" aria-hidden="true" tabindex="-1"></a>              {<span class="dt">x</span><span class="op">:</span> <span class="st">"x"</span><span class="op">,</span> <span class="dt">y</span><span class="op">:</span> <span class="st">"y"</span><span class="op">,</span> <span class="dt">text</span><span class="op">:</span> <span class="st">"t"</span><span class="op">,</span> <span class="dt">fill</span><span class="op">:</span> <span class="st">"crimson"</span><span class="op">,</span> <span class="dt">textAnchor</span><span class="op">:</span> <span class="st">"start"</span><span class="op">,</span> <span class="dt">dx</span><span class="op">:</span> <span class="dv">8</span><span class="op">,</span> <span class="dt">dy</span><span class="op">:</span> <span class="op">-</span><span class="dv">8</span>})</span>
+<span id="cb2-86"><a href="#cb2-86" aria-hidden="true" tabindex="-1"></a>  ]</span>
+<span id="cb2-87"><a href="#cb2-87" aria-hidden="true" tabindex="-1"></a>})</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div id="fig-roofline" class="cell quarto-float quarto-figure quarto-figure-center anchored">
+<figure class="quarto-float quarto-float-fig figure">
+<div aria-describedby="fig-roofline-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+<div class="cell-output cell-output-display">
+<div id="fig-roofline-1" class="quarto-float quarto-figure quarto-figure-center anchored">
+<figure class="quarto-float quarto-subfloat-fig figure">
+<div aria-describedby="fig-roofline-1-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+<div id="ojs-cell-2-1" data-nodetype="declaration">
+
+</div>
+</div>
+<figcaption class="quarto-float-caption-bottom quarto-subfloat-caption quarto-subfloat-fig" id="fig-roofline-1-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+(a)
+</figcaption>
+</figure>
+</div>
+</div>
+<div class="cell-output cell-output-display">
+<div id="fig-roofline-2" class="quarto-float quarto-figure quarto-figure-center anchored">
+<figure class="quarto-float quarto-subfloat-fig figure">
+<div aria-describedby="fig-roofline-2-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+<div id="ojs-cell-2-2" data-nodetype="declaration">
+
+</div>
+</div>
+<figcaption class="quarto-float-caption-bottom quarto-subfloat-caption quarto-subfloat-fig" id="fig-roofline-2-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+(b)
+</figcaption>
+</figure>
+</div>
+</div>
+<div class="cell-output cell-output-display">
+<div id="fig-roofline-3" class="quarto-float quarto-figure quarto-figure-center anchored">
+<figure class="quarto-float quarto-subfloat-fig figure">
+<div aria-describedby="fig-roofline-3-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+<div id="ojs-cell-2-3" data-nodetype="declaration">
+
+</div>
+</div>
+<figcaption class="quarto-float-caption-bottom quarto-subfloat-caption quarto-subfloat-fig" id="fig-roofline-3-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+(c)
+</figcaption>
+</figure>
+</div>
+</div>
+<div class="cell-output cell-output-display">
+<div id="fig-roofline-4" class="quarto-float quarto-figure quarto-figure-center anchored">
+<figure class="quarto-float quarto-subfloat-fig figure">
+<div aria-describedby="fig-roofline-4-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+<div id="ojs-cell-2-4" data-nodetype="declaration">
+
+</div>
+</div>
+<figcaption class="quarto-float-caption-bottom quarto-subfloat-caption quarto-subfloat-fig" id="fig-roofline-4-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+(d)
+</figcaption>
+</figure>
+</div>
+</div>
+<div class="cell-output cell-output-display">
+<div id="fig-roofline-5" class="quarto-float quarto-figure quarto-figure-center anchored">
+<figure class="quarto-float quarto-subfloat-fig figure">
+<div aria-describedby="fig-roofline-5-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+<div id="ojs-cell-2-5" data-nodetype="declaration">
+
+</div>
+</div>
+<figcaption class="quarto-float-caption-bottom quarto-subfloat-caption quarto-subfloat-fig" id="fig-roofline-5-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+(e)
+</figcaption>
+</figure>
+</div>
+</div>
+<div class="cell-output cell-output-display">
+<div id="fig-roofline-6" class="quarto-float quarto-figure quarto-figure-center anchored">
+<figure class="quarto-float quarto-subfloat-fig figure">
+<div aria-describedby="fig-roofline-6-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+<div id="ojs-cell-2-6" data-nodetype="declaration">
+
+</div>
+</div>
+<figcaption class="quarto-float-caption-bottom quarto-subfloat-caption quarto-subfloat-fig" id="fig-roofline-6-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+(f)
+</figcaption>
+</figure>
+</div>
+</div>
+<div class="cell-output cell-output-display">
+<div id="fig-roofline-7" class="quarto-float quarto-figure quarto-figure-center anchored">
+<figure class="quarto-float quarto-subfloat-fig figure">
+<div aria-describedby="fig-roofline-7-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+<div id="ojs-cell-2-7" data-nodetype="declaration">
+
+</div>
+</div>
+<figcaption class="quarto-float-caption-bottom quarto-subfloat-caption quarto-subfloat-fig" id="fig-roofline-7-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+(g)
+</figcaption>
+</figure>
+</div>
+</div>
+<div class="cell-output cell-output-display">
+<div id="fig-roofline-8" class="quarto-float quarto-figure quarto-figure-center anchored">
+<figure class="quarto-float quarto-subfloat-fig figure">
+<div aria-describedby="fig-roofline-8-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+<div id="ojs-cell-2-8" data-nodetype="declaration">
+
+</div>
+</div>
+<figcaption class="quarto-float-caption-bottom quarto-subfloat-caption quarto-subfloat-fig" id="fig-roofline-8-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+(h)
+</figcaption>
+</figure>
+</div>
+</div>
+<div class="cell-output cell-output-display">
+<div id="fig-roofline-9" class="quarto-float quarto-figure quarto-figure-center anchored">
+<figure class="quarto-float quarto-subfloat-fig figure">
+<div aria-describedby="fig-roofline-9-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+<div id="ojs-cell-2-9" data-nodetype="expression">
+
+</div>
+</div>
+<figcaption class="quarto-float-caption-bottom quarto-subfloat-caption quarto-subfloat-fig" id="fig-roofline-9-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+(i)
+</figcaption>
+</figure>
+</div>
+</div>
+</div>
+<figcaption class="quarto-float-caption-bottom quarto-float-caption quarto-float-fig" id="fig-roofline-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+Figure&nbsp;2.1: Roofline plot for an approximate RTX 2070 SUPER (peak HBM ~448 GB/s, peak FP16 ~18 TFLOP/s). Blue line is the achievable-throughput envelope (memory-bound on the left, compute-bound on the right); dashed gray rule marks the ridge point; the crimson dot tracks the operation chosen by the slider.
+</figcaption>
+</figure>
+</div>
+</div>
+<div class="cell">
+<div class="sourceCode cell-code hidden" id="cb3" data-startfrom="91" data-source-offset="0"><pre class="sourceCode js code-with-copy"><code class="sourceCode javascript" style="counter-reset: source-line 90;"><span id="cb3-91"><a href="#cb3-91" aria-hidden="true" tabindex="-1"></a><span class="fu">md</span><span class="vs">`At intensity </span><span class="sc">${</span>intensity<span class="op">.</span><span class="fu">toFixed</span>(<span class="dv">1</span>)<span class="sc">}</span><span class="vs"> FLOPs/byte your kernel is **</span><span class="sc">${</span>bound_label<span class="sc">}</span><span class="vs">**, achievable throughput ≈ </span><span class="sc">${</span>(achievable_gflops<span class="op">/</span><span class="dv">1000</span>)<span class="op">.</span><span class="fu">toFixed</span>(<span class="dv">2</span>)<span class="sc">}</span><span class="vs"> TFLOP/s on the reference 2070 SUPER (peak BW ≈ 448 GB/s, peak FP16 ≈ 18 TFLOP/s — approximate).`</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-display">
+<div id="ojs-cell-3" data-nodetype="expression">
+
+</div>
+</div>
+</div>
+<p>The slider is a toy, but the lesson is real: a kernel with intensity 1 (one FLOP per byte read, like a plain element-wise add) can never run faster than the memory system delivers data, no matter how fast your tensor cores are. If you want that kernel to go faster, you do not optimize the math. You read fewer bytes — by fusing it with its neighbors so the bytes stay in registers.</p>
+</section>
+<section id="three-motivating-examples" class="level2" data-number="2.5">
+<h2 data-number="2.5" class="anchored" data-anchor-id="three-motivating-examples"><span class="header-section-number">2.5</span> Three motivating examples</h2>
+<p>Three operations capture the three regimes you will live in for the rest of this book.</p>
+<p><strong>RMSNorm — memory-bound.</strong> For an input of shape <code>(M, N)</code>, RMSNorm reads <code>M * N</code> elements, computes <code>M * N</code> squares, sums them across the row (M reductions of length N), divides by N, takes a reciprocal square root, and writes <code>M * N</code> outputs. The arithmetic per element is a multiply, a squared accumulate, and a multiply-by-scale. Three or four FLOPs per element loaded. Arithmetic intensity is a fraction of one FLOP/byte once you account for the FP16 load width. You will measure RMSNorm performance in fraction of peak HBM bandwidth, never in TFLOP/s. The PyTorch reference for the operation we will rebuild in Chapter 7 is short enough to sit here as an anchor:</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> rmsnorm_ref(x: torch.Tensor, weight: torch.Tensor, eps: <span class="bu">float</span> <span class="op">=</span> <span class="fl">1e-6</span>) <span class="op">-&gt;</span> torch.Tensor:</span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>    rms <span class="op">=</span> x.<span class="bu">pow</span>(<span class="dv">2</span>).mean(dim<span class="op">=-</span><span class="dv">1</span>, keepdim<span class="op">=</span><span class="va">True</span>).add(eps).rsqrt()</span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> x <span class="op">*</span> rms <span class="op">*</span> weight</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<p>Three lines. The fused Triton version is more lines but performs less memory traffic — one read of <code>x</code>, one read of <code>weight</code>, one write of the output — and that is the whole game.</p>
+<p><strong>Matmul — compute-bound.</strong> A GEMM with shapes <code>(M, K)</code> times <code>(K, N)</code> reads <code>M*K + K*N</code> elements and performs <code>2*M*N*K</code> FLOPs. For square shapes around 4096 the arithmetic intensity is in the thousands of FLOPs per byte, well to the right of the ridge. Tensor cores on Ampere and later push FP16 GEMM into the tens of TFLOP/s. Your job in a matmul kernel is not to reduce memory traffic — cuBLAS is already near-optimal on bandwidth. Your job is to keep the tensor cores fed: pick the right tile sizes, accumulate in FP32, use the right <code>num_stages</code> for software pipelining, and avoid bank conflicts. We will spend three chapters on this (Part 3).</p>
+<p><strong>Attention — IO-aware algorithmic.</strong> Naive attention is the trap that taught the field a lesson. Compute <code>S = Q @ K^T</code>, apply softmax along the last axis, compute <code>O = P @ V</code>. Two matmuls, one softmax. The matmuls are compute-bound; the softmax is memory-bound. But the <em>combination</em> is memory-bound because the N x N matrix <code>S</code> has to be written to HBM after the first matmul and read back for the softmax, and again for the second matmul. For sequence length 8192 that is 64 million entries per head — gigabytes of traffic per layer.</p>
+<p>FlashAttention’s insight is not a math change. The math is identical. The change is the schedule: tile the K and V tensors, stream them through the kernel, maintain a running max and a running normalizer per query row, and never write <code>S</code> to HBM at all. The N x N matrix only ever exists in tiles that live in SRAM. Same answer, asymptotically less memory traffic, dramatic speedup on long sequences. We rebuild it in Chapter 14. The point for this chapter is that you cannot get FlashAttention by fusing kernels. You have to rewrite the algorithm with memory hierarchy in mind. That is what Triton lets you do.</p>
+</section>
+<section id="when-not-to-write-a-triton-kernel" class="level2" data-number="2.6">
+<h2 data-number="2.6" class="anchored" data-anchor-id="when-not-to-write-a-triton-kernel"><span class="header-section-number">2.6</span> When not to write a Triton kernel</h2>
+<p>Custom kernels are expensive to write, test, and maintain. Do not write one when:</p>
+<ul>
+<li>The op is a matmul on standard shapes. cuBLAS is the result of many engineer-years; you will not beat it for general FP16/BF16 GEMM. Use <code>torch.matmul</code> and move on. Write a Triton matmul to <em>learn</em> (Chapter 9), not to ship.</li>
+<li><code>torch.compile</code> already fuses the chain you are worried about. Profile the compiled version first. If the bottleneck moved somewhere else, you are done.</li>
+<li>You are still prototyping the model. Iterating on architecture is faster than iterating on kernels. Get the math right in eager mode, then compile, then write a kernel for the one hot spot that remains.</li>
+<li>The hot spot is not on the GPU. Tokenization, data loading, host-side bookkeeping — none of these care about Triton.</li>
+<li>You do not have a benchmark. Without numbers, “this kernel is faster” is a guess. Always measure against a real PyTorch baseline before claiming a speedup.</li>
+</ul>
+<p>The right reflex is: profile, try <code>torch.compile</code>, profile again, and only then reach for Triton — and only for the kernel that actually matters.</p>
+</section>
+<section id="what-the-rest-of-the-book-delivers" class="level2" data-number="2.7">
+<h2 data-number="2.7" class="anchored" data-anchor-id="what-the-rest-of-the-book-delivers"><span class="header-section-number">2.7</span> What the rest of the book delivers</h2>
+<p>This is a tour, not a textbook. Each Part hands you one piece of the picture, ending with a kernel you have written and benchmarked yourself.</p>
+<p><strong>Part 1 — Triton Fundamentals.</strong> The mental model, pointer arithmetic and strides, reductions. After this Part you can read any simple Triton kernel without staring.</p>
+<p><strong>Part 2 — Basic Neural Network Kernels.</strong> Fused softmax, LayerNorm, RMSNorm, SwiGLU. Memory-bound kernels where fusion is the whole story.</p>
+<p><strong>Part 3 — Matrix Multiplication.</strong> Tiled GEMM, batched and linear, persistent matmul. Compute-bound kernels where tile sizing and the accumulator dtype matter.</p>
+<p><strong>Part 4 — Attention and Transformer Kernels.</strong> Naive attention, FlashAttention forward and backward, RoPE and ALiBi, KV cache. The algorithmic chapters.</p>
+<p><strong>Part 5 — Modern LLM Layer Fusion.</strong> Fused residual + RMSNorm, fused bias + activation + gate, cross-entropy, sampling. The kernels that make a real serving stack fast.</p>
+<p><strong>Part 6 — Quantization-Oriented Kernels.</strong> Low-precision storage and dequant-matmul.</p>
+<p><strong>Part 7 — Debugging, Testing, Profiling, Optimization.</strong> The tooling chapters. Read these out of order whenever you get stuck.</p>
+<p><strong>Part 8 — Capstone.</strong> Assemble a mini library, replace transformer pieces with your own kernels, and apply the design playbook to a kernel of your choosing.</p>
+<p>Next chapter: get your environment running so you can verify each of those kernels on your own GPU. See <a href="../../book/00-orientation/01-setup.html">Chapter 01</a> for the setup, and the <a href="../../kernel_checklist.html">kernel design checklist</a> and <a href="../../llm_kernel_map.html">LLM kernel map</a> for the running references you will return to.</p>
+
+
+<!-- -->
+
+</section>
+
+</main> <!-- /main -->
+<script type="ojs-module-contents">
+eyJjb250ZW50cyI6W3sibWV0aG9kTmFtZSI6ImludGVycHJldCIsImNlbGxOYW1lIjoib2pzLWNlbGwtMSIsImlubGluZSI6ZmFsc2UsInNvdXJjZSI6InZpZXdvZiBpbnRlbnNpdHkgPSBJbnB1dHMucmFuZ2UoWzAuMSwgMjAwXSwge3ZhbHVlOiA1LCBzdGVwOiAwLjEsIGxhYmVsOiBcIkFyaXRobWV0aWMgaW50ZW5zaXR5IChGTE9Qcy9ieXRlKVwifSlcbiJ9LHsibWV0aG9kTmFtZSI6ImludGVycHJldCIsImNlbGxOYW1lIjoib2pzLWNlbGwtMiIsImlubGluZSI6ZmFsc2UsInNvdXJjZSI6InBlYWtfYncgPSA0NDggICAgICAgIC8vIEdCL3MsIFJUWCAyMDcwIFNVUEVSIChhcHByb3hpbWF0ZSlcbnBlYWtfZmxvcHMgPSAxODAwMCAgIC8vIEdGTE9QL3MgPSAxOCBURkxPUC9zIEZQMTYgKGFwcHJveGltYXRlKVxucmlkZ2UgPSBwZWFrX2Zsb3BzIC8gcGVha19id1xuXG5yb29mX3hzID0gZDMucmFuZ2UoMC4xLCAyMDAsIDAuNSlcbnJvb2YgPSByb29mX3hzLm1hcCh4ID0+ICh7XG4gIGludGVuc2l0eTogeCxcbiAgYWNoaWV2YWJsZTogTWF0aC5taW4ocGVha19idyAqIHgsIHBlYWtfZmxvcHMpXG59KSlcblxub3BfcG9pbnQgPSBbe1xuICBpbnRlbnNpdHk6IGludGVuc2l0eSxcbiAgYWNoaWV2YWJsZTogTWF0aC5taW4ocGVha19idyAqIGludGVuc2l0eSwgcGVha19mbG9wcylcbn1dXG5cbmJvdW5kX2xhYmVsID0gaW50ZW5zaXR5IDwgcmlkZ2UgPyBcIm1lbW9yeS1ib3VuZFwiIDogXCJjb21wdXRlLWJvdW5kXCJcbmFjaGlldmFibGVfZ2Zsb3BzID0gTWF0aC5taW4ocGVha19idyAqIGludGVuc2l0eSwgcGVha19mbG9wcylcblxuUGxvdC5wbG90KHtcbiAgd2lkdGg6IDcyMCxcbiAgaGVpZ2h0OiA0MjAsXG4gIHg6IHt0eXBlOiBcImxvZ1wiLCBsYWJlbDogXCJhcml0aG1ldGljIGludGVuc2l0eSAoRkxPUHMvYnl0ZSlcIiwgZG9tYWluOiBbMC4xLCAyMDBdfSxcbiAgeToge3R5cGU6IFwibG9nXCIsIGxhYmVsOiBcImFjaGlldmFibGUgdGhyb3VnaHB1dCAoR0ZMT1Avcykg4oCUIGhpZ2hlciBpcyBiZXR0ZXJcIiwgZG9tYWluOiBbMTAsIDMwMDAwXX0sXG4gIG1hcmtzOiBbXG4gICAgUGxvdC5saW5lKHJvb2YsIHt4OiBcImludGVuc2l0eVwiLCB5OiBcImFjaGlldmFibGVcIiwgc3Ryb2tlOiBcInN0ZWVsYmx1ZVwiLCBzdHJva2VXaWR0aDogMn0pLFxuICAgIFBsb3QucnVsZVgoW3JpZGdlXSwge3N0cm9rZTogXCJncmF5XCIsIHN0cm9rZURhc2hhcnJheTogXCI0LDRcIn0pLFxuICAgIFBsb3QuZG90KG9wX3BvaW50LCB7eDogXCJpbnRlbnNpdHlcIiwgeTogXCJhY2hpZXZhYmxlXCIsIGZpbGw6IFwiY3JpbXNvblwiLCByOiA2fSksXG4gICAgUGxvdC5ydWxlWChbaW50ZW5zaXR5XSwge3N0cm9rZTogXCJjcmltc29uXCIsIHN0cm9rZURhc2hhcnJheTogXCIyLDJcIn0pLFxuICAgIFBsb3QudGV4dChbe3g6IHJpZGdlLCB5OiAyNTAwMCwgdDogYHJpZGdlIOKJiCAke3JpZGdlLnRvRml4ZWQoMSl9IEZMT1BzL2J5dGUgKHJvb2YgZW52ZWxvcGUsIGJsdWUpYH1dLFxuICAgICAgICAgICAgICB7eDogXCJ4XCIsIHk6IFwieVwiLCB0ZXh0OiBcInRcIiwgZmlsbDogXCJncmF5XCIsIHRleHRBbmNob3I6IFwic3RhcnRcIiwgZHg6IDZ9KSxcbiAgICBQbG90LnRleHQoW3t4OiBpbnRlbnNpdHksIHk6IGFjaGlldmFibGVfZ2Zsb3BzLCB0OiBgb3AgcG9pbnQ6ICR7Ym91bmRfbGFiZWx9LCAkeyhhY2hpZXZhYmxlX2dmbG9wcy8xMDAwKS50b0ZpeGVkKDIpfSBURkxPUC9zYH1dLFxuICAgICAgICAgICAgICB7eDogXCJ4XCIsIHk6IFwieVwiLCB0ZXh0OiBcInRcIiwgZmlsbDogXCJjcmltc29uXCIsIHRleHRBbmNob3I6IFwic3RhcnRcIiwgZHg6IDgsIGR5OiAtOH0pXG4gIF1cbn0pXG4ifSx7Im1ldGhvZE5hbWUiOiJpbnRlcnByZXQiLCJjZWxsTmFtZSI6Im9qcy1jZWxsLTMiLCJpbmxpbmUiOmZhbHNlLCJzb3VyY2UiOiJtZGBBdCBpbnRlbnNpdHkgJHtpbnRlbnNpdHkudG9GaXhlZCgxKX0gRkxPUHMvYnl0ZSB5b3VyIGtlcm5lbCBpcyAqKiR7Ym91bmRfbGFiZWx9KiosIGFjaGlldmFibGUgdGhyb3VnaHB1dCDiiYggJHsoYWNoaWV2YWJsZV9nZmxvcHMvMTAwMCkudG9GaXhlZCgyKX0gVEZMT1AvcyBvbiB0aGUgcmVmZXJlbmNlIDIwNzAgU1VQRVIgKHBlYWsgQlcg4omIIDQ0OCBHQi9zLCBwZWFrIEZQMTYg4omIIDE4IFRGTE9QL3Mg4oCUIGFwcHJveGltYXRlKS5gXG4ifSx7Im1ldGhvZE5hbWUiOiJpbnRlcnByZXRRdWlldCIsInNvdXJjZSI6InNoaW55SW5wdXQoJ2ludGVuc2l0eScpIn1dfQ==
+</script>
+<script type="module">
+if (window.location.protocol === "file:") { alert("The OJS runtime does not work with file:// URLs. Please use a web server to view this document."); }
+window._ojs.paths.runtimeToDoc = "../../book/00-orientation";
+window._ojs.paths.runtimeToRoot = "../..";
+window._ojs.paths.docToRoot = "../..";
+window._ojs.selfContained = false;
+window._ojs.runtime.interpretFromScriptTags();
+</script>
+<script id="quarto-html-after-body" type="application/javascript">
+window.document.addEventListener("DOMContentLoaded", function (event) {
+  const toggleBodyColorMode = (bsSheetEl) => {
+    const mode = bsSheetEl.getAttribute("data-mode");
+    const bodyEl = window.document.querySelector("body");
+    if (mode === "dark") {
+      bodyEl.classList.add("quarto-dark");
+      bodyEl.classList.remove("quarto-light");
+    } else {
+      bodyEl.classList.add("quarto-light");
+      bodyEl.classList.remove("quarto-dark");
+    }
+  }
+  const toggleBodyColorPrimary = () => {
+    const bsSheetEl = window.document.querySelector("link#quarto-bootstrap");
+    if (bsSheetEl) {
+      toggleBodyColorMode(bsSheetEl);
+    }
+  }
+  toggleBodyColorPrimary();  
+  const icon = "";
+  const anchorJS = new window.AnchorJS();
+  anchorJS.options = {
+    placement: 'right',
+    icon: icon
+  };
+  anchorJS.add('.anchored');
+  const isCodeAnnotation = (el) => {
+    for (const clz of el.classList) {
+      if (clz.startsWith('code-annotation-')) {                     
+        return true;
+      }
+    }
+    return false;
+  }
+  const onCopySuccess = function(e) {
+    // button target
+    const button = e.trigger;
+    // don't keep focus
+    button.blur();
+    // flash "checked"
+    button.classList.add('code-copy-button-checked');
+    var currentTitle = button.getAttribute("title");
+    button.setAttribute("title", "Copied!");
+    let tooltip;
+    if (window.bootstrap) {
+      button.setAttribute("data-bs-toggle", "tooltip");
+      button.setAttribute("data-bs-placement", "left");
+      button.setAttribute("data-bs-title", "Copied!");
+      tooltip = new bootstrap.Tooltip(button, 
+        { trigger: "manual", 
+          customClass: "code-copy-button-tooltip",
+          offset: [0, -8]});
+      tooltip.show();    
+    }
+    setTimeout(function() {
+      if (tooltip) {
+        tooltip.hide();
+        button.removeAttribute("data-bs-title");
+        button.removeAttribute("data-bs-toggle");
+        button.removeAttribute("data-bs-placement");
+      }
+      button.setAttribute("title", currentTitle);
+      button.classList.remove('code-copy-button-checked');
+    }, 1000);
+    // clear code selection
+    e.clearSelection();
+  }
+  const getTextToCopy = function(trigger) {
+      const codeEl = trigger.previousElementSibling.cloneNode(true);
+      for (const childEl of codeEl.children) {
+        if (isCodeAnnotation(childEl)) {
+          childEl.remove();
+        }
+      }
+      return codeEl.innerText;
+  }
+  const clipboard = new window.ClipboardJS('.code-copy-button:not([data-in-quarto-modal])', {
+    text: getTextToCopy
+  });
+  clipboard.on('success', onCopySuccess);
+  if (window.document.getElementById('quarto-embedded-source-code-modal')) {
+    // For code content inside modals, clipBoardJS needs to be initialized with a container option
+    // TODO: Check when it could be a function (https://github.com/zenorocha/clipboard.js/issues/860)
+    const clipboardModal = new window.ClipboardJS('.code-copy-button[data-in-quarto-modal]', {
+      text: getTextToCopy,
+      container: window.document.getElementById('quarto-embedded-source-code-modal')
+    });
+    clipboardModal.on('success', onCopySuccess);
+  }
+  const viewSource = window.document.getElementById('quarto-view-source') ||
+                     window.document.getElementById('quarto-code-tools-source');
+  if (viewSource) {
+    const sourceUrl = viewSource.getAttribute("data-quarto-source-url");
+    viewSource.addEventListener("click", function(e) {
+      if (sourceUrl) {
+        // rstudio viewer pane
+        if (/\bcapabilities=\b/.test(window.location)) {
+          window.open(sourceUrl);
+        } else {
+          window.location.href = sourceUrl;
+        }
+      } else {
+        const modal = new bootstrap.Modal(document.getElementById('quarto-embedded-source-code-modal'));
+        modal.show();
+      }
+      return false;
+    });
+  }
+  function toggleCodeHandler(show) {
+    return function(e) {
+      const detailsSrc = window.document.querySelectorAll(".cell > details > .sourceCode");
+      for (let i=0; i<detailsSrc.length; i++) {
+        const details = detailsSrc[i].parentElement;
+        if (show) {
+          details.open = true;
+        } else {
+          details.removeAttribute("open");
+        }
+      }
+      const cellCodeDivs = window.document.querySelectorAll(".cell > .sourceCode");
+      const fromCls = show ? "hidden" : "unhidden";
+      const toCls = show ? "unhidden" : "hidden";
+      for (let i=0; i<cellCodeDivs.length; i++) {
+        const codeDiv = cellCodeDivs[i];
+        if (codeDiv.classList.contains(fromCls)) {
+          codeDiv.classList.remove(fromCls);
+          codeDiv.classList.add(toCls);
+        } 
+      }
+      return false;
+    }
+  }
+  const hideAllCode = window.document.getElementById("quarto-hide-all-code");
+  if (hideAllCode) {
+    hideAllCode.addEventListener("click", toggleCodeHandler(false));
+  }
+  const showAllCode = window.document.getElementById("quarto-show-all-code");
+  if (showAllCode) {
+    showAllCode.addEventListener("click", toggleCodeHandler(true));
+  }
+    var localhostRegex = new RegExp(/^(?:http|https):\/\/localhost\:?[0-9]*\//);
+    var mailtoRegex = new RegExp(/^mailto:/);
+      var filterRegex = new RegExp('/' + window.location.host + '/');
+    var isInternal = (href) => {
+        return filterRegex.test(href) || localhostRegex.test(href) || mailtoRegex.test(href);
+    }
+    // Inspect non-navigation links and adorn them if external
+ 	var links = window.document.querySelectorAll('a[href]:not(.nav-link):not(.navbar-brand):not(.toc-action):not(.sidebar-link):not(.sidebar-item-toggle):not(.pagination-link):not(.no-external):not([aria-hidden]):not(.dropdown-item):not(.quarto-navigation-tool):not(.about-link)');
+    for (var i=0; i<links.length; i++) {
+      const link = links[i];
+      if (!isInternal(link.href)) {
+        // undo the damage that might have been done by quarto-nav.js in the case of
+        // links that we want to consider external
+        if (link.dataset.originalHref !== undefined) {
+          link.href = link.dataset.originalHref;
+        }
+      }
+    }
+  function tippyHover(el, contentFn, onTriggerFn, onUntriggerFn) {
+    const config = {
+      allowHTML: true,
+      maxWidth: 500,
+      delay: 100,
+      arrow: false,
+      appendTo: function(el) {
+          return el.parentElement;
+      },
+      interactive: true,
+      interactiveBorder: 10,
+      theme: 'quarto',
+      placement: 'bottom-start',
+    };
+    if (contentFn) {
+      config.content = contentFn;
+    }
+    if (onTriggerFn) {
+      config.onTrigger = onTriggerFn;
+    }
+    if (onUntriggerFn) {
+      config.onUntrigger = onUntriggerFn;
+    }
+    window.tippy(el, config); 
+  }
+  const noterefs = window.document.querySelectorAll('a[role="doc-noteref"]');
+  for (var i=0; i<noterefs.length; i++) {
+    const ref = noterefs[i];
+    tippyHover(ref, function() {
+      // use id or data attribute instead here
+      let href = ref.getAttribute('data-footnote-href') || ref.getAttribute('href');
+      try { href = new URL(href).hash; } catch {}
+      const id = href.replace(/^#\/?/, "");
+      const note = window.document.getElementById(id);
+      if (note) {
+        return note.innerHTML;
+      } else {
+        return "";
+      }
+    });
+  }
+  const xrefs = window.document.querySelectorAll('a.quarto-xref');
+  const processXRef = (id, note) => {
+    // Strip column container classes
+    const stripColumnClz = (el) => {
+      el.classList.remove("page-full", "page-columns");
+      if (el.children) {
+        for (const child of el.children) {
+          stripColumnClz(child);
+        }
+      }
+    }
+    stripColumnClz(note)
+    if (id === null || id.startsWith('sec-')) {
+      // Special case sections, only their first couple elements
+      const container = document.createElement("div");
+      if (note.children && note.children.length > 2) {
+        container.appendChild(note.children[0].cloneNode(true));
+        for (let i = 1; i < note.children.length; i++) {
+          const child = note.children[i];
+          if (child.tagName === "P" && child.innerText === "") {
+            continue;
+          } else {
+            container.appendChild(child.cloneNode(true));
+            break;
+          }
+        }
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(container);
+        }
+        return container.innerHTML
+      } else {
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(note);
+        }
+        return note.innerHTML;
+      }
+    } else {
+      // Remove any anchor links if they are present
+      const anchorLink = note.querySelector('a.anchorjs-link');
+      if (anchorLink) {
+        anchorLink.remove();
+      }
+      if (window.Quarto?.typesetMath) {
+        window.Quarto.typesetMath(note);
+      }
+      // TODO in 1.5, we should make sure this works without a callout special case
+      if (note.classList.contains("callout")) {
+        return note.outerHTML;
+      } else {
+        return note.innerHTML;
+      }
+    }
+  }
+  for (var i=0; i<xrefs.length; i++) {
+    const xref = xrefs[i];
+    tippyHover(xref, undefined, function(instance) {
+      instance.disable();
+      let url = xref.getAttribute('href');
+      let hash = undefined; 
+      if (url.startsWith('#')) {
+        hash = url;
+      } else {
+        try { hash = new URL(url).hash; } catch {}
+      }
+      if (hash) {
+        const id = hash.replace(/^#\/?/, "");
+        const note = window.document.getElementById(id);
+        if (note !== null) {
+          try {
+            const html = processXRef(id, note.cloneNode(true));
+            instance.setContent(html);
+          } finally {
+            instance.enable();
+            instance.show();
+          }
+        } else {
+          // See if we can fetch this
+          fetch(url.split('#')[0])
+          .then(res => res.text())
+          .then(html => {
+            const parser = new DOMParser();
+            const htmlDoc = parser.parseFromString(html, "text/html");
+            const note = htmlDoc.getElementById(id);
+            if (note !== null) {
+              const html = processXRef(id, note);
+              instance.setContent(html);
+            } 
+          }).finally(() => {
+            instance.enable();
+            instance.show();
+          });
+        }
+      } else {
+        // See if we can fetch a full url (with no hash to target)
+        // This is a special case and we should probably do some content thinning / targeting
+        fetch(url)
+        .then(res => res.text())
+        .then(html => {
+          const parser = new DOMParser();
+          const htmlDoc = parser.parseFromString(html, "text/html");
+          const note = htmlDoc.querySelector('main.content');
+          if (note !== null) {
+            // This should only happen for chapter cross references
+            // (since there is no id in the URL)
+            // remove the first header
+            if (note.children.length > 0 && note.children[0].tagName === "HEADER") {
+              note.children[0].remove();
+            }
+            const html = processXRef(null, note);
+            instance.setContent(html);
+          } 
+        }).finally(() => {
+          instance.enable();
+          instance.show();
+        });
+      }
+    }, function(instance) {
+    });
+  }
+      let selectedAnnoteEl;
+      const selectorForAnnotation = ( cell, annotation) => {
+        let cellAttr = 'data-code-cell="' + cell + '"';
+        let lineAttr = 'data-code-annotation="' +  annotation + '"';
+        const selector = 'span[' + cellAttr + '][' + lineAttr + ']';
+        return selector;
+      }
+      const selectCodeLines = (annoteEl) => {
+        const doc = window.document;
+        const targetCell = annoteEl.getAttribute("data-target-cell");
+        const targetAnnotation = annoteEl.getAttribute("data-target-annotation");
+        const annoteSpan = window.document.querySelector(selectorForAnnotation(targetCell, targetAnnotation));
+        const lines = annoteSpan.getAttribute("data-code-lines").split(",");
+        const lineIds = lines.map((line) => {
+          return targetCell + "-" + line;
+        })
+        let top = null;
+        let height = null;
+        let parent = null;
+        if (lineIds.length > 0) {
+            //compute the position of the single el (top and bottom and make a div)
+            const el = window.document.getElementById(lineIds[0]);
+            top = el.offsetTop;
+            height = el.offsetHeight;
+            parent = el.parentElement.parentElement;
+          if (lineIds.length > 1) {
+            const lastEl = window.document.getElementById(lineIds[lineIds.length - 1]);
+            const bottom = lastEl.offsetTop + lastEl.offsetHeight;
+            height = bottom - top;
+          }
+          if (top !== null && height !== null && parent !== null) {
+            // cook up a div (if necessary) and position it 
+            let div = window.document.getElementById("code-annotation-line-highlight");
+            if (div === null) {
+              div = window.document.createElement("div");
+              div.setAttribute("id", "code-annotation-line-highlight");
+              div.style.position = 'absolute';
+              parent.appendChild(div);
+            }
+            div.style.top = top - 2 + "px";
+            div.style.height = height + 4 + "px";
+            div.style.left = 0;
+            let gutterDiv = window.document.getElementById("code-annotation-line-highlight-gutter");
+            if (gutterDiv === null) {
+              gutterDiv = window.document.createElement("div");
+              gutterDiv.setAttribute("id", "code-annotation-line-highlight-gutter");
+              gutterDiv.style.position = 'absolute';
+              const codeCell = window.document.getElementById(targetCell);
+              const gutter = codeCell.querySelector('.code-annotation-gutter');
+              gutter.appendChild(gutterDiv);
+            }
+            gutterDiv.style.top = top - 2 + "px";
+            gutterDiv.style.height = height + 4 + "px";
+          }
+          selectedAnnoteEl = annoteEl;
+        }
+      };
+      const unselectCodeLines = () => {
+        const elementsIds = ["code-annotation-line-highlight", "code-annotation-line-highlight-gutter"];
+        elementsIds.forEach((elId) => {
+          const div = window.document.getElementById(elId);
+          if (div) {
+            div.remove();
+          }
+        });
+        selectedAnnoteEl = undefined;
+      };
+        // Handle positioning of the toggle
+    window.addEventListener(
+      "resize",
+      throttle(() => {
+        elRect = undefined;
+        if (selectedAnnoteEl) {
+          selectCodeLines(selectedAnnoteEl);
+        }
+      }, 10)
+    );
+    function throttle(fn, ms) {
+    let throttle = false;
+    let timer;
+      return (...args) => {
+        if(!throttle) { // first call gets through
+            fn.apply(this, args);
+            throttle = true;
+        } else { // all the others get throttled
+            if(timer) clearTimeout(timer); // cancel #2
+            timer = setTimeout(() => {
+              fn.apply(this, args);
+              timer = throttle = false;
+            }, ms);
+        }
+      };
+    }
+      // Attach click handler to the DT
+      const annoteDls = window.document.querySelectorAll('dt[data-target-cell]');
+      for (const annoteDlNode of annoteDls) {
+        annoteDlNode.addEventListener('click', (event) => {
+          const clickedEl = event.target;
+          if (clickedEl !== selectedAnnoteEl) {
+            unselectCodeLines();
+            const activeEl = window.document.querySelector('dt[data-target-cell].code-annotation-active');
+            if (activeEl) {
+              activeEl.classList.remove('code-annotation-active');
+            }
+            selectCodeLines(clickedEl);
+            clickedEl.classList.add('code-annotation-active');
+          } else {
+            // Unselect the line
+            unselectCodeLines();
+            clickedEl.classList.remove('code-annotation-active');
+          }
+        });
+      }
+  const findCites = (el) => {
+    const parentEl = el.parentElement;
+    if (parentEl) {
+      const cites = parentEl.dataset.cites;
+      if (cites) {
+        return {
+          el,
+          cites: cites.split(' ')
+        };
+      } else {
+        return findCites(el.parentElement)
+      }
+    } else {
+      return undefined;
+    }
+  };
+  var bibliorefs = window.document.querySelectorAll('a[role="doc-biblioref"]');
+  for (var i=0; i<bibliorefs.length; i++) {
+    const ref = bibliorefs[i];
+    const citeInfo = findCites(ref);
+    if (citeInfo) {
+      tippyHover(citeInfo.el, function() {
+        var popup = window.document.createElement('div');
+        citeInfo.cites.forEach(function(cite) {
+          var citeDiv = window.document.createElement('div');
+          citeDiv.classList.add('hanging-indent');
+          citeDiv.classList.add('csl-entry');
+          var biblioDiv = window.document.getElementById('ref-' + cite);
+          if (biblioDiv) {
+            citeDiv.innerHTML = biblioDiv.innerHTML;
+          }
+          popup.appendChild(citeDiv);
+        });
+        return popup.innerHTML;
+      });
+    }
+  }
+});
+</script>
+<nav class="page-navigation">
+  <div class="nav-page nav-page-previous">
+      <a href="../../index.html" class="pagination-link" aria-label="Learning Triton by Rebuilding Modern LLM Kernels">
+        <i class="bi bi-arrow-left-short"></i> <span class="nav-page-text"><span class="chapter-number">1</span>&nbsp; <span class="chapter-title">Learning Triton by Rebuilding Modern LLM Kernels</span></span>
+      </a>          
+  </div>
+  <div class="nav-page nav-page-next">
+      <a href="../../book/00-orientation/01-setup.html" class="pagination-link" aria-label="Chapter 01: Environment Setup">
+        <span class="nav-page-text"><span class="chapter-number">3</span>&nbsp; <span class="chapter-title">Chapter 01: Environment Setup</span></span> <i class="bi bi-arrow-right-short"></i>
+      </a>
+  </div>
+</nav><div class="modal fade" id="quarto-embedded-source-code-modal" tabindex="-1" aria-labelledby="quarto-embedded-source-code-modal-label" aria-hidden="true"><div class="modal-dialog modal-dialog-scrollable"><div class="modal-content"><div class="modal-header"><h5 class="modal-title" id="quarto-embedded-source-code-modal-label">Source Code</h5><button class="btn-close" data-bs-dismiss="modal"></button></div><div class="modal-body"><div class="">
+<div class="sourceCode" id="cb5" data-shortcodes="false"><pre class="sourceCode markdown code-with-copy"><code class="sourceCode markdown"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="co">---</span></span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a><span class="an">title:</span><span class="co"> "Chapter 00: Why Triton Exists"</span></span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a><span class="co">---</span></span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a>You already know PyTorch. You know that <span class="in">`nn.Linear(x)`</span> calls into cuBLAS, that <span class="in">`F.softmax(x, dim=-1)`</span> dispatches to a hand-tuned CUDA kernel, and that most of the time you do not think about either. This book is about the times you do have to think about them — and what Triton gives you when you do.</span>
+<span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-7"><a href="#cb5-7" aria-hidden="true" tabindex="-1"></a><span class="fu">## The landscape: four ways to run math on a GPU</span></span>
+<span id="cb5-8"><a href="#cb5-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-9"><a href="#cb5-9" aria-hidden="true" tabindex="-1"></a>For any operation you want to perform on a GPU, you have roughly four implementation tiers. Each one trades effort for control.</span>
+<span id="cb5-10"><a href="#cb5-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-11"><a href="#cb5-11" aria-hidden="true" tabindex="-1"></a>**PyTorch eager** is what you write by default. <span class="in">`y = x @ w + b`</span>. Every operator is its own CUDA launch. You pay a fixed launch overhead per op (single-digit microseconds), and every intermediate tensor is materialized in HBM. For training loops dominated by large matmuls this is fine; cuBLAS does the heavy lifting and the launch overhead is amortized. For a long chain of small element-wise ops on a small tensor, the launch tax dominates and you are leaving most of the GPU idle.</span>
+<span id="cb5-12"><a href="#cb5-12" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-13"><a href="#cb5-13" aria-hidden="true" tabindex="-1"></a>**`torch.compile`** is the right next step nine times out of ten. It traces your forward (and optionally backward), groups element-wise and reduction ops into fused regions, and lowers them to Triton kernels behind the scenes. You write normal PyTorch; the compiler decides what to fuse. For most workloads where the bottleneck is "too many small ops", <span class="in">`torch.compile`</span> solves the problem with zero kernel code. Reach for it first.</span>
+<span id="cb5-14"><a href="#cb5-14" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-15"><a href="#cb5-15" aria-hidden="true" tabindex="-1"></a>**Triton** is what you use when <span class="in">`torch.compile`</span> cannot express the fusion you want, when you need an *algorithmic* rewrite (FlashAttention is the canonical case), or when you want predictable control over tile sizes, accumulator dtypes, and memory layout. You write the kernel in a Python-like DSL. The compiler handles register allocation, instruction scheduling, and the lowering to PTX. You are still working at the tile level, not the thread level.</span>
+<span id="cb5-16"><a href="#cb5-16" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-17"><a href="#cb5-17" aria-hidden="true" tabindex="-1"></a>**Raw CUDA** is what you use when Triton's abstractions get in your way: when you need warp-specialization patterns the Triton compiler does not yet expose, when you need WGMMA orchestration that the Hopper backend has not surfaced, or when you are squeezing the last 5% out of a kernel that already runs at 90% of peak. The effort cost jumps by an order of magnitude. For 95% of LLM kernels you will not need it.</span>
+<span id="cb5-18"><a href="#cb5-18" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-19"><a href="#cb5-19" aria-hidden="true" tabindex="-1"></a>The rest of this book lives in the third tier. Before we commit, look at why it exists at all.</span>
+<span id="cb5-20"><a href="#cb5-20" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-21"><a href="#cb5-21" aria-hidden="true" tabindex="-1"></a><span class="fu">## Why custom kernels matter for LLMs</span></span>
+<span id="cb5-22"><a href="#cb5-22" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-23"><a href="#cb5-23" aria-hidden="true" tabindex="-1"></a>A modern decoder-only transformer is mostly two things: matrix multiplications and "everything that connects them". cuBLAS handles the matmuls — usually well, sometimes excellently. The connective tissue is where Triton earns its keep.</span>
+<span id="cb5-24"><a href="#cb5-24" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-25"><a href="#cb5-25" aria-hidden="true" tabindex="-1"></a>Consider a single transformer block. RMSNorm, then Q/K/V projection, then RoPE, then attention, then output projection, then residual add, then RMSNorm again, then the MLP (up projection, SwiGLU gate, down projection), then another residual add. In eager PyTorch that is roughly 15 distinct kernel launches per block, with several gigabytes of intermediate activations written to HBM and then read back. At inference time, with small batch sizes, the launch overhead alone can exceed the compute time.</span>
+<span id="cb5-26"><a href="#cb5-26" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-27"><a href="#cb5-27" aria-hidden="true" tabindex="-1"></a>Custom kernels let you collapse that chain. Fused residual + RMSNorm becomes one kernel that reads the residual once and the input once, computes the sum and the normalization in registers, and writes the normalized output once. Fused bias + SiLU + multiply (the SwiGLU body) collapses three element-wise passes into one. FlashAttention collapses the entire attention block — Q @ K^T, softmax, P @ V — into a single tiled kernel that never writes the N x N attention matrix to HBM. These are not micro-optimizations. They change the asymptotic memory traffic of the model.</span>
+<span id="cb5-28"><a href="#cb5-28" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-29"><a href="#cb5-29" aria-hidden="true" tabindex="-1"></a><span class="fu">## What fusion actually does</span></span>
+<span id="cb5-30"><a href="#cb5-30" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-31"><a href="#cb5-31" aria-hidden="true" tabindex="-1"></a>Fusion is the art of doing more work per byte read from HBM. The mental model is simple: HBM is slow, registers and SRAM are fast, kernel launches have overhead. If you can chain two element-wise ops in registers — read once, compute twice, write once — you halve the memory traffic and remove one launch.</span>
+<span id="cb5-32"><a href="#cb5-32" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-33"><a href="#cb5-33" aria-hidden="true" tabindex="-1"></a>What fuses well: element-wise ops on tensors of the same shape (add, multiply, ReLU, SiLU, sigmoid), broadcasts where one operand is small enough to live in registers, reductions that immediately feed an element-wise op (the softmax pattern: reduce to a max, broadcast back, subtract, exp, reduce to a sum, broadcast back, divide), and matmul-then-element-wise patterns where the element-wise op runs on the matmul tile while it is still in registers (bias add after a GEMM, activation after a GEMM).</span>
+<span id="cb5-34"><a href="#cb5-34" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-35"><a href="#cb5-35" aria-hidden="true" tabindex="-1"></a>What does not fuse easily: ops where the producer's output shape does not match the consumer's input layout (e.g., a reduction along axis 0 followed by an operation that needs axis-1 locality), ops separated by a synchronization barrier across the whole tensor (a full softmax cannot fuse with an op that needs the output in row-major order if you computed it in column-major), and anything where the two ops need genuinely different block sizes. <span class="in">`torch.compile`</span> knows most of these rules and will fuse what it can.</span>
+<span id="cb5-36"><a href="#cb5-36" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-37"><a href="#cb5-37" aria-hidden="true" tabindex="-1"></a><span class="fu">## Memory bandwidth vs. compute</span></span>
+<span id="cb5-38"><a href="#cb5-38" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-39"><a href="#cb5-39" aria-hidden="true" tabindex="-1"></a>Every kernel sits on a roofline. The vertical axis is achievable throughput in FLOP/s. The horizontal axis is arithmetic intensity in FLOPs per byte of HBM traffic. The roof has two pieces: a sloped section equal to peak bandwidth times intensity, and a flat section equal to peak FLOPs. The intersection is the **ridge point**. Kernels to the left of the ridge are memory-bound — their performance is set by how fast you can move bytes. Kernels to the right are compute-bound — their performance is set by the math units.</span>
+<span id="cb5-40"><a href="#cb5-40" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-41"><a href="#cb5-41" aria-hidden="true" tabindex="-1"></a>For an RTX 2070 SUPER, peak HBM bandwidth is roughly 448 GB/s and peak FP16 throughput is roughly 18 TFLOP/s. The ridge point sits near 40 FLOPs per byte. Most LLM kernels that are not matmul live well to the left of that ridge.</span>
+<span id="cb5-42"><a href="#cb5-42" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-43"><a href="#cb5-43" aria-hidden="true" tabindex="-1"></a>The interactive plot below lets you slide an operation's arithmetic intensity along the roofline. Watch where the dashed line crosses the roof: that is your achievable throughput. Notice how far you have to push intensity before you escape the bandwidth region.</span>
+<span id="cb5-44"><a href="#cb5-44" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-47"><a href="#cb5-47" aria-hidden="true" tabindex="-1"></a><span class="in">```{ojs}</span></span>
+<span id="cb5-48"><a href="#cb5-48" aria-hidden="true" tabindex="-1"></a><span class="in">//| echo: false</span></span>
+<span id="cb5-49"><a href="#cb5-49" aria-hidden="true" tabindex="-1"></a><span class="in">viewof intensity = Inputs.range([0.1, 200], {value: 5, step: 0.1, label: "Arithmetic intensity (FLOPs/byte)"})</span></span>
+<span id="cb5-50"><a href="#cb5-50" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb5-51"><a href="#cb5-51" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-54"><a href="#cb5-54" aria-hidden="true" tabindex="-1"></a><span class="in">```{ojs}</span></span>
+<span id="cb5-55"><a href="#cb5-55" aria-hidden="true" tabindex="-1"></a><span class="in">//| echo: false</span></span>
+<span id="cb5-56"><a href="#cb5-56" aria-hidden="true" tabindex="-1"></a><span class="in">//| label: fig-roofline</span></span>
+<span id="cb5-57"><a href="#cb5-57" aria-hidden="true" tabindex="-1"></a><span class="in">//| fig-cap: "Roofline plot for an approximate RTX 2070 SUPER (peak HBM ~448 GB/s, peak FP16 ~18 TFLOP/s). Blue line is the achievable-throughput envelope (memory-bound on the left, compute-bound on the right); dashed gray rule marks the ridge point; the crimson dot tracks the operation chosen by the slider."</span></span>
+<span id="cb5-58"><a href="#cb5-58" aria-hidden="true" tabindex="-1"></a><span class="in">peak_bw = 448        // GB/s, RTX 2070 SUPER (approximate)</span></span>
+<span id="cb5-59"><a href="#cb5-59" aria-hidden="true" tabindex="-1"></a><span class="in">peak_flops = 18000   // GFLOP/s = 18 TFLOP/s FP16 (approximate)</span></span>
+<span id="cb5-60"><a href="#cb5-60" aria-hidden="true" tabindex="-1"></a><span class="in">ridge = peak_flops / peak_bw</span></span>
+<span id="cb5-61"><a href="#cb5-61" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-62"><a href="#cb5-62" aria-hidden="true" tabindex="-1"></a><span class="in">roof_xs = d3.range(0.1, 200, 0.5)</span></span>
+<span id="cb5-63"><a href="#cb5-63" aria-hidden="true" tabindex="-1"></a><span class="in">roof = roof_xs.map(x =&gt; ({</span></span>
+<span id="cb5-64"><a href="#cb5-64" aria-hidden="true" tabindex="-1"></a><span class="in">  intensity: x,</span></span>
+<span id="cb5-65"><a href="#cb5-65" aria-hidden="true" tabindex="-1"></a><span class="in">  achievable: Math.min(peak_bw * x, peak_flops)</span></span>
+<span id="cb5-66"><a href="#cb5-66" aria-hidden="true" tabindex="-1"></a><span class="in">}))</span></span>
+<span id="cb5-67"><a href="#cb5-67" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-68"><a href="#cb5-68" aria-hidden="true" tabindex="-1"></a><span class="in">op_point = [{</span></span>
+<span id="cb5-69"><a href="#cb5-69" aria-hidden="true" tabindex="-1"></a><span class="in">  intensity: intensity,</span></span>
+<span id="cb5-70"><a href="#cb5-70" aria-hidden="true" tabindex="-1"></a><span class="in">  achievable: Math.min(peak_bw * intensity, peak_flops)</span></span>
+<span id="cb5-71"><a href="#cb5-71" aria-hidden="true" tabindex="-1"></a><span class="in">}]</span></span>
+<span id="cb5-72"><a href="#cb5-72" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-73"><a href="#cb5-73" aria-hidden="true" tabindex="-1"></a><span class="in">bound_label = intensity &lt; ridge ? "memory-bound" : "compute-bound"</span></span>
+<span id="cb5-74"><a href="#cb5-74" aria-hidden="true" tabindex="-1"></a><span class="in">achievable_gflops = Math.min(peak_bw * intensity, peak_flops)</span></span>
+<span id="cb5-75"><a href="#cb5-75" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-76"><a href="#cb5-76" aria-hidden="true" tabindex="-1"></a><span class="in">Plot.plot({</span></span>
+<span id="cb5-77"><a href="#cb5-77" aria-hidden="true" tabindex="-1"></a><span class="in">  width: 720,</span></span>
+<span id="cb5-78"><a href="#cb5-78" aria-hidden="true" tabindex="-1"></a><span class="in">  height: 420,</span></span>
+<span id="cb5-79"><a href="#cb5-79" aria-hidden="true" tabindex="-1"></a><span class="in">  x: {type: "log", label: "arithmetic intensity (FLOPs/byte)", domain: [0.1, 200]},</span></span>
+<span id="cb5-80"><a href="#cb5-80" aria-hidden="true" tabindex="-1"></a><span class="in">  y: {type: "log", label: "achievable throughput (GFLOP/s) — higher is better", domain: [10, 30000]},</span></span>
+<span id="cb5-81"><a href="#cb5-81" aria-hidden="true" tabindex="-1"></a><span class="in">  marks: [</span></span>
+<span id="cb5-82"><a href="#cb5-82" aria-hidden="true" tabindex="-1"></a><span class="in">    Plot.line(roof, {x: "intensity", y: "achievable", stroke: "steelblue", strokeWidth: 2}),</span></span>
+<span id="cb5-83"><a href="#cb5-83" aria-hidden="true" tabindex="-1"></a><span class="in">    Plot.ruleX([ridge], {stroke: "gray", strokeDasharray: "4,4"}),</span></span>
+<span id="cb5-84"><a href="#cb5-84" aria-hidden="true" tabindex="-1"></a><span class="in">    Plot.dot(op_point, {x: "intensity", y: "achievable", fill: "crimson", r: 6}),</span></span>
+<span id="cb5-85"><a href="#cb5-85" aria-hidden="true" tabindex="-1"></a><span class="in">    Plot.ruleX([intensity], {stroke: "crimson", strokeDasharray: "2,2"}),</span></span>
+<span id="cb5-86"><a href="#cb5-86" aria-hidden="true" tabindex="-1"></a><span class="in">    Plot.text([{x: ridge, y: 25000, t: `ridge ≈ ${ridge.toFixed(1)} FLOPs/byte (roof envelope, blue)`}],</span></span>
+<span id="cb5-87"><a href="#cb5-87" aria-hidden="true" tabindex="-1"></a><span class="in">              {x: "x", y: "y", text: "t", fill: "gray", textAnchor: "start", dx: 6}),</span></span>
+<span id="cb5-88"><a href="#cb5-88" aria-hidden="true" tabindex="-1"></a><span class="in">    Plot.text([{x: intensity, y: achievable_gflops, t: `op point: ${bound_label}, ${(achievable_gflops/1000).toFixed(2)} TFLOP/s`}],</span></span>
+<span id="cb5-89"><a href="#cb5-89" aria-hidden="true" tabindex="-1"></a><span class="in">              {x: "x", y: "y", text: "t", fill: "crimson", textAnchor: "start", dx: 8, dy: -8})</span></span>
+<span id="cb5-90"><a href="#cb5-90" aria-hidden="true" tabindex="-1"></a><span class="in">  ]</span></span>
+<span id="cb5-91"><a href="#cb5-91" aria-hidden="true" tabindex="-1"></a><span class="in">})</span></span>
+<span id="cb5-92"><a href="#cb5-92" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb5-93"><a href="#cb5-93" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-96"><a href="#cb5-96" aria-hidden="true" tabindex="-1"></a><span class="in">```{ojs}</span></span>
+<span id="cb5-97"><a href="#cb5-97" aria-hidden="true" tabindex="-1"></a><span class="in">//| echo: false</span></span>
+<span id="cb5-98"><a href="#cb5-98" aria-hidden="true" tabindex="-1"></a><span class="in">md`At intensity ${intensity.toFixed(1)} FLOPs/byte your kernel is **${bound_label}**, achievable throughput ≈ ${(achievable_gflops/1000).toFixed(2)} TFLOP/s on the reference 2070 SUPER (peak BW ≈ 448 GB/s, peak FP16 ≈ 18 TFLOP/s — approximate).`</span></span>
+<span id="cb5-99"><a href="#cb5-99" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb5-100"><a href="#cb5-100" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-101"><a href="#cb5-101" aria-hidden="true" tabindex="-1"></a>The slider is a toy, but the lesson is real: a kernel with intensity 1 (one FLOP per byte read, like a plain element-wise add) can never run faster than the memory system delivers data, no matter how fast your tensor cores are. If you want that kernel to go faster, you do not optimize the math. You read fewer bytes — by fusing it with its neighbors so the bytes stay in registers.</span>
+<span id="cb5-102"><a href="#cb5-102" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-103"><a href="#cb5-103" aria-hidden="true" tabindex="-1"></a><span class="fu">## Three motivating examples</span></span>
+<span id="cb5-104"><a href="#cb5-104" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-105"><a href="#cb5-105" aria-hidden="true" tabindex="-1"></a>Three operations capture the three regimes you will live in for the rest of this book.</span>
+<span id="cb5-106"><a href="#cb5-106" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-107"><a href="#cb5-107" aria-hidden="true" tabindex="-1"></a>**RMSNorm — memory-bound.** For an input of shape <span class="in">`(M, N)`</span>, RMSNorm reads <span class="in">`M * N`</span> elements, computes <span class="in">`M * N`</span> squares, sums them across the row (M reductions of length N), divides by N, takes a reciprocal square root, and writes <span class="in">`M * N`</span> outputs. The arithmetic per element is a multiply, a squared accumulate, and a multiply-by-scale. Three or four FLOPs per element loaded. Arithmetic intensity is a fraction of one FLOP/byte once you account for the FP16 load width. You will measure RMSNorm performance in fraction of peak HBM bandwidth, never in TFLOP/s. The PyTorch reference for the operation we will rebuild in Chapter 7 is short enough to sit here as an anchor:</span>
+<span id="cb5-108"><a href="#cb5-108" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-109"><a href="#cb5-109" aria-hidden="true" tabindex="-1"></a><span class="in">```python</span></span>
+<span id="cb5-110"><a href="#cb5-110" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> rmsnorm_ref(x: torch.Tensor, weight: torch.Tensor, eps: <span class="bu">float</span> <span class="op">=</span> <span class="fl">1e-6</span>) <span class="op">-&gt;</span> torch.Tensor:</span>
+<span id="cb5-111"><a href="#cb5-111" aria-hidden="true" tabindex="-1"></a>    rms <span class="op">=</span> x.<span class="bu">pow</span>(<span class="dv">2</span>).mean(dim<span class="op">=-</span><span class="dv">1</span>, keepdim<span class="op">=</span><span class="va">True</span>).add(eps).rsqrt()</span>
+<span id="cb5-112"><a href="#cb5-112" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> x <span class="op">*</span> rms <span class="op">*</span> weight</span>
+<span id="cb5-113"><a href="#cb5-113" aria-hidden="true" tabindex="-1"></a><span class="in">```</span></span>
+<span id="cb5-114"><a href="#cb5-114" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-115"><a href="#cb5-115" aria-hidden="true" tabindex="-1"></a>Three lines. The fused Triton version is more lines but performs less memory traffic — one read of <span class="in">`x`</span>, one read of <span class="in">`weight`</span>, one write of the output — and that is the whole game.</span>
+<span id="cb5-116"><a href="#cb5-116" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-117"><a href="#cb5-117" aria-hidden="true" tabindex="-1"></a>**Matmul — compute-bound.** A GEMM with shapes <span class="in">`(M, K)`</span> times <span class="in">`(K, N)`</span> reads <span class="in">`M*K + K*N`</span> elements and performs <span class="in">`2*M*N*K`</span> FLOPs. For square shapes around 4096 the arithmetic intensity is in the thousands of FLOPs per byte, well to the right of the ridge. Tensor cores on Ampere and later push FP16 GEMM into the tens of TFLOP/s. Your job in a matmul kernel is not to reduce memory traffic — cuBLAS is already near-optimal on bandwidth. Your job is to keep the tensor cores fed: pick the right tile sizes, accumulate in FP32, use the right <span class="in">`num_stages`</span> for software pipelining, and avoid bank conflicts. We will spend three chapters on this (Part 3).</span>
+<span id="cb5-118"><a href="#cb5-118" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-119"><a href="#cb5-119" aria-hidden="true" tabindex="-1"></a>**Attention — IO-aware algorithmic.** Naive attention is the trap that taught the field a lesson. Compute <span class="in">`S = Q @ K^T`</span>, apply softmax along the last axis, compute <span class="in">`O = P @ V`</span>. Two matmuls, one softmax. The matmuls are compute-bound; the softmax is memory-bound. But the *combination* is memory-bound because the N x N matrix <span class="in">`S`</span> has to be written to HBM after the first matmul and read back for the softmax, and again for the second matmul. For sequence length 8192 that is 64 million entries per head — gigabytes of traffic per layer.</span>
+<span id="cb5-120"><a href="#cb5-120" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-121"><a href="#cb5-121" aria-hidden="true" tabindex="-1"></a>FlashAttention's insight is not a math change. The math is identical. The change is the schedule: tile the K and V tensors, stream them through the kernel, maintain a running max and a running normalizer per query row, and never write <span class="in">`S`</span> to HBM at all. The N x N matrix only ever exists in tiles that live in SRAM. Same answer, asymptotically less memory traffic, dramatic speedup on long sequences. We rebuild it in Chapter 14. The point for this chapter is that you cannot get FlashAttention by fusing kernels. You have to rewrite the algorithm with memory hierarchy in mind. That is what Triton lets you do.</span>
+<span id="cb5-122"><a href="#cb5-122" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-123"><a href="#cb5-123" aria-hidden="true" tabindex="-1"></a><span class="fu">## When not to write a Triton kernel</span></span>
+<span id="cb5-124"><a href="#cb5-124" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-125"><a href="#cb5-125" aria-hidden="true" tabindex="-1"></a>Custom kernels are expensive to write, test, and maintain. Do not write one when:</span>
+<span id="cb5-126"><a href="#cb5-126" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-127"><a href="#cb5-127" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>The op is a matmul on standard shapes. cuBLAS is the result of many engineer-years; you will not beat it for general FP16/BF16 GEMM. Use <span class="in">`torch.matmul`</span> and move on. Write a Triton matmul to *learn* (Chapter 9), not to ship.</span>
+<span id="cb5-128"><a href="#cb5-128" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span><span class="in">`torch.compile`</span> already fuses the chain you are worried about. Profile the compiled version first. If the bottleneck moved somewhere else, you are done.</span>
+<span id="cb5-129"><a href="#cb5-129" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>You are still prototyping the model. Iterating on architecture is faster than iterating on kernels. Get the math right in eager mode, then compile, then write a kernel for the one hot spot that remains.</span>
+<span id="cb5-130"><a href="#cb5-130" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>The hot spot is not on the GPU. Tokenization, data loading, host-side bookkeeping — none of these care about Triton.</span>
+<span id="cb5-131"><a href="#cb5-131" aria-hidden="true" tabindex="-1"></a><span class="ss">- </span>You do not have a benchmark. Without numbers, "this kernel is faster" is a guess. Always measure against a real PyTorch baseline before claiming a speedup.</span>
+<span id="cb5-132"><a href="#cb5-132" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-133"><a href="#cb5-133" aria-hidden="true" tabindex="-1"></a>The right reflex is: profile, try <span class="in">`torch.compile`</span>, profile again, and only then reach for Triton — and only for the kernel that actually matters.</span>
+<span id="cb5-134"><a href="#cb5-134" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-135"><a href="#cb5-135" aria-hidden="true" tabindex="-1"></a><span class="fu">## What the rest of the book delivers</span></span>
+<span id="cb5-136"><a href="#cb5-136" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-137"><a href="#cb5-137" aria-hidden="true" tabindex="-1"></a>This is a tour, not a textbook. Each Part hands you one piece of the picture, ending with a kernel you have written and benchmarked yourself.</span>
+<span id="cb5-138"><a href="#cb5-138" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-139"><a href="#cb5-139" aria-hidden="true" tabindex="-1"></a>**Part 1 — Triton Fundamentals.** The mental model, pointer arithmetic and strides, reductions. After this Part you can read any simple Triton kernel without staring.</span>
+<span id="cb5-140"><a href="#cb5-140" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-141"><a href="#cb5-141" aria-hidden="true" tabindex="-1"></a>**Part 2 — Basic Neural Network Kernels.** Fused softmax, LayerNorm, RMSNorm, SwiGLU. Memory-bound kernels where fusion is the whole story.</span>
+<span id="cb5-142"><a href="#cb5-142" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-143"><a href="#cb5-143" aria-hidden="true" tabindex="-1"></a>**Part 3 — Matrix Multiplication.** Tiled GEMM, batched and linear, persistent matmul. Compute-bound kernels where tile sizing and the accumulator dtype matter.</span>
+<span id="cb5-144"><a href="#cb5-144" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-145"><a href="#cb5-145" aria-hidden="true" tabindex="-1"></a>**Part 4 — Attention and Transformer Kernels.** Naive attention, FlashAttention forward and backward, RoPE and ALiBi, KV cache. The algorithmic chapters.</span>
+<span id="cb5-146"><a href="#cb5-146" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-147"><a href="#cb5-147" aria-hidden="true" tabindex="-1"></a>**Part 5 — Modern LLM Layer Fusion.** Fused residual + RMSNorm, fused bias + activation + gate, cross-entropy, sampling. The kernels that make a real serving stack fast.</span>
+<span id="cb5-148"><a href="#cb5-148" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-149"><a href="#cb5-149" aria-hidden="true" tabindex="-1"></a>**Part 6 — Quantization-Oriented Kernels.** Low-precision storage and dequant-matmul.</span>
+<span id="cb5-150"><a href="#cb5-150" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-151"><a href="#cb5-151" aria-hidden="true" tabindex="-1"></a>**Part 7 — Debugging, Testing, Profiling, Optimization.** The tooling chapters. Read these out of order whenever you get stuck.</span>
+<span id="cb5-152"><a href="#cb5-152" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-153"><a href="#cb5-153" aria-hidden="true" tabindex="-1"></a>**Part 8 — Capstone.** Assemble a mini library, replace transformer pieces with your own kernels, and apply the design playbook to a kernel of your choosing.</span>
+<span id="cb5-154"><a href="#cb5-154" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb5-155"><a href="#cb5-155" aria-hidden="true" tabindex="-1"></a>Next chapter: get your environment running so you can verify each of those kernels on your own GPU. See <span class="co">[</span><span class="ot">Chapter 01</span><span class="co">](01-setup.qmd)</span> for the setup, and the <span class="co">[</span><span class="ot">kernel design checklist</span><span class="co">](../../kernel_checklist.qmd)</span> and <span class="co">[</span><span class="ot">LLM kernel map</span><span class="co">](../../llm_kernel_map.qmd)</span> for the running references you will return to.</span>
+</code><button title="Copy to Clipboard" class="code-copy-button" data-in-quarto-modal=""><i class="bi"></i></button></pre></div>
+</div></div></div></div></div>
+</div> <!-- /content -->
+
+
+
+
+</body></html>
