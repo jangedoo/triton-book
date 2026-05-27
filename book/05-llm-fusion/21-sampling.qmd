@@ -1,0 +1,291 @@
+---
+title: "Chapter 21: Sampling Kernels for Inference"
+---
+
+Decode-time sampling is the **anti-training** kernel suite. Training-time kernels chew through millions of tokens in parallel; decode-time sampling runs on **one row at a time** — one token, one vocab vector, one sampled id. The math is tiny. The challenge is dispatch overhead and the host-device sync that happens every time the CPU reads the sampled id to feed back into the model.
+
+This chapter walks through what is worth a custom Triton kernel and what is not. Spoiler: not everything is. Some of these problems are inherently CPU-shaped — sorting a 128k vector with a fancy parallel algorithm to save 50 microseconds doesn't make sense when the next forward pass takes 30 ms.
+
+### PyTorch reference
+
+```{python}
+#| eval: false
+import torch
+import torch.nn.functional as F
+
+def sample_ref(logits, temperature=1.0, top_k=None, top_p=None):
+    """logits: [N, V] -> sampled ids [N]."""
+    logits = logits / temperature
+    if top_k is not None:
+        v, _ = torch.topk(logits, top_k, dim=-1)
+        threshold = v[:, -1:]
+        logits = torch.where(logits < threshold, torch.full_like(logits, -float("inf")), logits)
+    if top_p is not None:
+        sorted_logits, sorted_idx = torch.sort(logits, descending=True, dim=-1)
+        probs = F.softmax(sorted_logits, dim=-1)
+        cum = probs.cumsum(dim=-1)
+        # mask out entries with cumulative prob > top_p (keeping the first one that crosses)
+        mask = cum - probs > top_p
+        sorted_logits = sorted_logits.masked_fill(mask, -float("inf"))
+        logits = torch.empty_like(logits).scatter_(-1, sorted_idx, sorted_logits)
+    probs = F.softmax(logits, dim=-1)
+    return torch.multinomial(probs, 1).squeeze(-1)
+
+def argmax_ref(logits):
+    return logits.argmax(dim=-1)
+```
+
+### Triton implementation
+
+Four kernels, listed in order of "obvious win" to "questionable value":
+
+**Temperature scale** — trivially elementwise.
+
+```{python}
+#| eval: false
+import torch, triton
+import triton.language as tl
+
+@triton.jit
+def _temperature_kernel(
+    x_ptr, y_ptr, inv_t,
+    N, V, stride_row,
+    BLOCK_SIZE: tl.constexpr,
+):
+    row = tl.program_id(0)
+    cols = tl.arange(0, BLOCK_SIZE)
+    mask = cols < V
+    x = tl.load(x_ptr + row * stride_row + cols, mask=mask, other=0.0)
+    tl.store(y_ptr + row * stride_row + cols, x * inv_t, mask=mask)
+
+
+def temperature_scale(logits, temperature):
+    N, V = logits.shape
+    y = torch.empty_like(logits)
+    inv_t = 1.0 / float(temperature)
+    BS = triton.next_power_of_2(V)
+    _temperature_kernel[(N,)](logits, y, inv_t, N, V, logits.stride(0), BLOCK_SIZE=BS)
+    return y
+```
+
+**Argmax** — one program per row, one `tl.argmax` reduction.
+
+```{python}
+#| eval: false
+@triton.jit
+def _argmax_kernel(
+    x_ptr, out_ptr,
+    N, V, stride_row,
+    BLOCK_SIZE: tl.constexpr,
+):
+    row = tl.program_id(0)
+    cols = tl.arange(0, BLOCK_SIZE)
+    mask = cols < V
+    x = tl.load(x_ptr + row * stride_row + cols, mask=mask, other=-float("inf"))
+    idx = tl.argmax(x, axis=0)
+    tl.store(out_ptr + row, idx.to(tl.int64))
+
+
+def argmax_sample(logits):
+    N, V = logits.shape
+    out = torch.empty(N, device=logits.device, dtype=torch.int64)
+    BS = triton.next_power_of_2(V)
+    _argmax_kernel[(N,)](logits, out, N, V, logits.stride(0), BLOCK_SIZE=BS)
+    return out
+```
+
+Note the explicit cast to `int64`: `tl.argmax` returns `int32`. Storing `int32` into an `int64` buffer without the cast produces silently truncated indices once `V > 2^31` (never happens in practice, but the lint is worth keeping).
+
+**Top-k mask** — find the k-th largest value per row, mask everything below it to `-inf`. For small `k` (say `k <= 256`), keep a tile-resident "top-k buffer" and do a simple insertion sort. For `k > 256`, defer to `torch.topk` and a one-pass masking kernel.
+
+```{python}
+#| eval: false
+@triton.jit
+def _topk_mask_kernel(
+    x_ptr, threshold_ptr, y_ptr,
+    N, V, stride_row,
+    BLOCK_SIZE: tl.constexpr,
+):
+    """Mask everything strictly less than the per-row threshold to -inf."""
+    row = tl.program_id(0)
+    cols = tl.arange(0, BLOCK_SIZE)
+    mask = cols < V
+    x = tl.load(x_ptr + row * stride_row + cols, mask=mask, other=-float("inf"))
+    threshold = tl.load(threshold_ptr + row)
+    keep = x >= threshold
+    y = tl.where(keep, x, -float("inf"))
+    tl.store(y_ptr + row * stride_row + cols, y, mask=mask)
+
+
+def top_k_mask(logits, k):
+    """Hybrid: torch.topk for the threshold, Triton for the elementwise mask."""
+    N, V = logits.shape
+    topk_vals, _ = torch.topk(logits, k, dim=-1)
+    threshold = topk_vals[:, -1].contiguous()
+    y = torch.empty_like(logits)
+    BS = triton.next_power_of_2(V)
+    _topk_mask_kernel[(N,)](logits, threshold, y, N, V, logits.stride(0), BLOCK_SIZE=BS)
+    return y
+```
+
+For decode (`N = 1`), `torch.topk` on a 128k vector takes ~30 us. A pure-Triton top-k would save maybe 10 us. Not worth the kernel complexity.
+
+**Top-p (nucleus)** — sort, cumsum, mask. The sort is the awkward bit. Triton has no built-in `tl.sort` over arbitrary sizes; you'd implement bitonic or radix from scratch. The realistic answer is **hybrid**: `torch.sort` on the host side, Triton kernel for the cumsum-and-mask:
+
+```{python}
+#| eval: false
+def top_p_mask(logits, p):
+    """Hybrid top-p: torch.sort + Triton mask + unsort."""
+    sorted_logits, sorted_idx = torch.sort(logits, descending=True, dim=-1)
+    probs = torch.softmax(sorted_logits, dim=-1)
+    cum = probs.cumsum(dim=-1)
+    # Keep the smallest prefix whose cum-prev >= p; that means mask where cum - probs > p.
+    drop = (cum - probs) > p
+    sorted_logits = sorted_logits.masked_fill(drop, -float("inf"))
+    return logits.scatter(-1, sorted_idx, sorted_logits)
+```
+
+A Triton kernel could do the `cumsum` + masking together once the sorted output is in HBM, saving one pass. The sort itself is best left to `torch.sort` (cuB-backed) for any realistic vocab.
+
+### Shape trace
+
+For the argmax kernel (the cleanest of the bunch):
+
+```
+Inputs:                    logits : (N, V)     fp16
+Program owns:              one row of logits
+pid = tl.program_id(0)     scalar              int32
+cols = tl.arange(0, BS)    (BS,)               int32
+mask = cols < V            (BS,)               bool
+x_ptrs = logits_ptr + pid*stride_row + cols    (BS,)  ptr
+x = tl.load(x_ptrs, mask, other=-inf)          (BS,)  fp16
+idx = tl.argmax(x, axis=0)                     scalar int32
+idx64 = idx.to(tl.int64)                       scalar int64
+tl.store(out_ptr + pid, idx64)
+```
+
+The `other=-inf` matters: an out-of-range lane loaded as `0.0` could win the argmax against legitimate negative logits.
+
+### Pointer arithmetic and masks
+
+All four kernels are one-program-per-row with `cols = arange(0, BS)` and `mask = cols < V`. The `other` value depends on what you do with the lane:
+
+| Kernel              | `other`     | Why                                                                 |
+|---------------------|-------------|---------------------------------------------------------------------|
+| temperature_scale   | `0.0`       | Lane is masked at store; load value is never used.                  |
+| argmax              | `-inf`      | A `0.0` masked lane could beat real negative logits and win argmax. |
+| topk_mask           | `-inf`      | A `0.0` masked lane could survive the threshold and leak garbage.   |
+
+### Correctness test
+
+```{python}
+#| eval: false
+import pytest, torch
+from ch21_sampling import temperature_scale, argmax_sample, top_k_mask
+
+pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda only")
+
+def test_temperature():
+    x = torch.randn(4, 1024, device="cuda")
+    y = temperature_scale(x, 0.7)
+    torch.testing.assert_close(y, x / 0.7)
+
+def test_argmax():
+    x = torch.randn(4, 1025, device="cuda")
+    idx = argmax_sample(x)
+    torch.testing.assert_close(idx, x.argmax(dim=-1))
+
+def test_topk_mask():
+    x = torch.randn(4, 1025, device="cuda")
+    y = top_k_mask(x, k=10)
+    # exactly k finite entries per row
+    assert (y != -float("inf")).sum(dim=-1).eq(10).all()
+    # the kept entries are the top-k of x
+    expected, _ = x.topk(10, dim=-1)
+    kept = torch.where(y != -float("inf"), y, torch.full_like(y, -float("inf")))
+    torch.testing.assert_close(kept.topk(10, dim=-1).values, expected)
+```
+
+### Benchmark
+
+```{python}
+#| eval: false
+import torch, triton
+from ch21_sampling import temperature_scale, argmax_sample, top_k_mask
+
+N = 1  # decode: one token at a time
+for V in [32000, 50272, 128000]:
+    x = torch.randn(N, V, device="cuda", dtype=torch.float16)
+    t_temp = triton.testing.do_bench(lambda: temperature_scale(x, 0.8))
+    t_arg  = triton.testing.do_bench(lambda: argmax_sample(x))
+    t_topk = triton.testing.do_bench(lambda: top_k_mask(x, k=50))
+    p_temp = triton.testing.do_bench(lambda: x / 0.8)
+    p_arg  = triton.testing.do_bench(lambda: x.argmax(dim=-1))
+    print(f"V={V}: temp triton={t_temp:.4f} torch={p_temp:.4f} | argmax triton={t_arg:.4f} torch={p_arg:.4f} | topk={t_topk:.4f}")
+```
+
+::: {.callout-warning appearance="simple"}
+**Placeholder data.** The numbers below are hardcoded illustrative values, not measurements. Replace with output from your own `triton.testing.do_bench` run before drawing conclusions.
+:::
+
+```{ojs}
+//| echo: false
+//| label: fig-argmax-bench
+//| fig-cap: "Single-row (N=1) greedy argmax median latency vs vocabulary size V, fp16 logits. Lower is better. Triton argmax kernel vs eager torch.argmax."
+{
+  const data = [
+    {V: 32000,  argmax_triton: 0.012, argmax_torch: 0.025},
+    {V: 50272,  argmax_triton: 0.018, argmax_torch: 0.038},
+    {V: 128000, argmax_triton: 0.045, argmax_torch: 0.090},
+  ];
+  const long = data.flatMap(d => [
+    {V: d.V, impl: "triton", ms: d.argmax_triton},
+    {V: d.V, impl: "torch",  ms: d.argmax_torch}
+  ]);
+  return Plot.plot({
+    color: {legend: true, domain: ["triton", "torch"], range: ["steelblue", "orange"]},
+    x: {label: "V (vocabulary size)"},
+    y: {label: "median latency (ms, N=1) — lower is better"},
+    marks: [
+      Plot.line(long, {x: "V", y: "ms", stroke: "impl"}),
+      Plot.dot(long,  {x: "V", y: "ms", fill: "impl"})
+    ]
+  });
+}
+```
+
+### Optimization discussion
+
+The actual bottleneck of autoregressive decode is **the sync, not the math**. Every sampled token id must be read back to the host to embed it for the next step. That sync stalls the GPU for the round-trip latency, often 5–20 us. Your 2 us sampling kernel does not move the needle; the 15 us sync dominates.
+
+Two real wins exist:
+
+- **Speculative decoding**: sample many candidate tokens in parallel and verify with a smaller draft model, amortising the sync cost. Out of scope for a kernel chapter.
+- **Persistent CUDA graphs for decode**: capture the entire forward + sample as one graph, dispatch with one call. Removes per-op kernel-launch overhead.
+
+For the sampling math itself, the only kernel worth obsessing over is **argmax** for greedy decode, because it ships in every chatbot and runs in the hottest loop. The custom kernel is a clean ~2x over `torch.argmax` thanks to skipping the dispatcher overhead and not building an intermediate `(values, indices)` pair.
+
+### Common bugs
+
+- **Temperature applied after softmax.** `softmax(logits) / T` is wrong — the resulting distribution does not sum to 1. Always divide logits first, then softmax.
+- **Top-k off-by-one.** `>=` vs `>` on the threshold matters when multiple logits tie at the k-th value. PyTorch's `torch.topk` returns one specific tie-break; if you want bit-for-bit compatibility you must match it.
+- **`tl.argmax` dtype.** Returns `int32`. Cast to `int64` before storing into the standard PyTorch indices buffer.
+- **`other=0.0` on the argmax load.** A masked-off lane of zero will beat any negative logit and become the sampled token. Use `other=-inf`.
+
+### Exercises
+
+**Beginner 1 — temperature scale.** Implement and verify. Confirm temperature=1.0 is an identity.
+
+**Beginner 2 — greedy argmax.** Implement `argmax_sample`. Test for `k=1` (single-row) and `k=B*T` (batch). Confirm dtype is `int64`.
+
+**Beginner 3 — top-k mask for several k.** Test `top_k_mask` for `k=1, 10, 50, 256`. Confirm exactly `k` finite entries per row.
+
+## Intermediate
+
+**Intermediate 1 — fused temperature + top-k + softmax + multinomial.** Combine all four into one kernel for `V <= 4096`. Use `tl.rand(seed, row)` for the uniform draw. Compare distribution against the unfused reference over a histogram of many samples.
+
+**Intermediate 2 — top-p with Triton scan.** After sorting on the CPU side with `torch.sort`, write a Triton kernel that does the cumsum (`tl.cumsum`) and the masking in one pass. Then scatter back.
+
+## Advanced
+
+**Advanced — min-p sampler (Triton-only).** Min-p keeps tokens whose probability is at least `min_p * max_prob`. This is row-local: no sort required. Write a one-row kernel that computes the row max, computes softmax in one pass, masks below the min-p threshold, and returns the re-normalised probabilities. Then sample via `tl.rand`.

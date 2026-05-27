@@ -1,0 +1,160 @@
+---
+title: "Chapter 12: Attention Math Refresher for Kernel Writers"
+---
+
+You already know what attention computes. The textbooks treat it as a formula. Kernel writers treat it as a memory layout problem with a softmax in the middle. This chapter reframes the math from the second perspective. Every quantity is sized, every intermediate is accounted for in bytes, and every step is connected to where it lives — registers, SRAM, or HBM. By the end of the chapter you should be able to point at the line `scores = Q @ K^T` and say, out loud, why that line is the entire reason FlashAttention exists.
+
+There is no Triton in this chapter and no benchmarks. We are setting up the accounting that the next two chapters spend ferociously.
+
+## Shapes and the layout debate
+
+We use the four-dimensional layout `[B, H, S, D]` throughout the book:
+
+- `B` is batch size.
+- `H` is the number of attention heads.
+- `S` is the sequence length.
+- `D` is the head dimension (the per-head channel count).
+
+So `Q`, `K`, `V` all live as `[B, H, S, D]` tensors.
+
+You will see two layout camps in real code. The "head-major" camp puts `H` before `S`, which is what we do here, and which is also what PyTorch's `scaled_dot_product_attention` expects. The "seq-major" camp puts `S` before `H`, which is what `nn.MultiheadAttention` historically used and what some inference frameworks prefer because it keeps each token's full hidden state contiguous in memory.
+
+For a kernel writer, the practical difference is:
+
+- `[B, H, S, D]` makes per-head kernels trivial — the `(B, H)` pair becomes the outer grid axis and each program owns one `[S, D]` slice.
+- `[B, S, H, D]` is better when you fuse with token-wise ops (LayerNorm across the hidden dimension), because the per-token hidden state `[H * D]` is contiguous.
+
+For attention specifically `[B, H, S, D]` is the friendlier choice and we commit to it. Treat `(B, H)` as a flattened "batch" dimension of size `B * H` for the inner kernel; it will simplify the launcher.
+
+## The five-step recipe
+
+Standard scaled dot-product attention with a causal mask:
+
+1. `scores = Q @ K^T`, shape `[B, H, S, S]`.
+2. `scores = scores / sqrt(D)` to keep variance bounded after the dot product.
+3. `scores = scores.masked_fill(future_positions, -inf)` for causal attention.
+4. `probs = softmax(scores, dim=-1)`, shape `[B, H, S, S]`.
+5. `out = probs @ V`, shape `[B, H, S, D]`.
+
+The output is the same shape as `Q`. Everything in the middle is a `[B, H, S, S]` tensor — quadratic in the sequence length. That tensor is the entire problem.
+
+## Memory accounting: why naive attention dies
+
+Take a moderately sized configuration: `B = 4`, `H = 32`, `S = 4096`, `D = 64`, fp16.
+
+The activations:
+
+- `Q`, `K`, `V`: each `4 * 32 * 4096 * 64 * 2 bytes = 64 MB`. Total `192 MB`.
+- `scores`: `4 * 32 * 4096 * 4096 * 2 bytes = 4 GB`.
+- `probs`: another `4 GB`.
+- `out`: `64 MB`.
+
+The two `[B, H, S, S]` tensors dwarf everything else by a factor of roughly fifty. They will not all fit on the author's reference 2070 SUPER, which has 8 GB total VRAM and is hosting the model parameters too. Even on an A100 80 GB you would burn `10%` of memory on a single layer's attention activations.
+
+Double the sequence to `S = 8192` and the `scores` tensor becomes `16 GB` per copy. The `2070 SUPER` is well past out-of-memory; even the A100 starts to feel it.
+
+This is not a theoretical concern. This is the reason FlashAttention exists.
+
+## A worked example
+
+Pick the smallest non-trivial shape: `B = 1`, `H = 1`, `S = 4`, `D = 2`, no batch flattening, fp32 for the arithmetic.
+
+```
+Q = [[1, 0], [0, 1], [1, 1], [0, 0]]    # shape (4, 2)
+K = [[1, 0], [1, 1], [0, 1], [1, 0]]    # shape (4, 2)
+V = [[2, 0], [0, 2], [1, 1], [0, 0]]    # shape (4, 2)
+
+scale = 1 / sqrt(2) ≈ 0.7071
+
+scores = Q @ K^T  =                      # shape (4, 4)
+  [[1, 1, 0, 1],
+   [0, 1, 1, 0],
+   [1, 2, 1, 1],
+   [0, 0, 0, 0]]
+
+scaled = scores * 0.7071 =
+  [[0.707, 0.707, 0.000, 0.707],
+   [0.000, 0.707, 0.707, 0.000],
+   [0.707, 1.414, 0.707, 0.707],
+   [0.000, 0.000, 0.000, 0.000]]
+
+causal mask (upper triangle to -inf):
+  [[0.707, -inf,  -inf,  -inf ],
+   [0.000, 0.707, -inf,  -inf ],
+   [0.707, 1.414, 0.707, -inf ],
+   [0.000, 0.000, 0.000, 0.000]]
+
+softmax(dim=-1):
+  row 0: [1.000, 0.000, 0.000, 0.000]
+  row 1: [0.330, 0.670, 0.000, 0.000]
+  row 2: [0.211, 0.428, 0.211, ...]  # third entry shares the 0.211 mass; fourth is -inf
+  row 3: [0.250, 0.250, 0.250, 0.250]
+
+out = probs @ V                          # shape (4, 2)
+```
+
+The key observation: each output row is a convex combination of the value rows whose tokens the query is allowed to see. The softmax weights are derived from a per-row max and per-row sum. **A single output row only needs its own row of `scores`, not the whole matrix.** This is the seed of the idea.
+
+## What FlashAttention does differently
+
+FlashAttention rearranges the loop so the `[B, H, S, S]` tensor is never materialized in HBM. The trick is to walk the K/V axis in blocks and update each output row incrementally:
+
+1. Pick a tile of `BLOCK_M` rows of `Q`. Load it into SRAM.
+2. Loop over tiles of `BLOCK_N` rows of `K` and `V`.
+3. For each `K` tile, compute the partial scores `[BLOCK_M, BLOCK_N]` in registers, mask, take the running max, exponentiate, multiply by the `V` tile, and add to a per-Q-row running accumulator.
+4. After the loop, divide by the running sum to finish the softmax.
+
+The "running max" plus "running sum" plus "running output accumulator" is the **online softmax** recurrence. Chapter 14 is where we implement it. The crucial point for this chapter is that the only quantities that ever leave SRAM and touch HBM are `Q`, `K`, `V`, and `out`. The `[B, H, S, S]` score tensor never exists outside the inner loop's registers.
+
+## IO complexity, briefly
+
+The naive forward reads/writes the `[B, H, S, S]` `scores` tensor twice (once after the matmul, once after the softmax) and the `[B, H, S, D]` output once. HBM traffic per `(B, H)` slice is on the order of `S^2 + S * D`. With `S = 4096` and `D = 64` that is `~16M` elements of HBM traffic dominated by the `S^2` term.
+
+FlashAttention reads `Q` once, reads `K` and `V` roughly `ceil(S / BLOCK_M)` times each (because the same K/V tile is reused across multiple Q tiles), and writes `out` once. HBM traffic per `(B, H)` slice is on the order of `S * D + (S / BLOCK_M) * S * D = S * D * (1 + S / BLOCK_M)`. With `S = 4096`, `D = 64`, `BLOCK_M = 64`, that comes out to `~16M` elements — comparable on the surface, but distributed very differently: there is no quadratic dependency on `S` for any **single** tensor, and the working set per program is just three tiles plus an accumulator, which fits in SRAM. The bandwidth savings show up most when `BLOCK_M` is large enough that each K/V tile gets reused many times before being evicted from SRAM.
+
+## Side-by-side data flow
+
+```{mermaid}
+sequenceDiagram
+    participant HBM as HBM
+    participant SRAM as SRAM / registers
+    participant Out as Output (HBM)
+
+    Note over HBM,Out: Naive attention
+    HBM->>SRAM: load Q, K
+    SRAM->>HBM: store scores [B,H,S,S]
+    HBM->>SRAM: load scores
+    SRAM->>HBM: store probs [B,H,S,S]
+    HBM->>SRAM: load probs, V
+    SRAM->>Out: store out [B,H,S,D]
+
+    Note over HBM,Out: FlashAttention
+    HBM->>SRAM: load Q tile [BLOCK_M, D]
+    loop over K/V tiles
+        HBM->>SRAM: load K_j, V_j tiles [BLOCK_N, D]
+        SRAM->>SRAM: compute s_ij, update (m, l, acc) in registers
+    end
+    SRAM->>Out: store out tile [BLOCK_M, D]
+```
+
+The naive path writes and reads the quadratic tensor in HBM twice. The Flash path never writes it at all. That is the whole story.
+
+## Numerical stability checklist
+
+Three numerical points carry over to every attention kernel in this book:
+
+1. **Max-subtraction in softmax.** Always subtract the row max before exponentiating. Without it, `exp(scores)` overflows at `scores > ~88` in fp32 and `~16` in fp16.
+2. **fp32 accumulation.** Even when inputs are fp16, do the dot products and the softmax denominator in fp32. The score matmul has a reduction of length `D = 64` or `128`; the softmax denominator is a reduction of length `S`. Both will lose precision in fp16.
+3. **fp16 output store.** Cast the final result back to fp16 at the very end. The cast costs nothing once the value is in a register.
+
+These three rules are not optional. They will reappear in every attention kernel.
+
+### Exercises
+
+1. **Beginner.** Compute the memory cost of the `scores` tensor for `B = 8`, `H = 16`, `S = 2048`, `D = 128`, in both fp16 and fp32. Compare to the size of `Q`, `K`, `V`, `out`. Which one dominates?
+2. **Beginner.** A typical 70 B parameter model has `H = 64` heads and `D = 128` per head. Suppose you want to serve `B = 16` requests at `S = 4096`. How much memory does the per-layer `scores` tensor take in fp16? How does that compare to the per-layer KV cache (which is `2 * B * H * S * D * 2 bytes`)?
+3. **Intermediate.** For `S = 4096`, `D = 64`, and `BLOCK_M = BLOCK_N = 64`, compute the number of times each K tile is read by the FlashAttention forward. Compare to the naive case, where each K element is read exactly once per output row.
+4. **Intermediate.** Show that for a causal mask, the average number of K/V tiles a Q tile must visit is `(num_kv_tiles + 1) / 2`, not `num_kv_tiles`. This is the basis for the "causal pruning" you will write in Chapter 14.
+5. **Advanced.** Sketch the memory accounting for the **backward** pass of naive attention. Which tensors must be saved from the forward, and which can be recomputed? Argue why FlashAttention's backward only needs to save `Q`, `K`, `V`, `out`, and the per-row log-sum-exp.
+
+The next chapter writes the naive forward in Triton. We will materialize the `[B, H, S, S]` tensor on purpose. The chapter after that throws it away.

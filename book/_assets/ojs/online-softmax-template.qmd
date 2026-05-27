@@ -1,0 +1,89 @@
+## Interactive: stepping through the online softmax accumulator
+
+This widget steps through the state of the **online softmax** accumulator —
+the same accumulator FlashAttention uses to stream over K/V blocks without
+ever materializing the full attention score matrix.
+
+We process the score vector `[3, 1, 4, 1, 5, 9, 2, 6]` in blocks of size 2.
+Drag the slider to advance one block at a time and watch how the running max
+`m`, the running denominator `l`, and the running accumulator `acc` are
+updated. The exp-correction factor `alpha = exp(m_prev - m_new)` is the
+trick that lets us keep `l` and `acc` consistent when a new block raises the
+running max.
+
+For chapter use: copy this whole block into a chapter and edit the input
+scores and `BLOCK_K` at the top to match the example you want to walk
+through.
+
+```{ojs}
+//| echo: false
+
+// --- Inputs -------------------------------------------------------------
+scores = [3, 1, 4, 1, 5, 9, 2, 6]
+BLOCK_K = 2
+num_blocks = Math.ceil(scores.length / BLOCK_K)
+
+viewof step = Inputs.range([0, num_blocks], {value: num_blocks, step: 1, label: "blocks processed"})
+
+// --- Online softmax state machine --------------------------------------
+// We replay the recurrence up to `step` blocks and capture each block's
+// intermediate state in a row. The accumulator `acc` here is the running
+// numerator of softmax (sum of exp(s - m)) — in FlashAttention this would
+// be a vector accumulator over V tiles; here we make it a scalar for
+// readability.
+rows = {
+  const out = [];
+  let m = -Infinity;
+  let l = 0.0;
+  let acc = 0.0;
+  for (let b = 0; b < step; b++) {
+    const start = b * BLOCK_K;
+    const block = scores.slice(start, start + BLOCK_K);
+    const block_max = Math.max(...block);
+    const m_new = Math.max(m, block_max);
+    const alpha = isFinite(m) ? Math.exp(m - m_new) : 0.0;
+    const block_sum = block.reduce((s, v) => s + Math.exp(v - m_new), 0.0);
+    const l_new = alpha * l + block_sum;
+    const acc_new = alpha * acc + block_sum;  // scalar stand-in for V-weighted sum
+    out.push({
+      block: b,
+      block_values: block.join(", "),
+      block_max: block_max,
+      m_prev: isFinite(m) ? m.toFixed(4) : "-inf",
+      m_new: m_new.toFixed(4),
+      alpha: alpha.toFixed(4),
+      l_new: l_new.toFixed(4),
+      acc_new: acc_new.toFixed(4)
+    });
+    m = m_new;
+    l = l_new;
+    acc = acc_new;
+  }
+  return out;
+}
+
+// --- Render -------------------------------------------------------------
+Inputs.table(rows, {
+  columns: ["block", "block_values", "block_max", "m_prev", "m_new", "alpha", "l_new", "acc_new"],
+  header: {
+    block: "block",
+    block_values: "block scores",
+    block_max: "block_max",
+    m_prev: "m (prev)",
+    m_new: "m (new)",
+    alpha: "alpha = exp(m_prev - m_new)",
+    l_new: "l (running)",
+    acc_new: "acc (running)"
+  }
+})
+
+md`After ${step} block(s): the final softmax-normalized output would be
+\`acc / l\`. Reference value (full softmax over all 8 scores): ${
+  (() => {
+    const m = Math.max(...scores);
+    const exps = scores.map(s => Math.exp(s - m));
+    const l = exps.reduce((a, b) => a + b, 0);
+    return (l / l).toFixed(4) + " (which collapses to 1 because acc here is just the numerator sum; in real FlashAttention acc is a V-weighted vector and acc/l is the attention output)";
+  })()
+}`
+```

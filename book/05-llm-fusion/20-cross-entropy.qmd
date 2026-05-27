@@ -1,0 +1,307 @@
+---
+title: "Chapter 20: Cross Entropy and Logits Kernels"
+---
+
+The training loop's outermost loss looks innocent:
+
+```
+loss = F.cross_entropy(logits, targets, ignore_index=-100)
+```
+
+The shape is anything but. `logits` is `[B*T, V]` where `V` is the vocab size — 32k for LLaMA-1, 50k for GPT-2, 128k for LLaMA-3, 256k for the latest Gemma. A `[8, 2048, 128000]` logits tensor at fp16 is **4.2 GB**. Materialising `softmax(logits)` for the backward pass doubles that. This single op routinely dominates the activation-memory budget of LLM training.
+
+This chapter writes the two kernels that matter:
+
+1. **`logsumexp`** — the row-wise scalar that anchors every softmax-derived loss.
+2. **Cross-entropy forward (and optional backward)** — fused so you never materialise the softmax tensor.
+
+### PyTorch reference
+
+```{python}
+#| eval: false
+import torch
+import torch.nn.functional as F
+
+def cross_entropy_ref(logits, target, ignore_index=-100, reduction="mean"):
+    """logits: [N, V]   target: [N]"""
+    return F.cross_entropy(logits, target, ignore_index=ignore_index, reduction=reduction)
+
+def logsumexp_ref(logits):
+    """Per-row LSE: max + log(sum(exp(x - max)))."""
+    return torch.logsumexp(logits, dim=-1)
+```
+
+Manually unrolled for the kernel, per row:
+
+```
+m = max(logits[r])
+lse[r] = m + log(sum(exp(logits[r] - m)))
+loss[r] = -(logits[r, target[r]] - lse[r])      # if target[r] != ignore_index
+        = 0                                      # otherwise
+mean_loss = sum(loss) / num_valid_rows
+```
+
+### Triton implementation
+
+One program per row. The row's vocab dimension is tiled by `BLOCK_SIZE`. For `V <= 65536` you can fit the whole row in one tile on most GPUs; for larger vocabs see the chunked-vocab discussion.
+
+**logsumexp kernel:**
+
+```{python}
+#| eval: false
+import torch
+import triton
+import triton.language as tl
+
+
+@triton.jit
+def _logsumexp_kernel(
+    x_ptr, out_ptr,
+    stride_x_row,
+    N, V,
+    BLOCK_SIZE: tl.constexpr,
+):
+    row = tl.program_id(0)
+    cols = tl.arange(0, BLOCK_SIZE)
+    mask = cols < V
+    x = tl.load(x_ptr + row * stride_x_row + cols, mask=mask, other=-float("inf")).to(tl.float32)
+    m = tl.max(x, axis=0)
+    e = tl.exp(x - m)
+    # masked-off lanes loaded as -inf -> exp(-inf - m) = 0, safe in the sum.
+    s = tl.sum(e, axis=0)
+    lse = m + tl.log(s)
+    tl.store(out_ptr + row, lse)
+
+
+def logsumexp(x):
+    N, V = x.shape
+    out = torch.empty(N, device=x.device, dtype=torch.float32)
+    BLOCK_SIZE = triton.next_power_of_2(V)
+    _logsumexp_kernel[(N,)](x, out, x.stride(0), N, V, BLOCK_SIZE=BLOCK_SIZE)
+    return out
+```
+
+**Cross-entropy forward kernel.** Same row layout, plus a target gather and an ignore-mask:
+
+```{python}
+#| eval: false
+@triton.jit
+def _ce_forward_kernel(
+    logits_ptr, target_ptr, loss_ptr,
+    stride_logits_row,
+    N, V, ignore_index,
+    BLOCK_SIZE: tl.constexpr,
+):
+    row = tl.program_id(0)
+    cols = tl.arange(0, BLOCK_SIZE)
+    mask = cols < V
+
+    t = tl.load(target_ptr + row)
+    is_valid = t != ignore_index
+
+    x_ptrs = logits_ptr + row * stride_logits_row + cols
+    x = tl.load(x_ptrs, mask=mask, other=-float("inf")).to(tl.float32)
+    m = tl.max(x, axis=0)
+    lse = m + tl.log(tl.sum(tl.exp(x - m), axis=0))
+
+    # Gather logit at the target column. Clamp the index so we never read OOB
+    # when the row is ignored.
+    safe_t = tl.where(is_valid, t, 0)
+    logit_t = tl.load(logits_ptr + row * stride_logits_row + safe_t).to(tl.float32)
+
+    loss = lse - logit_t
+    loss = tl.where(is_valid, loss, 0.0)
+    tl.store(loss_ptr + row, loss)
+
+
+def cross_entropy_forward(logits, target, ignore_index=-100, reduction="mean"):
+    N, V = logits.shape
+    loss = torch.empty(N, device=logits.device, dtype=torch.float32)
+    BLOCK_SIZE = triton.next_power_of_2(V)
+    _ce_forward_kernel[(N,)](
+        logits, target, loss,
+        logits.stride(0), N, V, ignore_index,
+        BLOCK_SIZE=BLOCK_SIZE,
+    )
+    if reduction == "none":
+        return loss
+    num_valid = (target != ignore_index).sum().clamp_min(1)
+    if reduction == "sum":
+        return loss.sum()
+    return loss.sum() / num_valid
+```
+
+**Cross-entropy backward.** The gradient is `softmax(logits) - one_hot(target)`, divided by `num_valid` for mean reduction. Compute softmax on the fly — never materialise the full softmax tensor:
+
+```{python}
+#| eval: false
+@triton.jit
+def _ce_backward_kernel(
+    dlogits_ptr, logits_ptr, target_ptr, lse_ptr,
+    stride_logits_row, stride_dlogits_row,
+    N, V, ignore_index, inv_num_valid,
+    BLOCK_SIZE: tl.constexpr,
+):
+    row = tl.program_id(0)
+    cols = tl.arange(0, BLOCK_SIZE)
+    mask = cols < V
+
+    t = tl.load(target_ptr + row)
+    is_valid = t != ignore_index
+    lse = tl.load(lse_ptr + row)
+
+    x = tl.load(logits_ptr + row * stride_logits_row + cols,
+                mask=mask, other=-float("inf")).to(tl.float32)
+    # softmax = exp(x - lse)
+    p = tl.exp(x - lse)
+    # subtract the one-hot at the target column
+    one_hot = (cols == t).to(tl.float32)
+    grad = (p - one_hot) * inv_num_valid
+    grad = tl.where(is_valid, grad, 0.0)
+    tl.store(dlogits_ptr + row * stride_dlogits_row + cols, grad, mask=mask)
+```
+
+The forward kernel returns LSE alongside the per-row loss (in a fuller implementation), so the backward kernel doesn't have to recompute it. The chapter's launcher above computes loss directly; in a full `torch.autograd.Function` you'd also save LSE for backward.
+
+### Shape trace
+
+```
+Inputs:                    logits  : (N, V)     fp16   # N = B*T
+                           target  : (N,)       int64
+Program owns:              one row of logits and one target id
+pid = tl.program_id(0)     scalar               int32
+cols = tl.arange(0, BS)    (BS,)                int32   # BS = next_pow2(V)
+mask = cols < V            (BS,)                bool
+
+t        = tl.load(target_ptr + pid)            scalar  int64
+is_valid = t != ignore_index                    scalar  bool
+
+x_ptrs   = logits_ptr + pid*stride_row + cols   (BS,)   ptr
+x        = tl.load(x_ptrs, mask, -inf)          (BS,)   fp32   # cast on load
+m        = tl.max(x, axis=0)                    scalar  fp32
+e        = tl.exp(x - m)                        (BS,)   fp32   # masked lanes -> 0
+s        = tl.sum(e, axis=0)                    scalar  fp32
+lse      = m + tl.log(s)                        scalar  fp32
+
+safe_t   = where(is_valid, t, 0)                scalar  int64
+logit_t  = tl.load(logits_ptr + pid*sr + safe_t)scalar  fp32
+loss_row = lse - logit_t                        scalar  fp32
+loss_row = where(is_valid, loss_row, 0.0)       scalar  fp32
+tl.store(loss_ptr + pid, loss_row)              -       fp32
+```
+
+The accumulators stay in fp32 throughout. The output is fp32 even when the input is fp16 — fp16 loss values lose too much resolution to be useful for the optimizer.
+
+### Pointer arithmetic and masks
+
+Two distinct mask patterns in this kernel:
+
+- **Vocab mask** `cols < V`. Loaded with `other=-inf` so masked lanes lose every max and contribute zero to the sum. Confusing the polarity here is the most common bug — `other=0.0` would force `exp(0 - m)` into the sum and inflate the LSE.
+- **Ignore mask** `t != ignore_index`. A per-row scalar, not a per-column vector. Used twice: to guard the target-gather (via `safe_t`) and to zero the loss output.
+
+The target index is clamped via `tl.where(is_valid, t, 0)` before the gather. Without the clamp, an `ignore_index = -100` would cause the load to walk far outside the logits buffer and either segfault or read garbage that then corrupts the row's loss.
+
+### Correctness test
+
+```{python}
+#| eval: false
+import pytest, torch
+import torch.nn.functional as F
+from ch20_cross_entropy import cross_entropy_forward, logsumexp
+
+pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda only")
+
+@pytest.mark.parametrize("V", [7, 1024, 1025, 32000, 128000])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
+def test_cross_entropy(V, dtype):
+    N = 64
+    torch.manual_seed(0)
+    logits = torch.randn(N, V, device="cuda", dtype=dtype)
+    target = torch.randint(0, V, (N,), device="cuda")
+    target[0] = -100  # one ignored row
+    loss = cross_entropy_forward(logits, target)
+    loss_ref = F.cross_entropy(logits.float(), target, ignore_index=-100)
+    tol = dict(rtol=1e-2, atol=1e-2) if dtype != torch.float32 else dict(rtol=1e-4, atol=1e-4)
+    torch.testing.assert_close(loss, loss_ref, **tol)
+```
+
+### Benchmark
+
+```{python}
+#| eval: false
+import torch, triton
+import torch.nn.functional as F
+from ch20_cross_entropy import cross_entropy_forward
+
+N = 4096
+for V in [32000, 50272, 128000, 256000]:
+    logits = torch.randn(N, V, device="cuda", dtype=torch.float16)
+    target = torch.randint(0, V, (N,), device="cuda")
+    t = triton.testing.do_bench(lambda: cross_entropy_forward(logits, target))
+    p = triton.testing.do_bench(lambda: F.cross_entropy(logits.float(), target))
+    print(f"V={V}: triton={t:.3f} torch={p:.3f}")
+```
+
+::: {.callout-warning appearance="simple"}
+**Placeholder data.** The numbers below are hardcoded illustrative values, not measurements. Replace with output from your own `triton.testing.do_bench` run before drawing conclusions.
+:::
+
+```{ojs}
+//| echo: false
+//| label: fig-cross-entropy-bench
+//| fig-cap: "Cross-entropy forward median latency vs vocabulary size V (N=4096 rows, fp16 logits). Lower is better. Triton fused kernel vs eager F.cross_entropy."
+{
+  const data = [
+    {V: 32000,  triton_ms: 0.40, torch_ms: 1.40},
+    {V: 50272,  triton_ms: 0.60, torch_ms: 2.10},
+    {V: 128000, triton_ms: 1.50, torch_ms: 5.20},
+    {V: 256000, triton_ms: 3.00, torch_ms: 10.50},
+  ];
+  const long = data.flatMap(d => [
+    {V: d.V, impl: "triton", ms: d.triton_ms},
+    {V: d.V, impl: "torch",  ms: d.torch_ms}
+  ]);
+  return Plot.plot({
+    color: {legend: true, domain: ["triton", "torch"], range: ["steelblue", "orange"]},
+    x: {label: "V (vocabulary size)"},
+    y: {label: "median latency (ms, N=4096) — lower is better"},
+    marks: [
+      Plot.line(long, {x: "V", y: "ms", stroke: "impl"}),
+      Plot.dot(long,  {x: "V", y: "ms", fill: "impl"})
+    ]
+  });
+}
+```
+
+### Optimization discussion
+
+Memory-bound. The kernel reads `N * V * 2B` (fp16) and writes `N * 4B` — the read dominates by orders of magnitude. The roofline is HBM bandwidth.
+
+Knobs:
+
+- `BLOCK_SIZE`: pinned to `next_pow2(V)`. For `V > 65536` on memory-tight GPUs, this overflows registers — see the chunked-vocab approach below.
+- `num_warps`: 8 to 16 for wide vocabs.
+- Fusing forward + backward: store LSE from forward, reuse in backward. This is the standard `torch.autograd.Function` pattern. Saves recomputing the row max and sum.
+
+**Chunked-vocab pattern.** For 256k vocabs, even one row's worth of fp32 accumulators is `1 MiB`. You can do an online softmax (FlashAttention-style) over column chunks: keep a running `(max, sum_exp)` pair, update with each chunk via the rescaling trick. This trades a small amount of arithmetic for a bounded register budget. See the solutions file for a skeleton.
+
+### Common bugs
+
+- **`other=0.0` on the logits load.** Masked-off lanes then contribute `exp(0 - m) = exp(-m)`, which is small but nonzero — your LSE drifts. Use `-inf`.
+- **Forgetting `ignore_index`.** PyTorch defaults to `-100`. If you don't handle it, `tl.load(logits + row * stride + (-100))` reads upstream into another row or a different buffer entirely.
+- **Wrong reduction.** PyTorch's `mean` divides by the count of *valid* rows (`target != ignore_index`), not by `N`. Get this wrong and your loss is off by the ignored fraction.
+- **Reading the target logit twice.** Some implementations gather the target logit in a separate kernel pass. Do it inside the same row-loop — the logits row is already in registers.
+
+### Exercises
+
+**Beginner 1 — logsumexp kernel.** Implement and test the standalone `logsumexp` kernel. Compare against `torch.logsumexp(x, dim=-1)`. Use `V` shapes that exercise the mask.
+
+**Beginner 2 — cross-entropy forward without ignore_index.** Strip the ignore branch. Simpler kernel, smaller register footprint. Test against `F.cross_entropy` with default args.
+
+**Beginner 3 — add ignore_index back.** Take exercise 2's kernel and add the ignore branch. Verify with a target tensor that mixes valid and `-100` entries.
+
+**Intermediate 1 — backward kernel.** Implement the backward kernel sketched above. Save LSE from forward, pass it to backward. Validate against `F.cross_entropy(...).backward()`.
+
+**Intermediate 2 — label smoothing.** Implement `loss = (1 - eps) * CE + eps * (-mean(log_softmax))`. Hint: `mean(log_softmax) = -log(V) + (LSE - mean(logits))` — no second softmax pass needed.
+
+**Advanced — chunked vocab.** Implement online logsumexp using `BLOCK_V = 8192` and looping over `V` in chunks. Maintain a running `(running_max, running_sum)` pair, update via the rescaling identity `s_new = s_old * exp(m_old - m_new) + chunk_sum`. Benchmark at `V = 256000` against the single-tile kernel.

@@ -1,0 +1,5 @@
+---
+title: "Part 6: Quantization-Oriented Kernels"
+---
+
+The data-type layouts (int8, int4, FP8) that show up in modern inference engines, the scale and zero-point math that turns them back into real numbers, and a dequant-fused matmul kernel that does the conversion on the fly inside the inner loop.

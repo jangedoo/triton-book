@@ -1,0 +1,389 @@
+---
+title: "Chapter 17: KV Cache Kernels for Inference"
+---
+
+The forward FlashAttention kernel from Chapter 14 (`book/04-attention/14-flashattention-fwd.qmd`) processed a full sequence `Q` of length `S`, all at once. That is one of two regimes a real LLM operates in.
+
+- **Prefill**: process the entire prompt in one shot. `Q` has shape `[B, H, S_prompt, D]`. FlashAttention forward is exactly what you want.
+- **Decode**: process one new token. `Q` has shape `[B, H, 1, D]`. `K` and `V` grow by one position per step, and attention is over the full cached history. This is where serving systems spend most of their wall-clock time and bandwidth.
+
+Decode is bandwidth-dominated. Each step reads the entire KV cache for every layer just to produce one token's worth of output. For a 70B-parameter model with 80 layers, 8 KV heads, head dim 128, and 8 KiB per token per layer of KV cache, an 8K-context decode step moves ~5 GiB *per token generated*. The arithmetic inside attention is trivial next to that. The right kernels here are the ones that touch memory carefully.
+
+This chapter implements two: `append_kv_cache` (write the new token's K/V into the cache) and `decode_attention` (single-token Q against the full cache, online softmax). We also explain the paged-cache trick that vLLM popularized — without implementing the full machinery, because that's a project on its own.
+
+## KV cache layout
+
+A KV cache is a pre-allocated buffer of shape `[num_layers, 2, B, H_kv, max_seq, D]`. The `2` is K and V. At step `t` you write the new K and V into position `[:, :, :, :, t, :]` and then attend against `[:, :, :, :, :t+1, :]`.
+
+Two layouts you will see in the wild:
+
+- **`[B, H, S, D]`** (LLaMA, Mistral). Best when `H = H_q = H_kv` and the kernel was written for `Q` of the same shape.
+- **`[B, S, H, D]`** (some inference servers). Better for paged caches because tokens of a request live contiguously across heads.
+
+For this chapter we stick to `[B, H, max_seq, D]`. The append kernel writes one token's slice; the decode kernel reads tiles of `[B, H, S_chunk, D]` against a query of `[B, H, 1, D]`.
+
+## Append: writing one token
+
+```{python}
+#| eval: false
+import torch
+
+
+def append_kv_cache_reference(k_new, v_new, k_cache, v_cache, position):
+    """
+    k_new, v_new: [B, H, 1, D]
+    k_cache, v_cache: [B, H, max_seq, D]  (in/out)
+    position: int, the slot to write into
+    """
+    k_cache[:, :, position : position + 1, :] = k_new
+    v_cache[:, :, position : position + 1, :] = v_new
+```
+
+PyTorch handles this with a copy. A Triton kernel reduces launch overhead when you also want to fuse the position write with something else (e.g. RoPE on the cached K, which some inference paths do).
+
+### PyTorch reference
+
+```{python}
+#| eval: false
+import torch
+import torch.nn.functional as F
+
+
+def append_kv_cache_reference(k_new, v_new, k_cache, v_cache, position: int):
+    k_cache[:, :, position : position + 1, :] = k_new
+    v_cache[:, :, position : position + 1, :] = v_new
+
+
+def decode_attention_reference(q, k_cache, v_cache, current_len: int):
+    """
+    q:        [B, H, 1, D]
+    k_cache:  [B, H, max_seq, D]
+    v_cache:  [B, H, max_seq, D]
+    current_len: number of valid tokens in the cache (inclusive of the new one)
+    """
+    k = k_cache[:, :, :current_len, :]
+    v = v_cache[:, :, :current_len, :]
+    return F.scaled_dot_product_attention(q, k, v)
+```
+
+### Triton implementation
+
+**Append kernel.** Elementwise, but with stride arithmetic — the K and V cache strides may not equal the strides of the new K and V tensors.
+
+```{python}
+#| eval: false
+import triton
+import triton.language as tl
+
+
+@triton.jit
+def _append_kv_kernel(
+    k_new_ptr, v_new_ptr,
+    k_cache_ptr, v_cache_ptr,
+    B, H, D, POSITION,
+    stride_knb, stride_knh, stride_kns, stride_knd,
+    stride_vnb, stride_vnh, stride_vns, stride_vnd,
+    stride_kcb, stride_kch, stride_kcs, stride_kcd,
+    stride_vcb, stride_vch, stride_vcs, stride_vcd,
+    BLOCK_D: tl.constexpr,
+):
+    pid_bh = tl.program_id(0)
+    b = pid_bh // H
+    h = pid_bh %  H
+
+    offs_d = tl.arange(0, BLOCK_D)
+    d_mask = offs_d < D
+
+    # New K/V live at sequence index 0 (single-token).
+    k_new_ptrs = k_new_ptr + b * stride_knb + h * stride_knh + offs_d * stride_knd
+    v_new_ptrs = v_new_ptr + b * stride_vnb + h * stride_vnh + offs_d * stride_vnd
+
+    k = tl.load(k_new_ptrs, mask=d_mask, other=0.0)
+    v = tl.load(v_new_ptrs, mask=d_mask, other=0.0)
+
+    # Cache slot at sequence index POSITION.
+    k_cache_ptrs = (
+        k_cache_ptr + b * stride_kcb + h * stride_kch
+        + POSITION * stride_kcs + offs_d * stride_kcd
+    )
+    v_cache_ptrs = (
+        v_cache_ptr + b * stride_vcb + h * stride_vch
+        + POSITION * stride_vcs + offs_d * stride_vcd
+    )
+    tl.store(k_cache_ptrs, k, mask=d_mask)
+    tl.store(v_cache_ptrs, v, mask=d_mask)
+```
+
+**Decode attention kernel.** Single-query online softmax across K/V tiles.
+
+```{python}
+#| eval: false
+@triton.jit
+def _decode_attn_kernel(
+    q_ptr, k_cache_ptr, v_cache_ptr, out_ptr,
+    B, H, CURRENT_LEN, D, scale,
+    stride_qb, stride_qh, stride_qs, stride_qd,
+    stride_kb, stride_kh, stride_ks, stride_kd,
+    stride_vb, stride_vh, stride_vs, stride_vd,
+    stride_ob, stride_oh, stride_os, stride_od,
+    BLOCK_N: tl.constexpr, BLOCK_D: tl.constexpr,
+):
+    pid_bh = tl.program_id(0)
+    b = pid_bh // H
+    h = pid_bh %  H
+
+    offs_d = tl.arange(0, BLOCK_D)
+    d_mask = offs_d < D
+
+    # Load q (single token).
+    q_ptrs = q_ptr + b * stride_qb + h * stride_qh + offs_d * stride_qd
+    q = tl.load(q_ptrs, mask=d_mask, other=0.0).to(tl.float32) * scale
+
+    m_i = -float("inf")
+    l_i = 0.0
+    acc = tl.zeros((BLOCK_D,), dtype=tl.float32)
+
+    for n_start in range(0, CURRENT_LEN, BLOCK_N):
+        offs_n = n_start + tl.arange(0, BLOCK_N)
+        n_mask = offs_n < CURRENT_LEN
+
+        k_ptrs = (
+            k_cache_ptr + b * stride_kb + h * stride_kh
+            + offs_n[:, None] * stride_ks + offs_d[None, :] * stride_kd
+        )
+        v_ptrs = (
+            v_cache_ptr + b * stride_vb + h * stride_vh
+            + offs_n[:, None] * stride_vs + offs_d[None, :] * stride_vd
+        )
+        k_tile = tl.load(k_ptrs, mask=n_mask[:, None] & d_mask[None, :], other=0.0).to(tl.float32)
+        v_tile = tl.load(v_ptrs, mask=n_mask[:, None] & d_mask[None, :], other=0.0).to(tl.float32)
+
+        # scores: [BLOCK_N]
+        s = tl.sum(k_tile * q[None, :], axis=1)
+        s = tl.where(n_mask, s, -float("inf"))
+
+        m_new = tl.maximum(m_i, tl.max(s, axis=0))
+        alpha = tl.exp(m_i - m_new)
+        p = tl.exp(s - m_new)
+
+        acc = acc * alpha + tl.sum(p[:, None] * v_tile, axis=0)
+        l_i = l_i * alpha + tl.sum(p, axis=0)
+        m_i = m_new
+
+    out = acc / l_i
+
+    out_ptrs = out_ptr + b * stride_ob + h * stride_oh + offs_d * stride_od
+    tl.store(out_ptrs, out, mask=d_mask)
+```
+
+We deliberately keep the score reduction as `tl.sum(k_tile * q[None, :], axis=1)` rather than a `tl.dot` — for a single-token query, the "matmul" is `[BLOCK_N, D] @ [D]`, which is a plain reduction.
+
+### Shape trace
+
+For `_decode_attn_kernel` (one program per `(b, h)`, scans the cache):
+
+```
+q:              (B, H, 1, D)        fp16   # query for the new token
+k_cache:        (B, H, max_seq, D)  fp16   # cache, valid up to CURRENT_LEN
+v_cache:        (B, H, max_seq, D)  fp16
+out:            (B, H, 1, D)        fp16
+
+Program owns:   one (b, h)
+pid_bh          scalar              int32
+b, h            scalars             int32
+offs_d          (BLOCK_D,)          int32
+d_mask          (BLOCK_D,)          bool
+
+q = tl.load     (BLOCK_D,)          fp16 -> fp32, scaled by 1/sqrt(D)
+
+# accumulators
+m_i             scalar              fp32   = -inf
+l_i             scalar              fp32   = 0
+acc             (BLOCK_D,)          fp32   = 0
+
+# K/V loop, per BLOCK_N tile:
+offs_n          (BLOCK_N,)          int32
+n_mask          (BLOCK_N,)          bool
+k_tile, v_tile  (BLOCK_N, BLOCK_D)  fp16 -> fp32
+s               (BLOCK_N,)          fp32   = k_tile @ q  (one scalar per cache row)
+m_new           scalar              fp32
+p               (BLOCK_N,)          fp32   = exp(s - m_new)
+acc             (BLOCK_N, BLOCK_D) row-wise updated, accumulator
+l_i             scalar              fp32   running normalizer
+m_i             scalar              fp32   running max
+
+# finalize
+out = acc / l_i  (BLOCK_D,)         fp32 -> fp16 store
+```
+
+### Pointer arithmetic and masks
+
+The append kernel only has a *position* index in the cache; everything else is a static `(b, h, d)` walk. The cache stride for the sequence axis (`stride_kcs`) tells the kernel how far one cache slot is from the next. For a contiguous `[B, H, max_seq, D]` cache this is `D`; for a paged cache it would be the block stride times whatever the block table tells you.
+
+The decode kernel adds a sequence-tile loop. `n_mask = offs_n < CURRENT_LEN` is critical — without it the kernel reads past the end of the valid cache and pollutes the softmax. We mask the *scores* (not just the loads) with `-inf` to keep softmax stable; relying on `other=0.0` in the load would let those positions contribute `exp(0) = 1` to the softmax, which is wrong.
+
+`other=0.0` on the V load is fine because masked positions get `p = 0` from the score masking, and `0 * anything = 0`.
+
+### Correctness test
+
+```{python}
+#| eval: false
+import pytest
+import torch
+import torch.nn.functional as F
+from src.ch17_kv_cache.append_kv_cache  import append_kv_cache
+from src.ch17_kv_cache.decode_attention  import decode_attention
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda only")
+def test_append_then_attend_matches_reference():
+    torch.manual_seed(0)
+    B, H, max_seq, D = 1, 4, 32, 32
+    k_cache = torch.zeros(B, H, max_seq, D, device="cuda", dtype=torch.float32)
+    v_cache = torch.zeros_like(k_cache)
+
+    # Append a sequence of tokens one by one.
+    n = 17
+    k_history = torch.randn(B, H, n, D, device="cuda", dtype=torch.float32)
+    v_history = torch.randn_like(k_history)
+    for t in range(n):
+        append_kv_cache(k_history[:, :, t : t + 1, :], v_history[:, :, t : t + 1, :], k_cache, v_cache, t)
+
+    # The cache must now match the history.
+    torch.testing.assert_close(k_cache[:, :, :n, :], k_history, rtol=1e-5, atol=1e-5)
+    torch.testing.assert_close(v_cache[:, :, :n, :], v_history, rtol=1e-5, atol=1e-5)
+
+    # Decode-attention against the cache must match SDPA on the contiguous slice.
+    q = torch.randn(B, H, 1, D, device="cuda", dtype=torch.float32)
+    out = decode_attention(q, k_cache, v_cache, current_len=n)
+    ref = F.scaled_dot_product_attention(q, k_history, v_history)
+    torch.testing.assert_close(out, ref, rtol=1e-4, atol=1e-4)
+```
+
+### Benchmark
+
+```{python}
+#| eval: false
+import torch, triton
+from src.ch17_kv_cache.append_kv_cache import append_kv_cache
+from src.ch17_kv_cache.decode_attention import decode_attention
+
+
+def bench_append(B=4, H=32, D=128, max_seq=8192, dtype=torch.float16):
+    k_new = torch.randn(B, H, 1, D, device="cuda", dtype=dtype)
+    v_new = torch.randn_like(k_new)
+    k_cache = torch.empty(B, H, max_seq, D, device="cuda", dtype=dtype)
+    v_cache = torch.empty_like(k_cache)
+    ms = triton.testing.do_bench(lambda: append_kv_cache(k_new, v_new, k_cache, v_cache, 0))
+    return ms
+
+
+def bench_decode(current_len, B=1, H=32, D=128, max_seq=8192, dtype=torch.float16):
+    q = torch.randn(B, H, 1, D, device="cuda", dtype=dtype)
+    k_cache = torch.randn(B, H, max_seq, D, device="cuda", dtype=dtype)
+    v_cache = torch.randn_like(k_cache)
+    return triton.testing.do_bench(lambda: decode_attention(q, k_cache, v_cache, current_len))
+```
+
+::: {.callout-warning appearance="simple"}
+**Placeholder data.** The numbers below are hardcoded illustrative values, not measurements. Replace with output from your own `triton.testing.do_bench` run before drawing conclusions.
+:::
+
+```{ojs}
+//| echo: false
+//| label: fig-decode-attn-bench
+//| fig-cap: "Single-token decode attention median latency vs current cache length S (B=1, H=32, D=128, fp16). Lower is better. Triton decode kernel vs torch F.scaled_dot_product_attention on the gathered cache slice."
+{
+  const data = [
+    {S: 128,  triton_ms: 0.02, torch_ms: 0.04},
+    {S: 512,  triton_ms: 0.05, torch_ms: 0.10},
+    {S: 2048, triton_ms: 0.15, torch_ms: 0.30},
+    {S: 8192, triton_ms: 0.55, torch_ms: 1.10},
+  ];
+  const long = data.flatMap(d => [
+    {S: d.S, impl: "triton", ms: d.triton_ms},
+    {S: d.S, impl: "torch",  ms: d.torch_ms}
+  ]);
+  return Plot.plot({
+    color: {legend: true, domain: ["triton", "torch"], range: ["steelblue", "orange"]},
+    x: {label: "S (current cache length, tokens)"},
+    y: {label: "median latency (ms) — lower is better"},
+    marks: [
+      Plot.line(long, {x: "S", y: "ms", stroke: "impl"}),
+      Plot.dot(long,  {x: "S", y: "ms", fill: "impl"})
+    ]
+  });
+}
+```
+
+## Paged KV cache: the indirection step
+
+vLLM's PagedAttention slices the cache into fixed-size *blocks* (e.g. 16 tokens), allocates blocks from a pool, and gives each request a *block table* mapping logical positions to physical block indices. This lets:
+
+- Two requests share a common prompt prefix by pointing into the same physical blocks (prefix caching).
+- The serving system avoid memory fragmentation when requests of varying lengths come and go.
+- Total throughput climb significantly at the cost of slightly more complex kernels.
+
+The mechanical change in the attention kernel is one extra lookup. Instead of:
+
+```python
+# contiguous: cache row n is at offset n * stride_s
+k_ptrs = k_cache_ptr + ... + offs_n * stride_s + ...
+```
+
+you get:
+
+```python
+# paged: for each logical position, look up its physical block,
+# then offset within the block.
+block_idx = block_table[offs_n // BLOCK_TOKENS]      # which physical block
+slot      = offs_n %  BLOCK_TOKENS                   # position inside that block
+k_ptrs = k_cache_ptr + block_idx * BLOCK_STRIDE + slot * stride_s + ...
+```
+
+The rest of the kernel — `tl.load`, masking, softmax — is unchanged. Implementing this end-to-end is exercise 6.
+
+### Optimization discussion
+
+Decode-attention is memory-bound. The arithmetic is `O(D)` flops per cache row; the memory cost is `O(D)` bytes per cache row. Roofline says you live or die by DRAM bandwidth.
+
+Three knobs that actually move the needle:
+
+- **`BLOCK_N`**. Bigger tiles reduce launch overhead and amortize the program-side fixed cost (loading `Q` once, finalizing once). On A100, `BLOCK_N = 64` is a reasonable starting point; tune up if the cache is long.
+- **Don't recast V to fp32 if you can help it.** For very long contexts the V loads dominate; keeping them in fp16/bf16 cuts the read in half. Accumulate in fp32, store in fp32, but load in the input dtype.
+- **Multi-program decode**. For very long cache and a single `(b, h)`, one program is a bottleneck. Split the K/V dimension across two programs that produce *partial* `(acc, l, m)` triples, then a small merge kernel combines them. This is how Flash-Decoding works.
+
+For `append_kv_cache`, you're moving `2 * B * H * D` elements per call. Launch overhead dominates at small batch — for tiny `B*H` consider fusing the append into the K-projection kernel instead.
+
+### Common bugs
+
+- **Wrong `position` argument.** Off-by-one or stale `current_len` writes the new token over a previous one. Symptom: model loops on the same output forever. Always assert `position < max_seq` in the launcher.
+- **Reading past `current_seq_len` in decode.** Without a `n_mask` on the scores, garbage in the unused cache slots contributes to the softmax. Symptom: attention outputs change depending on what was in the cache buffer *before* you started decoding.
+- **Forgetting batch dim in a paged cache lookup.** Each request in the batch has its own block table. A batched paged decode passes `block_tables[B, max_blocks]` and looks up `block_tables[b, offs_n // BLOCK_TOKENS]`. Easy to drop the `b` index and end up sharing a cache across requests.
+- **Saving `K` after RoPE but `V` before RoPE — or vice versa.** RoPE is applied to `Q` and `K` only, *not* to `V`. The cache stores RoPE'd `K` and raw `V`. Mixing these breaks the rotation invariance the model was trained for. Symptom: gibberish that gets *worse* with longer context.
+
+### Exercises
+
+**Beginner 1.** Write the append kernel. Use the skeleton in `src/ch17_kv_cache/append_kv_cache.py`. Test it by writing 17 random tokens one at a time and asserting the first 17 slots of the cache equal the input.
+
+*Hint:* the new K and V are `[B, H, 1, D]`; the cache slot is at a single sequence index. One program per `(b, h)` is enough.
+
+**Beginner 2.** Write a contiguous-gather kernel: given `k_cache[B, H, max_seq, D]` and `current_len`, copy `k_cache[:, :, :current_len, :]` into a fresh contiguous `[B, H, current_len, D]` buffer. This is *not* how production does it — production never gathers — but writing the kernel makes the next exercise easier.
+
+*Hint:* one program per `(b, h, BLOCK_S)`. Mask `offs_s < current_len`.
+
+**Beginner 3.** Benchmark `append_kv_cache` across batch sizes `B in (1, 4, 16, 64)` for `H = 32, D = 128`. At which batch size does the kernel become bandwidth-bound vs launch-overhead-bound?
+
+*Hint:* the bytes moved scale with `B`; the kernel launch is fixed. The cross-over is roughly where `bytes / DRAM_bandwidth > launch_overhead`. On an A100 launch overhead is ~5 us.
+
+**Intermediate 1.** Extend `decode_attention` to Group-Query Attention (GQA). The `Q` has `H_q` heads; the cache has `H_kv < H_q` heads, with each KV head shared by `H_q / H_kv` query heads. Modify the launcher to map each query head to the right KV head, or — better — keep one program per `(b, h_kv)` and have it process all `H_q / H_kv` query heads that share that KV head, accumulating into separate outputs.
+
+*Hint:* `h_kv = h_q // (H_q / H_kv)`. The KV pointer arithmetic uses `h_kv`; the Q pointer arithmetic uses `h_q`. The second pattern saves cache reads, which are the bandwidth bottleneck.
+
+**Intermediate 2.** Implement a block-table lookup primitive. Given `block_table[B, max_blocks]` and a list of logical positions, return the physical-position indices `block_table[b, pos // BLOCK_TOKENS] * BLOCK_TOKENS + pos % BLOCK_TOKENS` per `(b, pos)`. Just the lookup, no attention.
+
+*Hint:* this is a gather. One program per `(b, BLOCK_POS)`. Each thread divides and mods by the constexpr `BLOCK_TOKENS`.
+
+**Advanced.** Build a tiny paged-decode attention: `Q [B, H, 1, D]`, paged `K_cache, V_cache` of shape `[num_blocks, BLOCK_TOKENS, H, D]`, `block_tables [B, max_blocks]`, `current_lens [B]`. The kernel should process one `(b, h)` per program and stream over blocks using the block table. Verify against a contiguous-cache reference where you build the contiguous cache from the paged one as a host-side gather.
+
+*Hint:* this combines exercises 2 and 5 — first do the gather to validate your block-table indexing, then push the lookup into the attention kernel itself.

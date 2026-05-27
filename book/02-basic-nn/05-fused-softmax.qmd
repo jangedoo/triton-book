@@ -1,0 +1,340 @@
+---
+title: "Chapter 5: Fused Softmax"
+---
+
+Softmax is the first kernel where naive correctness is not the hard part — *staying correct under fp16* is. It is also the first kernel where you have to think carefully about reductions inside a single program. Get this chapter right and LayerNorm, RMSNorm, and (eventually) FlashAttention all follow the same pattern.
+
+## What softmax actually does
+
+For a single row $x \in \mathbb{R}^N$:
+
+$$
+\text{softmax}(x)_i = \frac{e^{x_i}}{\sum_{j=1}^{N} e^{x_j}}
+$$
+
+In a transformer you call this on the attention score matrix, on classifier logits, and on routing logits in mixture-of-experts. The shape is almost always `(batch * heads * seq, seq)` or `(batch * seq, vocab)` — many rows, each row reduced along its last dimension.
+
+## Why this kernel is memory-bound
+
+Per row we read $N$ values and write $N$ values. The arithmetic is one `max`, $N$ `exp`s, one `sum`, and $N$ divides — roughly $3N$ ops vs $2N$ memory accesses. On any modern GPU the read/write dominates. Concretely, a 2070 SUPER has ~448 GB/s of memory bandwidth and ~9 TFLOPs of fp32; even allocating the exps and divides as fp32 ops, we cannot saturate compute. The job of the Triton kernel is to read every byte of `x` exactly once and write every byte of `y` exactly once, with no intermediate trip to HBM.
+
+That last sentence is why we fuse. Calling `torch.exp(x - x.max(dim=-1, keepdim=True).values)` then `.sum(dim=-1)` then a division writes three full-row-sized intermediates to HBM. The Triton kernel keeps everything in registers.
+
+### PyTorch reference
+
+```{.python}
+import torch
+
+def pytorch_softmax(x: torch.Tensor) -> torch.Tensor:
+    # x: (M, N), reduce along the last dim.
+    return torch.softmax(x, dim=-1)
+```
+
+This is the oracle. It already does the max-subtraction trick internally.
+
+### Triton implementation
+
+We start with the wrong-on-purpose version so the numerical hazard is visible. Then we fix it. Then we extend it to rows that do not fit in one tile.
+
+#### Naive: one tile per row, no max subtraction
+
+```{.python}
+import torch
+import triton
+import triton.language as tl
+
+@triton.jit
+def _naive_softmax_kernel(
+    x_ptr, y_ptr,
+    row_stride,
+    n_cols,
+    BLOCK_SIZE: tl.constexpr,
+):
+    row_idx = tl.program_id(axis=0)
+    row_start_ptr = x_ptr + row_idx * row_stride
+    col_offs = tl.arange(0, BLOCK_SIZE)
+    mask = col_offs < n_cols
+    x = tl.load(row_start_ptr + col_offs, mask=mask, other=0.0)
+    e = tl.exp(x.to(tl.float32))
+    e = tl.where(mask, e, 0.0)
+    denom = tl.sum(e, axis=0)
+    y = e / denom
+    tl.store(y_ptr + row_idx * row_stride + col_offs, y.to(x.dtype), mask=mask)
+```
+
+Try this with fp16 inputs whose row max sits around 20. `exp(20) ~= 4.85e8`, well below the fp32 ceiling, so the intermediate `e` is fine — but when we cast back to fp16 the per-element ratio can land outside fp16's representable range (or underflow to zero). Even one row with a genuine `inf` poisons the divide. You will not detect this on `torch.randn`-style inputs, which is exactly why this bug ships.
+
+#### Stable: subtract the row max
+
+```{.python}
+@triton.jit
+def _stable_softmax_kernel(
+    x_ptr, y_ptr, row_stride, n_cols,
+    BLOCK_SIZE: tl.constexpr,
+):
+    row_idx = tl.program_id(axis=0)
+    row_start_ptr = x_ptr + row_idx * row_stride
+    col_offs = tl.arange(0, BLOCK_SIZE)
+    mask = col_offs < n_cols
+    # other=-inf so masked lanes do not poison the max.
+    x = tl.load(row_start_ptr + col_offs, mask=mask, other=-float("inf"))
+    x_f32 = x.to(tl.float32)
+    m = tl.max(x_f32, axis=0)
+    e = tl.exp(x_f32 - m)
+    e = tl.where(mask, e, 0.0)
+    denom = tl.sum(e, axis=0)
+    y = e / denom
+    tl.store(y_ptr + row_idx * row_stride + col_offs, y.to(x.dtype), mask=mask)
+```
+
+The change is one line: `tl.exp(x_f32 - m)` instead of `tl.exp(x_f32)`. Mathematically the max cancels in the numerator and denominator, so the result is identical. Numerically, every argument to `exp` is now `<= 0`, so the largest possible value of `exp(x - m)` is `1.0`. Overflow is gone.
+
+`x_f32 = x.to(tl.float32)` is the second non-obvious choice. We do the reduction and the exp in fp32 even when the input is fp16, because summing thousands of small fp16 values catastrophically loses precision. Cast back to fp16 only at the store. This is the standard pattern; you will see it again in LayerNorm, RMSNorm, and softmax-in-attention.
+
+#### Wide rows: streaming with a running max
+
+The single-tile kernel requires `BLOCK_SIZE >= n_cols`. Triton compiles to a single tile so the row must fit in registers — a few thousand elements on consumer GPUs, up to ~16k on big ones. For wider rows (long-context vocabularies, attention scores over very long sequences) you have to stream:
+
+```{.python}
+@triton.jit
+def _online_softmax_kernel(
+    x_ptr, y_ptr, row_stride, n_cols,
+    BLOCK_SIZE: tl.constexpr,
+):
+    row_idx = tl.program_id(axis=0)
+    row_start = x_ptr + row_idx * row_stride
+
+    # Pass 1: streaming max + sum-of-exps.
+    m = -float("inf")
+    l = 0.0
+    for tile_start in range(0, n_cols, BLOCK_SIZE):
+        col_offs = tile_start + tl.arange(0, BLOCK_SIZE)
+        mask = col_offs < n_cols
+        x = tl.load(row_start + col_offs, mask=mask, other=-float("inf")).to(tl.float32)
+        m_new = tl.maximum(m, tl.max(x, axis=0))
+        alpha = tl.exp(m - m_new)
+        tile_sum = tl.sum(tl.exp(x - m_new), axis=0)
+        l = alpha * l + tile_sum
+        m = m_new
+
+    # Pass 2: write normalized output.
+    for tile_start in range(0, n_cols, BLOCK_SIZE):
+        col_offs = tile_start + tl.arange(0, BLOCK_SIZE)
+        mask = col_offs < n_cols
+        x = tl.load(row_start + col_offs, mask=mask, other=-float("inf")).to(tl.float32)
+        y = tl.exp(x - m) / l
+        tl.store(y_ptr + row_idx * row_stride + col_offs, y, mask=mask)
+```
+
+`alpha = exp(m - m_new)` is the rescaling factor: when the new tile raises the running max from `m` to `m_new`, every contribution to `l` accumulated under the old pivot needs to be multiplied by `alpha` to be on the new pivot. The first iteration has `m = -inf`, so `alpha = exp(-inf) = 0` and `l` starts fresh from the first tile's sum. This is the exact accumulator FlashAttention uses; we treat it gently here and revisit it formally in Chapter 14.
+
+### Shape trace
+
+For the stable single-tile kernel with `x: (M, N)` in fp16, one program per row:
+
+```
+Input:                       x   : (M, N)         fp16
+Output:                      y   : (M, N)         fp16
+Program owns:                one row of x          (axis=0 grid, size M)
+pid = tl.program_id(0)       scalar               int32  # row index
+row_start = pid * row_stride scalar offset        int64
+col_offs = tl.arange(0, BN)  (BN,)                int32  # BN = next_pow2(N), constexpr
+mask = col_offs < N          (BN,)                bool
+x = tl.load(x_ptr + row_start + col_offs,
+            mask, other=-inf) (BN,)               fp16
+x_f32 = x.to(tl.float32)     (BN,)                fp32
+m = tl.max(x_f32, axis=0)    scalar               fp32
+e = tl.exp(x_f32 - m)        (BN,)                fp32
+e = tl.where(mask, e, 0.0)   (BN,)                fp32
+denom = tl.sum(e, axis=0)    scalar               fp32
+y = (e / denom).to(fp16)     (BN,)                fp16
+tl.store(y_ptr + row_start + col_offs, y, mask)
+```
+
+### Pointer arithmetic and masks
+
+The whole row lives at `x_ptr + pid * row_stride`. We add a vector `col_offs = tl.arange(0, BLOCK_SIZE)` to get one pointer per column. `row_stride` comes from the launcher (`x.stride(0)`) — never hardcode it as `N`, because a caller might pass a transposed or sliced tensor with a different leading stride.
+
+The mask is `col_offs < n_cols`. Two `other=` values matter:
+
+- The load uses `other=-float("inf")` so masked lanes do not change the row max.
+- The `tl.where(mask, e, 0.0)` zeroes masked lanes before the sum.
+
+If you swap those — `other=0.0` on the load and no re-mask on `e` — you get two bugs at once. The masked-off lanes load as zero, `exp(0 - m)` is `exp(-m)` (which is large when `m` is negative), and the sum is now wrong.
+
+### Correctness test
+
+```{.python}
+import pytest
+import torch
+from src.ch05_softmax import stable_softmax
+
+pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda only")
+
+@pytest.mark.parametrize("shape", [(3, 7), (1, 1024), (512, 1024), (64, 31)])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16])
+def test_stable_softmax(shape, dtype):
+    torch.manual_seed(0)
+    x = torch.randn(*shape, device="cuda", dtype=dtype)
+    out = stable_softmax(x)
+    ref = torch.softmax(x, dim=-1)
+    rtol, atol = (1e-5, 1e-5) if dtype == torch.float32 else (5e-3, 5e-3)
+    torch.testing.assert_close(out, ref, rtol=rtol, atol=atol)
+```
+
+The non-power-of-two shape `(64, 31)` exercises the mask. The fp16 tolerance is loose because the fp16 round-trip on the divide is not bit-identical to PyTorch's internal path.
+
+### Benchmark
+
+```{.python}
+import torch, triton
+from src.ch05_softmax import stable_softmax
+
+x = torch.randn(4096, 4096, device="cuda", dtype=torch.float16)
+ms_triton = triton.testing.do_bench(lambda: stable_softmax(x))
+ms_torch  = triton.testing.do_bench(lambda: torch.softmax(x, dim=-1))
+compiled = torch.compile(lambda t: torch.softmax(t, dim=-1)); compiled(x); torch.cuda.synchronize()
+ms_compiled = triton.testing.do_bench(lambda: compiled(x))
+
+bytes_moved = 2 * 4096 * 4096 * 2  # read+write, fp16
+gbps = lambda ms: bytes_moved / (ms*1e-3) / 1e9
+print(f"triton {ms_triton:.3f}ms ({gbps(ms_triton):.0f} GB/s)")
+print(f"torch  {ms_torch:.3f}ms ({gbps(ms_torch):.0f} GB/s)")
+print(f"compile{ms_compiled:.3f}ms ({gbps(ms_compiled):.0f} GB/s)")
+```
+
+::: {.callout-warning appearance="simple"}
+**Placeholder data.** The numbers below are hardcoded illustrative values, not measurements. Replace with output from your own `triton.testing.do_bench` run before drawing conclusions.
+:::
+
+```{ojs}
+//| echo: false
+//| label: fig-softmax-bench
+//| fig-cap: "Fused-softmax median latency vs row width N (log x-axis, M=4096). Lower is better. Triton kernel vs eager torch.softmax vs torch.compile(torch.softmax)."
+{
+  const data = [
+    {N: 256,   triton_ms: 0.04, torch_ms: 0.10, compiled_ms: 0.05},
+    {N: 1024,  triton_ms: 0.09, torch_ms: 0.20, compiled_ms: 0.10},
+    {N: 4096,  triton_ms: 0.30, torch_ms: 0.55, compiled_ms: 0.32},
+    {N: 8192,  triton_ms: 0.60, torch_ms: 1.10, compiled_ms: 0.65},
+    {N: 16384, triton_ms: 1.20, torch_ms: 2.20, compiled_ms: 1.28},
+  ];
+  const long = data.flatMap(d => [
+    {N: d.N, impl: "triton",   ms: d.triton_ms},
+    {N: d.N, impl: "torch",    ms: d.torch_ms},
+    {N: d.N, impl: "compiled", ms: d.compiled_ms}
+  ]);
+  return Plot.plot({
+    color: {legend: true, domain: ["triton", "torch", "compiled"], range: ["steelblue", "orange", "seagreen"]},
+    y: {label: "median latency (ms, M=4096) — lower is better"},
+    x: {label: "N (row width, elements)", type: "log"},
+    marks: [
+      Plot.line(long, {x: "N", y: "ms", stroke: "impl"}),
+      Plot.dot(long,  {x: "N", y: "ms", fill: "impl"}),
+    ]
+  });
+}
+```
+
+Expect Triton to roughly tie `torch.compile` and to comfortably beat eager `torch.softmax`, because eager dispatches separate kernels for max / sub / exp / sum / div. The compiled path also fuses, so the contest is mostly even — the win comes from owning the kernel for downstream fusion (you cannot fuse `torch.compile`'s softmax with your custom causal mask without a graph rewrite).
+
+### Interactive: stepping through the online accumulator
+
+This widget walks through the online softmax recurrence on the row `[3, 1, 4, 1, 5, 9, 2, 6]` with `BLOCK_SIZE = 2`. Drag the slider to advance one tile at a time and watch `m` (running max), `l` (running denominator), and `alpha` (the rescaling factor that keeps `l` consistent when the max jumps).
+
+```{ojs}
+//| echo: false
+
+scores = [3, 1, 4, 1, 5, 9, 2, 6]
+BLOCK_K = 2
+num_blocks = Math.ceil(scores.length / BLOCK_K)
+
+viewof step = Inputs.range([0, num_blocks], {value: num_blocks, step: 1, label: "tiles processed"})
+
+rows = {
+  const out = [];
+  let m = -Infinity;
+  let l = 0.0;
+  for (let b = 0; b < step; b++) {
+    const start = b * BLOCK_K;
+    const block = scores.slice(start, start + BLOCK_K);
+    const block_max = Math.max(...block);
+    const m_new = Math.max(m, block_max);
+    const alpha = isFinite(m) ? Math.exp(m - m_new) : 0.0;
+    const block_sum = block.reduce((s, v) => s + Math.exp(v - m_new), 0.0);
+    const l_new = alpha * l + block_sum;
+    out.push({
+      tile: b,
+      tile_values: block.join(", "),
+      tile_max: block_max,
+      m_prev: isFinite(m) ? m.toFixed(4) : "-inf",
+      m_new: m_new.toFixed(4),
+      alpha: alpha.toFixed(4),
+      l_new: l_new.toFixed(4),
+    });
+    m = m_new;
+    l = l_new;
+  }
+  return out;
+}
+
+Inputs.table(rows, {
+  columns: ["tile", "tile_values", "tile_max", "m_prev", "m_new", "alpha", "l_new"],
+  header: {
+    tile: "tile",
+    tile_values: "tile values",
+    tile_max: "tile max",
+    m_prev: "m (prev)",
+    m_new: "m (new)",
+    alpha: "alpha = exp(m_prev - m_new)",
+    l_new: "l (running)"
+  }
+})
+
+md`After ${step} tile(s): reference full-row sum-of-exps = ${
+  (() => {
+    const m = Math.max(...scores);
+    return scores.reduce((s, v) => s + Math.exp(v - m), 0).toFixed(4);
+  })()
+}. The widget's final \`l\` should match.`
+```
+
+### Optimization discussion
+
+`stable_softmax` is memory-bound; the relevant lever is `num_warps`. A 1024-element row in fp16 needs eight 128-lane warps to cover all loads in one issue, so `num_warps=4` to `8` is the right ballpark. Wider rows benefit from more warps for the reduction tree; we step `num_warps` up at 2048 and 4096.
+
+`BLOCK_SIZE = triton.next_power_of_2(n_cols)` is the standard pattern for "row fits in one tile" kernels. Triton's reductions are implemented for power-of-two extents; with a non-power-of-two extent you would need to pad-and-mask manually.
+
+For `online_softmax`, the lever is the streaming `BLOCK_SIZE` (independent of `n_cols`). 1024 is a sensible default on consumer GPUs: it keeps the load/store burst large enough to saturate memory while leaving register room for the running scalars. Smaller tiles increase loop overhead; larger tiles spill.
+
+Next stop: fuse with the producer. In attention, the row of `x` is the output of `Q @ K^T`. Computing `softmax(Q @ K^T)` as one kernel (FlashAttention, Chapter 14) avoids ever writing the score matrix to HBM. This chapter is the prerequisite.
+
+### Common bugs
+
+1. **No max subtraction → fp16 overflow.** `exp(x)` for `x > 11.09` is `+inf` in fp16. With max subtraction every exponent is `<= 0`, so every output is `<= 1`. If you find yourself adding tiny epsilons to a softmax denominator, you skipped this step.
+2. **Wrong `other=` on the load.** A `max` reduction wants `other=-inf`; a `sum` reduction wants `other=0.0`. Mixing them silently corrupts the row max and you will not see it on `torch.randn` inputs.
+3. **Reducing the wrong axis.** `tl.max(x, axis=0)` reduces the only axis of a 1D tile. If you write `axis=1` on a 1D tile, Triton errors out — but if you accidentally make the tile 2D (e.g. by loading two rows at once) you can silently reduce the wrong dimension. Print shapes when in doubt.
+4. **`BLOCK_SIZE` unrelated to `n_cols`.** If `BLOCK_SIZE` is smaller than `n_cols`, the single-tile kernel will read only the first `BLOCK_SIZE` columns of each row and produce a softmax over a subset. Always use `triton.next_power_of_2(n_cols)` for the single-tile variant, or switch to the streaming variant.
+5. **Accumulating fp16 sums in fp16.** Summing 4096 small fp16 numbers loses 8+ bits of precision. Cast to fp32 before the reduction, always.
+
+### Exercises
+
+#### Beginner
+
+1. **Causal mask.** Modify the kernel so that, before the max reduction, columns with index `>= row_idx` are set to `-inf`. Verify it matches `torch.softmax` applied to a manually masked tensor. Hint: `causal = col_offs <= row_idx`.
+
+2. **Temperature scaling.** Add a `tau` argument (Python float). Compute `softmax(x / tau)`. Hint: divide before subtracting the max.
+
+3. **Log-softmax.** Implement `log_softmax(x) = x - m - log(sum(exp(x - m)))`. Compare against `torch.log_softmax`. Hint: emit `(x - m) - tl.log(denom)`.
+
+#### Intermediate
+
+4. **Variable-length rows.** Take an extra `seq_lens: (M,)` int32 tensor. Each program treats only the first `seq_lens[i]` columns as valid; the rest must not contribute to the max or sum. Hint: `seq_len = tl.load(seq_lens_ptr + row_idx)`; build the mask from `seq_len` instead of `n_cols`.
+
+5. **Column softmax.** Implement softmax along `axis=0` for a 2D input. Why is this harder in Triton? Hint: one program per column means strided loads; the reduction now runs over rows, and the layout is no longer coalesced unless you transpose first.
+
+#### Advanced
+
+6. **Two-pass vs single-pass online softmax.** The streaming kernel above makes two passes. Try a single-pass variant that maintains the running numerator and rescales every tile by `alpha`. Benchmark both on `M=2048, N=32768` in fp16 and report the wall-clock and the worst-case error vs `torch.softmax`. The interesting finding: the single-pass variant needs to write either the unscaled exps or the rescaled numerator somewhere — registers (only works if the row fits) or HBM (defeats the purpose). Discuss when each makes sense.
+
+Worked solutions live in `solutions/ch05_solutions.py`.

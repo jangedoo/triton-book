@@ -1,0 +1,265 @@
+---
+title: "Chapter 26: Autotuning"
+---
+
+Up to this chapter, every BLOCK_SIZE in this book has been a number you picked by intuition or trial. That works for the chapter exercises and breaks the moment you ship a kernel and someone runs it on a different GPU or a different shape. `triton.autotune` is the tool that says: "here is a list of plausible configs; pick the best one for this shape, cache the choice, and reuse it forever". This chapter is how to use it without shooting yourself in the foot.
+
+::: {.callout-warning}
+## Hardware caveat
+`num_stages` controls software pipelining for the K-loop on Ampere (sm_80) and newer. On the author's 2070 SUPER (Turing, sm_75), `num_stages > 2` compiles but has no measurable effect. We keep a few high-stage configs in this chapter's matmul anyway because the autotune cost is small and the configs help Ampere+ readers; the autotuner on a Turing card will quickly pick a `num_stages=2` config and move on.
+:::
+
+## `triton.autotune`
+
+```python
+@triton.autotune(
+    configs=[
+        triton.Config({"BLOCK_M":  64, "BLOCK_N": 128, "BLOCK_K": 32, "GROUP_SIZE_M": 8},
+                      num_warps=4, num_stages=2),
+        triton.Config({"BLOCK_M": 128, "BLOCK_N": 128, "BLOCK_K": 32, "GROUP_SIZE_M": 8},
+                      num_warps=4, num_stages=3),
+        # ... more configs ...
+    ],
+    key=["M", "N", "K"],
+)
+@triton.jit
+def my_matmul_kernel(a_ptr, b_ptr, c_ptr, M, N, K, ...):
+    ...
+```
+
+Three things to internalize.
+
+**The configs.** Each `triton.Config` is a dict of constexpr arguments plus `num_warps` and `num_stages`. The kernel accepts these as `tl.constexpr` parameters. The autotuner runs each config once on the actual input, times it, and remembers the winner.
+
+**The key.** The `key=` argument lists the kernel parameters that determine which cached config to use. For matmul, `["M", "N", "K"]` is right — a different shape gets a different config. **Omitting `key` is a bug**: the autotuner runs once on the first call, caches that config under an empty key, and reuses it for every shape. You will silently use a config tuned for shape A on shape B.
+
+**The cost.** Autotune compiles and benchmarks every config on the first call for a new shape. With 10 configs, that is roughly 10× the time of a single compile-and-launch — often 1–5 seconds wall clock per unique shape. After the first call, the cache hits and there is no overhead. In a training or inference loop where shapes are stable, this is a one-time cost paid at startup. In a benchmark loop that sweeps shapes, it is **not** the first-iteration cost you want to plot.
+
+## What the knobs do
+
+### `BLOCK_M`, `BLOCK_N`, `BLOCK_K`
+
+The matmul tile shape. Larger BLOCKs reuse each loaded element across more output elements (each fp16 weight in a `(BLOCK_M, BLOCK_K) @ (BLOCK_K, BLOCK_N)` tile contributes to `BLOCK_M * BLOCK_N` outputs). But larger BLOCKs cost more registers, and beyond a threshold (depends on GPU), the kernel **spills** registers to local memory and performance collapses.
+
+The autotuner detects spill empirically: the config compiles, runs, and is slower than a smaller-block alternative. You do not need to predict it; you just need to include some smaller configs as fallback.
+
+### `GROUP_SIZE_M`
+
+The super-grouping factor for L2 reuse from Chapter 9. Common values: 4, 8. Smaller for narrow matrices, larger for square or wide.
+
+### `num_warps`
+
+Each program runs on `num_warps * 32` threads. More warps means more parallelism inside a program (more `tl.load` calls in flight, more lanes for `tl.dot`), but also more register pressure and fewer concurrent programs per SM.
+
+Common values: 2 for small kernels (softmax row of 128), 4 as the matmul default, 8 for large tiles (`BLOCK_M = BLOCK_N = 256`). Beyond 8, you usually waste registers without speedup.
+
+### `num_stages`
+
+Software pipelining depth for the K-loop. On Ampere+, the compiler can issue the next K-tile's `tl.load` while the current `tl.dot` is still running, hiding DRAM latency. `num_stages=2` is the conservative default; `num_stages=3` or `4` is common on Ampere. **On Turing (sm_75), this knob has no effect** — the hardware lacks the asynchronous copy instructions the compiler relies on.
+
+## `triton.heuristics`
+
+When the right value of a constexpr is a **deterministic function** of the input — most commonly `BLOCK_SIZE = next_pow2(N)` for a reduction kernel — autotuning is overkill. You pay search cost for a search whose answer you already know.
+
+```python
+@triton.heuristics({"BLOCK_SIZE": lambda args: triton.next_power_of_2(args["N"])})
+@triton.jit
+def my_kernel(..., N, BLOCK_SIZE: tl.constexpr):
+    ...
+```
+
+The lambda receives the kernel arguments as a dict and returns the constexpr value. It runs at launch time, before the kernel is compiled — so different N values trigger different compilations, exactly like autotune, but without the search.
+
+Use `heuristics` when:
+
+- The right value is a closed-form function of the input shape.
+- You only need to set constexprs, not `num_warps` / `num_stages`.
+- You want zero search cost.
+
+Use `autotune` when:
+
+- The right value depends on the GPU as well as the input.
+- You want to tune `num_warps` or `num_stages`.
+- The right value is non-obvious and you want the search to find it.
+
+## Kernel 1: autotuned softmax
+
+This is `src/ch26_autotune/autotuned_softmax.py`. We autotune `BLOCK_SIZE` over a small grid:
+
+```python
+@triton.autotune(
+    configs=[
+        triton.Config({"BLOCK_SIZE": 128},  num_warps=2),
+        triton.Config({"BLOCK_SIZE": 256},  num_warps=4),
+        triton.Config({"BLOCK_SIZE": 512},  num_warps=4),
+        triton.Config({"BLOCK_SIZE": 1024}, num_warps=8),
+        triton.Config({"BLOCK_SIZE": 2048}, num_warps=8),
+        triton.Config({"BLOCK_SIZE": 4096}, num_warps=16),
+    ],
+    key=["N"],
+)
+@triton.jit
+def _softmax_kernel(x_ptr, y_ptr, stride_xm, stride_ym, M, N,
+                    BLOCK_SIZE: tl.constexpr):
+    pid = tl.program_id(0)
+    offs = tl.arange(0, BLOCK_SIZE)
+    mask = offs < N
+    x = tl.load(x_ptr + pid * stride_xm + offs, mask=mask, other=-float("inf"))
+    m = tl.max(x, axis=0)
+    e = tl.exp((x - m).to(tl.float32))
+    denom = tl.sum(e, axis=0)
+    y = (e / denom).to(x.dtype)
+    tl.store(y_ptr + pid * stride_ym + offs, y, mask=mask)
+```
+
+`BLOCK_SIZE` must be `>= N` for this kernel (one program handles a whole row). The configs cover N up to 4096. For wider rows, add larger configs or switch to a multi-program-per-row layout.
+
+The `num_warps` scales with `BLOCK_SIZE`: a 4096-element block has more parallel work to do than a 128-element block.
+
+::: {.callout-warning appearance="simple"}
+**Placeholder data.** The numbers below are hardcoded illustrative values, not measurements. Replace with output from your own `triton.testing.do_bench` run before drawing conclusions.
+:::
+
+```{ojs}
+//| echo: false
+//| label: fig-autotuned-softmax-bench
+//| fig-cap: "Autotuned softmax kernel median latency vs row width N. Lower is better. Marker hover shows the BLOCK_SIZE the autotuner picked for each N."
+{
+  const data = [
+    {N: 128,  ms: 0.04, picked_block: 128},
+    {N: 512,  ms: 0.08, picked_block: 512},
+    {N: 2048, ms: 0.18, picked_block: 2048},
+    {N: 4096, ms: 0.30, picked_block: 4096},
+  ];
+  return Plot.plot({
+    color: {legend: true, domain: ["triton autotuned"], range: ["steelblue"]},
+    x: {label: "N (row width, elements)"},
+    y: {label: "median latency (ms) — lower is better"},
+    marks: [
+      Plot.line(data, {x: "N", y: "ms", stroke: "steelblue"}),
+      Plot.dot(data, {x: "N", y: "ms", fill: "steelblue",
+                      title: d => `N=${d.N}, picked BLOCK_SIZE=${d.picked_block}, ${d.ms} ms`})
+    ]
+  });
+}
+```
+
+## Kernel 2: autotuned matmul
+
+The full kernel lives in `src/ch26_autotune/autotuned_matmul.py`. It is the Chapter 9 grouped matmul with the decorator stack:
+
+```python
+@triton.autotune(configs=[
+    triton.Config({"BLOCK_M":  64, "BLOCK_N":  64, "BLOCK_K": 32, "GROUP_SIZE_M": 8}, num_warps=2, num_stages=2),
+    triton.Config({"BLOCK_M":  64, "BLOCK_N": 128, "BLOCK_K": 32, "GROUP_SIZE_M": 8}, num_warps=4, num_stages=2),
+    triton.Config({"BLOCK_M": 128, "BLOCK_N":  64, "BLOCK_K": 32, "GROUP_SIZE_M": 8}, num_warps=4, num_stages=2),
+    triton.Config({"BLOCK_M": 128, "BLOCK_N": 128, "BLOCK_K": 32, "GROUP_SIZE_M": 8}, num_warps=4, num_stages=3),
+    triton.Config({"BLOCK_M": 128, "BLOCK_N": 128, "BLOCK_K": 64, "GROUP_SIZE_M": 8}, num_warps=8, num_stages=3),
+    triton.Config({"BLOCK_M": 128, "BLOCK_N": 256, "BLOCK_K": 32, "GROUP_SIZE_M": 8}, num_warps=8, num_stages=3),
+    triton.Config({"BLOCK_M": 256, "BLOCK_N": 128, "BLOCK_K": 32, "GROUP_SIZE_M": 8}, num_warps=8, num_stages=3),
+], key=["M", "N", "K"])
+@triton.jit
+def _matmul_kernel(...):
+    ...
+```
+
+The launcher's grid must be a **lambda** that depends on the autotuned BLOCK sizes, because the grid is `cdiv(M, BLOCK_M) * cdiv(N, BLOCK_N)` for the linear-pid layout:
+
+```python
+grid = lambda meta: (triton.cdiv(M, meta["BLOCK_M"]) * triton.cdiv(N, meta["BLOCK_N"]),)
+```
+
+If you write `grid = (triton.cdiv(M, 128) * triton.cdiv(N, 128),)` with a fixed BLOCK_M=128, the autotuner picks a `BLOCK_M=256` config and the grid launches half as many programs as it should — half the output is uninitialized.
+
+## Inspecting and persisting the cache
+
+`triton.autotune` stores the chosen config in two places on the kernel object:
+
+```python
+_matmul_kernel.cache        # dict: key tuple -> triton.Config
+_matmul_kernel.best_config  # the config from the most recent call
+```
+
+Read these to see what the picker chose. For a benchmark script that sweeps shapes, print `_matmul_kernel.cache` at the end to confirm the autotuner found different configs for different shapes.
+
+To **persist** the cache across script runs (so a production server doesn't pay search cost on every startup), serialize `cache` to disk on shutdown and rebuild it on next run by re-seeding the dict from the file. The solution file has a full implementation. The catch: the cache key is a tuple of the `key=` values, and the value is a `triton.Config` — both serialize cleanly to JSON if you destructure the Config.
+
+## Correctness test
+
+```{python}
+#| eval: false
+def test_autotuned_softmax():
+    from src.ch26_autotune import autotuned_softmax
+    x = torch.randn(1024, 4096, device="cuda")
+    y = autotuned_softmax(x)
+    torch.testing.assert_close(y, torch.softmax(x, dim=-1), rtol=1e-4, atol=1e-4)
+
+def test_autotuned_matmul():
+    from src.ch26_autotune import autotuned_matmul
+    a = torch.randn(513, 257, device="cuda", dtype=torch.float16) * 0.5
+    b = torch.randn(257, 129, device="cuda", dtype=torch.float16) * 0.5
+    c = autotuned_matmul(a, b)
+    ref = (a.to(torch.float32) @ b.to(torch.float32)).to(torch.float16)
+    torch.testing.assert_close(c, ref, rtol=2e-2, atol=2e-2)
+```
+
+Non-multiple shapes catch the most common autotune-related bug: a config whose BLOCK is wrong for the shape, combined with a launcher whose grid was computed for a different BLOCK.
+
+## Benchmark
+
+The benchmark script in `benchmarks/bench_ch26_autotune.py` sweeps three shapes and reports the chosen config for each. On the 2070 SUPER, expect to see:
+
+- Small shape (256, 256, 256): `BLOCK_M=64, BLOCK_N=64` wins. Larger blocks have too few programs to fill the SMs.
+- Medium shape (1024, 1024, 1024): `BLOCK_M=128, BLOCK_N=128, BLOCK_K=32, num_warps=4, num_stages=2` wins.
+- Large shape (4096, 4096, 4096): `BLOCK_M=128, BLOCK_N=256` or `BLOCK_M=256, BLOCK_N=128` wins, both with `num_warps=8`.
+
+The "best config" differs by shape; this is the point of autotuning.
+
+::: {.callout-warning appearance="simple"}
+**Placeholder data.** The numbers below are hardcoded illustrative values, not measurements. Replace with output from your own `triton.testing.do_bench` run before drawing conclusions.
+:::
+
+```{ojs}
+//| echo: false
+//| label: fig-autotuned-matmul-bench
+//| fig-cap: "Autotuned matmul throughput in TFLOP/s vs square side length (M=N=K). Higher is better."
+{
+  const data = [
+    {shape: "256",  ms: 0.06, tflops: 0.55},
+    {shape: "1024", ms: 1.10, tflops: 1.95},
+    {shape: "4096", ms: 35.0, tflops: 3.92},
+  ];
+  return Plot.plot({
+    color: {legend: true, domain: ["triton autotuned"], range: ["steelblue"]},
+    y: {label: "TFLOP/s — higher is better"},
+    x: {label: "square side (M = N = K)"},
+    marks: [
+      Plot.barY(data, {x: "shape", y: "tflops", fill: () => "triton autotuned"})
+    ]
+  });
+}
+```
+
+## Optimization discussion
+
+Autotuning is not a replacement for understanding the kernel. The autotuner picks among the configs **you give it**; if every config is bad, the best-of-bad-configs is still bad. The mental model:
+
+1. Reason about a small set of plausible configs from first principles (BLOCK_M and BLOCK_N each multiples of 16; BLOCK_K = 32 or 64 for fp16; `num_warps` proportional to tile size).
+2. Add a few variants around the most plausible config.
+3. Let the autotuner pick.
+
+If autotuning sweeps a 50-config grid and the difference between the top 5 is 2%, you have already converged — stop adding configs and start optimizing the kernel itself.
+
+For a production system, autotune **once** during deployment (or as part of CI), serialize the cache, and ship it with the model. End users should never wait for autotune.
+
+## Common bugs
+
+- **Forgetting `key=`.** The autotuner runs once and reuses the chosen config for every shape. The fix is `key=["M", "N", "K"]` (or whatever shapes matter).
+- **Grid computed with fixed BLOCK.** If your grid says `triton.cdiv(M, 128)` and the autotuner picks BLOCK_M=64, you launch half as many programs as needed and half the output is wrong. Use `grid = lambda meta: ...`.
+- **`num_stages > 2` on Turing.** Compiles and runs but does nothing. Drop those configs if your only target is Turing, or leave them and accept the small autotune-time overhead.
+- **Spilling configs.** `BLOCK_M=256, BLOCK_N=256, BLOCK_K=64, num_warps=4` will spill registers and run 10× slower than a saner config. The autotuner catches this — but you should know it can happen.
+- **Benchmarking the first call.** The first call to an autotuned kernel pays search cost (often seconds). Always warm up before timing.
+
+## Exercises
+
+See `exercises/ch26_exercises.md`. Solutions in `solutions/ch26_solutions.py`.

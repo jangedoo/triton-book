@@ -1,0 +1,533 @@
+---
+title: "Chapter 4: Reductions"
+---
+
+Up to here every kernel has been embarrassingly parallel: lane `i` of the output depends only on lane `i` of the input(s). Reductions break that. The output depends on *every* element of some input axis, so the lanes must talk to each other. How they talk is the topic of this chapter, and the pattern you build here is the load-bearing primitive for softmax (Chapter 5), LayerNorm (Chapter 6), RMSNorm (Chapter 7), and the cross-entropy loss kernel (Chapter 20).
+
+## Why reductions are different
+
+Elementwise kernels are stateless: you stream in, compute, stream out. Reductions are stateful: you must accumulate. Inside a single program instance Triton handles the in-tile reduction for you with `tl.sum`, `tl.max`, `tl.min`, `tl.reduce`. The hard part is when the axis you want to reduce is bigger than `BLOCK_SIZE`. Then you must loop, carry a running accumulator, and combine.
+
+The mental model for the rest of this chapter is the same in every kernel:
+
+1. One program per output row.
+2. A running scalar (or small vector) accumulator initialized to the identity.
+3. An inner loop over column tiles.
+4. Inside the loop: load tile (with the right `other=`), reduce in tile, combine with accumulator.
+5. After the loop: post-process (divide by N for mean; sqrt for L2; etc.) and store.
+
+The choice of identity and combinator changes from kernel to kernel. The skeleton does not.
+
+## Accumulate in fp32
+
+If the input is fp16 or bf16, **promote to fp32 before reducing**. A 4096-wide row of N(0, 1) fp16 values has values clustered near ±1; summing them naively in fp16 loses about a bit of precision every doubling, so by the end the running sum has lost roughly `log2(4096) = 12` bits. There are 11 bits of mantissa in fp16. You have effectively zero precision left.
+
+The fix is one cast:
+
+```{python}
+#| eval: false
+x = tl.load(...).to(tl.float32)
+acc += tl.sum(x, axis=0)
+```
+
+You will see this pattern in every reduction kernel in the book. Train yourself to spot its absence.
+
+## Kernel 1: row-wise sum
+
+`out[i] = sum(x[i, :])` for `x : (M, N)`. The simplest reduction. Identity is `0`; combinator is `+`.
+
+### PyTorch reference
+
+```{python}
+#| eval: false
+def row_sum_ref(x):
+    return x.sum(dim=1)
+```
+
+### Triton implementation
+
+```{python}
+#| eval: false
+@triton.jit
+def row_sum_kernel(
+    x_ptr, out_ptr,
+    M, N,
+    stride_xm, stride_xn,
+    BLOCK_SIZE_N: tl.constexpr,
+):
+    pid_m = tl.program_id(axis=0)
+    x_row = x_ptr + pid_m * stride_xm
+    acc = tl.zeros((), dtype=tl.float32)
+    for col_start in range(0, N, BLOCK_SIZE_N):
+        cols = col_start + tl.arange(0, BLOCK_SIZE_N)
+        mask = cols < N
+        x = tl.load(x_row + cols * stride_xn, mask=mask, other=0.0).to(tl.float32)
+        acc += tl.sum(x, axis=0)
+    tl.store(out_ptr + pid_m, acc)
+```
+
+`tl.zeros(())` creates a 0-d (scalar) accumulator. `tl.sum(x, axis=0)` collapses the `(BLOCK_SIZE_N,)` tile to a scalar, and `acc += ...` accumulates across iterations. The output is always fp32 in this implementation — if you want fp16 output you can cast on the store.
+
+### Shape trace
+
+For `M=4, N=8192, BLOCK_SIZE_N=1024` in fp16:
+
+```
+Input:                       x   : (4, 8192)        fp16
+Output:                      out : (4,)             fp32
+Grid:                        (4,)
+pid_m                        scalar                 int32
+x_row                        scalar ptr<fp16>
+acc                          scalar                 fp32  init 0
+Inner loop iterations:       8
+  cols                       (1024,)                int32
+  mask                       (1024,)                bool   # all True here
+  x = tl.load(...)           (1024,)                fp16
+  x.to(tl.float32)           (1024,)                fp32
+  tl.sum(x, axis=0)          scalar                 fp32
+  acc                       scalar                 fp32
+tl.store(out_ptr+pid_m, acc) writes one scalar
+```
+
+### Pointer arithmetic and masks
+
+`other=0.0` is exactly right: masked lanes contribute 0 to the sum. If you accidentally use `other=-inf` you will get wrong answers on every kernel where `N` is not a multiple of `BLOCK_SIZE_N` and silent passes when it is.
+
+### Correctness test
+
+```{python}
+#| eval: false
+@pytest.mark.parametrize("shape", [(1, 7), (4, 1024), (8, 1025), (32, 1023), (16, 4097), (128, 8192)])
+def test_row_sum_fp32(shape):
+    x = torch.randn(*shape, device="cuda", dtype=torch.float32)
+    torch.testing.assert_close(row_sum(x), x.sum(dim=1), rtol=1e-4, atol=1e-4)
+```
+
+Note the slightly looser `rtol=1e-4` versus elementwise — summing many values amplifies the rounding error. For long fp16 rows you can need `atol=1e-2` even with fp32 accumulation.
+
+### Benchmark
+
+```{python}
+#| eval: false
+ms = triton.testing.do_bench(lambda: row_sum(x))
+# Memory traffic: 1 load per input element + M tiny scalar stores (negligible).
+gbps = M * N * x.element_size() / (ms * 1e-3) / 1e9
+```
+
+::: {.callout-warning appearance="simple"}
+**Placeholder data.** The numbers below are hardcoded illustrative values, not measurements. Replace with output from your own `triton.testing.do_bench` run before drawing conclusions.
+:::
+
+```{ojs}
+//| echo: false
+//| label: fig-row-sum-bench
+//| fig-cap: "Row-wise sum median latency vs row width N. Lower is better. Triton row_sum kernel vs eager torch.sum(dim=1)."
+{
+  const data = [
+    {N: 1024, triton_ms: 0.05, torch_ms: 0.06},
+    {N: 2048, triton_ms: 0.09, torch_ms: 0.11},
+    {N: 4096, triton_ms: 0.17, torch_ms: 0.20},
+    {N: 8192, triton_ms: 0.34, torch_ms: 0.38},
+  ];
+  const long = data.flatMap(d => [
+    {N: d.N, impl: "triton", ms: d.triton_ms},
+    {N: d.N, impl: "torch",  ms: d.torch_ms}
+  ]);
+  return Plot.plot({
+    color: {legend: true, domain: ["triton", "torch"], range: ["steelblue", "orange"]},
+    x: {label: "N (row width, elements)"},
+    y: {label: "median latency (ms) — lower is better"},
+    marks: [
+      Plot.line(long, {x: "N", y: "ms", stroke: "impl"}),
+      Plot.dot(long,  {x: "N", y: "ms", fill: "impl"})
+    ]
+  });
+}
+```
+
+### Optimization discussion
+
+Memory bound — one load per element, plus a microscopic store. The compute (one add per element) is free. `BLOCK_SIZE_N` mostly controls how aggressively the inner loop is unrolled; values between `512` and `4096` are usually within noise of each other. PyTorch's reference is also memory-bound and the kernels typically come out within 10–20 % of each other.
+
+Further optimization for short rows: drop the inner loop entirely when `N <= BLOCK_SIZE_N` and let the compiler keep everything in registers. The conditional adds branchy control flow at compile time, which Triton handles fine via `tl.constexpr`-aware code. We will use that trick in the softmax chapter.
+
+### Common bugs
+
+1. **No fp32 cast on low-precision inputs.** Silent precision loss; tests on long fp16 rows fail with mysteriously large errors.
+2. **Wrong `other=`.** Using `-inf` or some non-zero constant pollutes the sum on the tail tile.
+3. **`acc` initialized as Python `0.0`.** Triton requires a typed accumulator: `tl.zeros((), dtype=tl.float32)`. A Python literal triggers a type-mismatch error or, depending on version, silently uses fp16.
+4. **Forgot to mask the inner-tile load.** Reads past the row, which on a 2-D tensor walks into the *next row's data* — your sums are now contaminated with neighboring rows.
+
+## Kernel 2: row-wise max
+
+Same skeleton, different identity and combinator. Identity is `-inf`, combinator is `max`.
+
+### PyTorch reference
+
+```{python}
+#| eval: false
+def row_max_ref(x):
+    return x.amax(dim=1)
+```
+
+### Triton implementation
+
+```{python}
+#| eval: false
+@triton.jit
+def row_max_kernel(
+    x_ptr, out_ptr,
+    M, N,
+    stride_xm, stride_xn,
+    BLOCK_SIZE_N: tl.constexpr,
+):
+    pid_m = tl.program_id(axis=0)
+    x_row = x_ptr + pid_m * stride_xm
+    NEG_INF = float("-inf")
+    acc = tl.full((), NEG_INF, dtype=tl.float32)
+    for col_start in range(0, N, BLOCK_SIZE_N):
+        cols = col_start + tl.arange(0, BLOCK_SIZE_N)
+        mask = cols < N
+        x = tl.load(x_row + cols * stride_xn, mask=mask, other=NEG_INF).to(tl.float32)
+        acc = tl.maximum(acc, tl.max(x, axis=0))
+    tl.store(out_ptr + pid_m, acc)
+```
+
+`other=NEG_INF` is doing real work here. If you use the default `other=0`, then any row whose true max is negative gets corrupted by the masked lanes' zeros. The dedicated test `test_row_max_mask_other_value` constructs exactly that case (all-negative input, tail tile) to catch the regression.
+
+### Shape trace
+
+Identical structure to row_sum, with `acc` initialized to `-inf` and combined with `tl.maximum`. Skipping the detailed walk-through here — see the row_sum trace and substitute.
+
+### Pointer arithmetic and masks
+
+The only new idea is `other=-inf`. Pointer math identical.
+
+### Correctness test
+
+```{python}
+#| eval: false
+def test_row_max_mask_other_value():
+    """All-negative input + tail tile — catches the wrong-other=0 bug."""
+    x = -torch.rand(4, 1025, device="cuda", dtype=torch.float32) - 1.0
+    out = row_max(x)
+    torch.testing.assert_close(out, x.amax(dim=1), rtol=1e-5, atol=1e-5)
+```
+
+### Benchmark
+
+```{python}
+#| eval: false
+ms = triton.testing.do_bench(lambda: row_max(x))
+```
+
+::: {.callout-warning appearance="simple"}
+**Placeholder data.** The numbers below are hardcoded illustrative values, not measurements. Replace with output from your own `triton.testing.do_bench` run before drawing conclusions.
+:::
+
+```{ojs}
+//| echo: false
+//| label: fig-row-max-bench
+//| fig-cap: "Row-wise max median latency vs row width N. Lower is better. Triton row_max kernel vs eager torch.amax(dim=1)."
+{
+  const data = [
+    {N: 1024, triton_ms: 0.05, torch_ms: 0.06},
+    {N: 2048, triton_ms: 0.09, torch_ms: 0.10},
+    {N: 4096, triton_ms: 0.17, torch_ms: 0.19},
+    {N: 8192, triton_ms: 0.34, torch_ms: 0.37},
+  ];
+  const long = data.flatMap(d => [
+    {N: d.N, impl: "triton", ms: d.triton_ms},
+    {N: d.N, impl: "torch",  ms: d.torch_ms}
+  ]);
+  return Plot.plot({
+    color: {legend: true, domain: ["triton", "torch"], range: ["steelblue", "orange"]},
+    x: {label: "N (row width, elements)"},
+    y: {label: "median latency (ms) — lower is better"},
+    marks: [
+      Plot.line(long, {x: "N", y: "ms", stroke: "impl"}),
+      Plot.dot(long,  {x: "N", y: "ms", fill: "impl"})
+    ]
+  });
+}
+```
+
+### Optimization discussion
+
+Same story as row_sum. Memory bound, `BLOCK_SIZE_N` mostly noise. The kernel is the precursor to the *online* softmax pattern (Chapter 5), where you carry a running `(max, sum_of_exps)` pair through the same column loop and never write the intermediate max to memory at all.
+
+### Common bugs
+
+1. **`other=0` on a row of negative values.** The `0` becomes the spurious max. The test above catches it.
+2. **`acc = 0.0`.** Even with `other=-inf` on the load, the *initial* acc value of zero will dominate every row of negatives. Use `-inf`.
+3. **Reducing in fp16.** Mostly a precision concern on degenerate inputs; for max the issue is less severe than for sum, but still: promote to fp32.
+
+## Kernel 3: row-wise mean
+
+`row_sum` divided by `N`. Trivial.
+
+### PyTorch reference
+
+```{python}
+#| eval: false
+def row_mean_ref(x):
+    return x.mean(dim=1)
+```
+
+### Triton implementation
+
+```{python}
+#| eval: false
+@triton.jit
+def row_mean_kernel(
+    x_ptr, out_ptr,
+    M, N,
+    stride_xm, stride_xn,
+    BLOCK_SIZE_N: tl.constexpr,
+):
+    pid_m = tl.program_id(axis=0)
+    x_row = x_ptr + pid_m * stride_xm
+    acc = tl.zeros((), dtype=tl.float32)
+    for col_start in range(0, N, BLOCK_SIZE_N):
+        cols = col_start + tl.arange(0, BLOCK_SIZE_N)
+        mask = cols < N
+        x = tl.load(x_row + cols * stride_xn, mask=mask, other=0.0).to(tl.float32)
+        acc += tl.sum(x, axis=0)
+    tl.store(out_ptr + pid_m, acc / N)
+```
+
+### Shape trace
+
+Identical to row_sum with one extra scalar divide before the store. Not repeated.
+
+### Pointer arithmetic and masks
+
+Identical to row_sum.
+
+### Correctness test
+
+```{python}
+#| eval: false
+@pytest.mark.parametrize("shape", SHAPES)
+def test_row_mean_fp32(shape):
+    x = torch.randn(*shape, device="cuda", dtype=torch.float32)
+    torch.testing.assert_close(row_mean(x), x.mean(dim=1), rtol=1e-4, atol=1e-4)
+```
+
+### Benchmark
+
+Same envelope as row_sum.
+
+::: {.callout-warning appearance="simple"}
+**Placeholder data.** The numbers below are hardcoded illustrative values, not measurements. Replace with output from your own `triton.testing.do_bench` run before drawing conclusions.
+:::
+
+```{ojs}
+//| echo: false
+//| label: fig-row-mean-bench
+//| fig-cap: "Row-wise mean median latency vs row width N. Lower is better. Triton row_mean kernel vs eager torch.mean(dim=1)."
+{
+  const data = [
+    {N: 1024, triton_ms: 0.05, torch_ms: 0.06},
+    {N: 2048, triton_ms: 0.09, torch_ms: 0.11},
+    {N: 4096, triton_ms: 0.17, torch_ms: 0.20},
+    {N: 8192, triton_ms: 0.34, torch_ms: 0.38},
+  ];
+  const long = data.flatMap(d => [
+    {N: d.N, impl: "triton", ms: d.triton_ms},
+    {N: d.N, impl: "torch",  ms: d.torch_ms}
+  ]);
+  return Plot.plot({
+    color: {legend: true, domain: ["triton", "torch"], range: ["steelblue", "orange"]},
+    x: {label: "N (row width, elements)"},
+    y: {label: "median latency (ms) — lower is better"},
+    marks: [
+      Plot.line(long, {x: "N", y: "ms", stroke: "impl"}),
+      Plot.dot(long,  {x: "N", y: "ms", fill: "impl"})
+    ]
+  });
+}
+```
+
+### Optimization discussion
+
+Indistinguishable from row_sum in performance. The interesting question — and the reason this kernel is in the chapter — is what happens when you try to compute *variance* using mean. The next kernel.
+
+### Common bugs
+
+1. **Dividing by `BLOCK_SIZE_N` instead of `N`.** Hilarious when `N` is not a multiple of the block size.
+2. **Integer division.** Triton infers types from context; if `N` is passed as `int32` and you write `acc / N`, you get a float (Triton promotes), but the same expression on a 0-d int accumulator would not. Watch your dtypes.
+
+## Kernel 4: row-wise variance
+
+Mean is easy. Variance is where you start having to think.
+
+The textbook identity `Var(X) = E[X^2] - E[X]^2` is **numerically dangerous** when the mean is large relative to the standard deviation. Suppose your row has mean `1e6` and std `1e-3`. Then `E[X^2]` and `E[X]^2` are both around `1e12` and their difference is around `1e-6`, but each operand is computed with at most fp32 precision (~`1e-7` relative), so the subtraction has *negative* significant digits left. You can get a *negative* variance, after which `sqrt` returns NaN and your LayerNorm explodes.
+
+The two-pass approach is bulletproof:
+
+1. Pass 1: compute the mean.
+2. Pass 2: compute `sum((x - mean)^2) / N`.
+
+Each pass reads the row from HBM, so the kernel does twice the memory traffic of `row_mean`. For LayerNorm this is the right trade. In Part 2 we will discuss Welford's online algorithm as a one-pass alternative; the exercises ask you to implement it.
+
+### PyTorch reference
+
+```{python}
+#| eval: false
+def row_variance_ref(x):
+    # population variance (no Bessel correction), matches the kernel.
+    return x.var(dim=1, unbiased=False)
+```
+
+### Triton implementation
+
+```{python}
+#| eval: false
+@triton.jit
+def row_variance_kernel(
+    x_ptr, out_ptr,
+    M, N,
+    stride_xm, stride_xn,
+    BLOCK_SIZE_N: tl.constexpr,
+):
+    pid_m = tl.program_id(axis=0)
+    x_row = x_ptr + pid_m * stride_xm
+
+    # Pass 1: mean.
+    sum_acc = tl.zeros((), dtype=tl.float32)
+    for col_start in range(0, N, BLOCK_SIZE_N):
+        cols = col_start + tl.arange(0, BLOCK_SIZE_N)
+        mask = cols < N
+        x = tl.load(x_row + cols * stride_xn, mask=mask, other=0.0).to(tl.float32)
+        sum_acc += tl.sum(x, axis=0)
+    mean = sum_acc / N
+
+    # Pass 2: sum of squared deviations.
+    sq_acc = tl.zeros((), dtype=tl.float32)
+    for col_start in range(0, N, BLOCK_SIZE_N):
+        cols = col_start + tl.arange(0, BLOCK_SIZE_N)
+        mask = cols < N
+        x = tl.load(x_row + cols * stride_xn, mask=mask, other=0.0).to(tl.float32)
+        diff = tl.where(mask, x - mean, 0.0)
+        sq_acc += tl.sum(diff * diff, axis=0)
+
+    tl.store(out_ptr + pid_m, sq_acc / N)
+```
+
+The masked diff is the subtle bit. On the tail tile, `tl.load(..., other=0.0)` returns `0` for the masked lanes. `x - mean` on those lanes is `-mean`, which is *not zero*, so squaring and summing it would corrupt the variance. The `tl.where(mask, x - mean, 0.0)` zeros those lanes out before the square. You cannot pass `other=mean` to `tl.load` because `other` must be a compile-time constant; the explicit `tl.where` is the workaround.
+
+### Shape trace
+
+For `M=4, N=4096, BLOCK_SIZE_N=1024`:
+
+```
+Pass 1:
+  sum_acc                    scalar fp32  init 0
+  iters: 4
+    x = tl.load(...)         (1024,) fp32
+    sum_acc += tl.sum(x)     scalar fp32
+  mean = sum_acc / N         scalar fp32
+
+Pass 2:
+  sq_acc                     scalar fp32  init 0
+  iters: 4
+    x      = tl.load(...)    (1024,) fp32   # re-read from HBM
+    diff   = where(mask, x-mean, 0.0)   (1024,) fp32
+    sq_acc += sum(diff*diff) scalar fp32
+  tl.store(out+pid_m, sq_acc / N)
+```
+
+### Pointer arithmetic and masks
+
+Two loops, two loads per element across the kernel as a whole. Pointer math identical to row_mean. `other=0` on both loads; the variance-specific subtlety is the `tl.where` on the diff to zero out masked lanes before squaring.
+
+### Correctness test
+
+```{python}
+#| eval: false
+def test_row_variance_zero_mean_shift():
+    """Two-pass variance survives a huge mean shift; naive identity would not."""
+    x = torch.randn(4, 4096, device="cuda", dtype=torch.float32) + 1e6
+    out = row_variance(x)
+    assert torch.all(out >= 0)
+    torch.testing.assert_close(out, x.var(dim=1, unbiased=False), rtol=1e-3, atol=1e-3)
+```
+
+If you re-implement this kernel with the naive identity, this exact test will fail. It is in the test file specifically as a regression for any attempt to "optimize" the two-pass version into a one-pass `E[X^2] - E[X]^2`.
+
+### Benchmark
+
+```{python}
+#| eval: false
+ms = triton.testing.do_bench(lambda: row_variance(x))
+# Two-pass: 2 loads per element.
+gbps = 2 * M * N * x.element_size() / (ms * 1e-3) / 1e9
+```
+
+::: {.callout-warning appearance="simple"}
+**Placeholder data.** The numbers below are hardcoded illustrative values, not measurements. Replace with output from your own `triton.testing.do_bench` run before drawing conclusions.
+:::
+
+```{ojs}
+//| echo: false
+//| label: fig-row-variance-bench
+//| fig-cap: "Row-wise (two-pass) variance median latency vs row width N. Lower is better. Triton row_variance kernel vs eager torch.var(dim=1, unbiased=False)."
+{
+  const data = [
+    {N: 1024, triton_ms: 0.10, torch_ms: 0.12},
+    {N: 2048, triton_ms: 0.18, torch_ms: 0.22},
+    {N: 4096, triton_ms: 0.34, torch_ms: 0.40},
+    {N: 8192, triton_ms: 0.68, torch_ms: 0.78},
+  ];
+  const long = data.flatMap(d => [
+    {N: d.N, impl: "triton", ms: d.triton_ms},
+    {N: d.N, impl: "torch",  ms: d.torch_ms}
+  ]);
+  return Plot.plot({
+    color: {legend: true, domain: ["triton", "torch"], range: ["steelblue", "orange"]},
+    x: {label: "N (row width, elements)"},
+    y: {label: "median latency (ms) — lower is better"},
+    marks: [
+      Plot.line(long, {x: "N", y: "ms", stroke: "impl"}),
+      Plot.dot(long,  {x: "N", y: "ms", fill: "impl"})
+    ]
+  });
+}
+```
+
+### Optimization discussion
+
+Two-pass costs 2x the bandwidth of row_mean. The Welford one-pass alternative (exercise A1) cuts that to 1x at the cost of a slightly more expensive per-tile combine. For LayerNorm and RMSNorm in Part 2 we will revisit this trade-off: when you fuse the variance with the affine multiply that follows it, the second read is fused with the data you need anyway, and the two-pass cost disappears.
+
+For now the two-pass approach is the right pedagogical choice: it makes the numerical-stability story concrete and the kernel is short enough to read.
+
+### Common bugs
+
+1. **Naive `E[X^2] - E[X]^2` identity.** Numerically unstable; the shifted-mean test fails.
+2. **Forgetting `tl.where` on the diff for masked lanes.** Tail tile contributes spurious `mean^2` to the variance.
+3. **Reusing `sum_acc` for `sq_acc`.** Easy typo when you copy-paste pass 1 into pass 2; the variance comes out equal to `sum^2 / N^2` and looks plausible enough on small inputs to escape a casual eyeball check.
+4. **Computing variance in fp16.** The cast to fp32 in this kernel is the whole point of the chapter. Do not skip it.
+
+## Looking ahead
+
+These four kernels are the entire vocabulary you need for the next four chapters:
+
+- **Chapter 5 (softmax):** row_max + row_sum (of exps), fused with the elementwise division. The famous online-softmax trick reorders these so you do one pass.
+- **Chapter 6 (LayerNorm):** row_mean + row_variance + per-element affine. The two-pass variance kernel above becomes the load-bearing part.
+- **Chapter 7 (RMSNorm):** a one-pass reduction (sum of squares) with no mean. Closer to row_l2 from the exercises.
+- **Chapter 20 (cross-entropy):** row_max + row_sum + a gather of the target logit.
+
+Get the patterns above into your fingers and the rest of the book becomes "wire these together."
+
+## Exercises
+
+Six exercises in `exercises/ch04_exercises.md`:
+
+**Beginner:** (B1) `row_prod` (multiplicative identity 1). (B2) `row_l2` — `sqrt(sum(x^2))`. (B3) `row_argmax` returning indices.
+
+**Intermediate:** (I1) `col_sum` — one program per column-tile, vector accumulator. (I2) `row_logsumexp` with the max-subtraction trick — the immediate precursor to softmax.
+
+**Advanced:** (A1) Welford one-pass variance. Combine partial `(n, mean, M2)` triples across tiles and match the two-pass kernel on the shifted-mean stress test.
+
+Solutions in `solutions/ch04_solutions.py`.

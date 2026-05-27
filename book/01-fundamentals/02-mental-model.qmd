@@ -1,0 +1,278 @@
+---
+title: "Chapter 2: The Triton Mental Model"
+---
+
+Triton code looks like vectorized NumPy that runs on the GPU. Internalize that single sentence and three quarters of the early surprises go away. The other quarter is about pointers, masks, and `constexpr`, which is what the rest of this chapter is for.
+
+You already know how to write a CUDA kernel mentally — a grid of blocks of threads, each thread holding one scalar, with explicit cooperation through shared memory. You can throw most of that away. Triton is **SIMD at the tile level**: one program instance runs a vectorized program over a tile of elements, and the compiler decides how that vector becomes warps and threads. You will not write per-thread code in this book. You will write per-program code, and the program operates on tensors.
+
+## Programs, grids, and launches
+
+A Triton kernel is a Python function decorated with `@triton.jit`. You launch it from regular PyTorch code by indexing the kernel object with a **grid** and calling it:
+
+```{python}
+#| eval: false
+vector_add_kernel[(num_programs,)](x, y, out, n_elements, BLOCK_SIZE=1024)
+```
+
+The grid is a tuple. `(N,)` is a 1-D grid of `N` programs. `(M, N)` is a 2-D grid of `M * N` programs. Each program is one *instance* of your kernel and is uniquely identified by a `pid` (program id) on each axis:
+
+```{python}
+#| eval: false
+pid   = tl.program_id(axis=0)  # 1-D grid
+pid_m = tl.program_id(axis=0)  # 2-D grid, first axis
+pid_n = tl.program_id(axis=1)  # 2-D grid, second axis
+```
+
+If you are used to CUDA, the closest analogy is `blockIdx`. Unlike CUDA there is no `threadIdx` — a Triton program is a *single SIMD unit*, not a collection of cooperating threads. There are no `__syncthreads()` either. The compiler may emit them under the hood when you do a reduction, but you do not write them.
+
+## Tiles, not scalars
+
+Inside the kernel you do not see one element at a time. You see a tile of `BLOCK_SIZE` elements. Whenever you write `tl.arange(0, BLOCK_SIZE)`, you create a tensor of shape `(BLOCK_SIZE,)`. Whenever you load through that tensor, you get back a tensor. Whenever you add two such tensors, the result is a tensor. The fact that this tensor is *implemented* as a warp's worth of registers across some number of warps is the compiler's problem.
+
+`BLOCK_SIZE` is a `tl.constexpr` argument. That is how you tell Triton "this is a compile-time constant; specialize the kernel for this value." Two different `BLOCK_SIZE` values produce two different compiled kernels in Triton's cache. Forgetting to mark a tile dimension `constexpr` is the first compile error you will hit; the second is forgetting the mask.
+
+## A first kernel: vector add
+
+The "hello world" of Triton.
+
+### PyTorch reference
+
+```{python}
+#| eval: false
+def vector_add_ref(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    return x + y
+```
+
+That is the oracle. Everything below must match it bit-for-bit in fp32 and within `rtol=atol=1e-2` in fp16/bf16.
+
+### Triton implementation
+
+```{python}
+#| eval: false
+import torch
+import triton
+import triton.language as tl
+
+
+@triton.jit
+def vector_add_kernel(
+    x_ptr, y_ptr, out_ptr,
+    n_elements,
+    BLOCK_SIZE: tl.constexpr,
+):
+    pid = tl.program_id(axis=0)
+    block_start = pid * BLOCK_SIZE
+    offsets = block_start + tl.arange(0, BLOCK_SIZE)
+    mask = offsets < n_elements
+
+    x = tl.load(x_ptr + offsets, mask=mask)
+    y = tl.load(y_ptr + offsets, mask=mask)
+    tl.store(out_ptr + offsets, x + y, mask=mask)
+
+
+def vector_add(x, y, BLOCK_SIZE=1024):
+    out = torch.empty_like(x)
+    grid = (triton.cdiv(x.numel(), BLOCK_SIZE),)
+    vector_add_kernel[grid](x, y, out, x.numel(), BLOCK_SIZE=BLOCK_SIZE)
+    return out
+```
+
+The launcher allocates the output, computes the grid as `ceil(n / BLOCK_SIZE)`, and calls the kernel. Note that you pass `x` (a `torch.Tensor`) where the kernel expects a `*Pointer*` — Triton extracts the data pointer automatically. The same is true for `y` and `out`.
+
+The kernel body is five lines. `pid` says which tile this program owns; `block_start` is the first element index; `offsets` is the vector `[block_start, block_start+1, ..., block_start+BLOCK_SIZE-1]`. The mask kills the lanes that fall off the end of the tensor on the tail tile. Load, add, store.
+
+### Shape trace
+
+For `N = 1_048_576`, `BLOCK_SIZE = 1024`:
+
+```
+Input:                       x, y : (1_048_576,)    fp32
+Grid:                        (1024,)
+pid = tl.program_id(0)       scalar               int32   # 0 .. 1023
+block_start = pid * 1024     scalar offset        int32
+offsets = block_start +
+          tl.arange(0, 1024) (1024,)              int32   # element indices
+mask = offsets < 1_048_576   (1024,)              bool    # all True here
+x = tl.load(x_ptr + offsets) (1024,)              fp32
+y = tl.load(y_ptr + offsets) (1024,)              fp32
+out = x + y                  (1024,)              fp32
+tl.store(out_ptr + offsets,
+         out, mask=mask)
+```
+
+For `N = 1_000_000`, same `BLOCK_SIZE`: the grid is `triton.cdiv(1_000_000, 1024) = 977`. Programs 0 through 975 see `mask = all True`. Program 976 sees `mask = offsets < 1_000_000` with exactly `976 * 1024 - 1_000_000 = -23552`... wait, the math: `976 * 1024 = 999424` and `977 * 1024 = 1000448`, so the last program covers indices `[999424, 1000448)` and the mask kills the last `1000448 - 1000000 = 448` lanes.
+
+Convince yourself by sliding the widget below to `N=17, BLOCK_SIZE=4`. You should see exactly 5 programs, and the last one has 3 grey (masked) lanes.
+
+## Interactive: how `BLOCK_SIZE` tiles a 1D tensor
+
+Drag the sliders. The shaded portion of the last tile is what your mask saves you from clobbering.
+
+```{ojs}
+//| echo: false
+//| label: fig-vector-add-tiling
+//| fig-cap: "Per-program tile coverage of a length-N 1D tensor by BLOCK_SIZE lanes. Steel-blue cells are in-bounds lanes (the kernel reads/writes them); light-gray cells are masked-off tail lanes that the kernel's mask must guard against. Numbers inside cells are global element indices; 'x' marks masked lanes."
+
+// --- Inputs -------------------------------------------------------------
+viewof N = Inputs.range([1, 64], {value: 17, step: 1, label: "N (tensor length)"})
+viewof BLOCK_SIZE = Inputs.range([1, 32], {value: 4, step: 1, label: "BLOCK_SIZE"})
+
+// --- Derived ------------------------------------------------------------
+num_programs = Math.ceil(N / BLOCK_SIZE)
+
+tiles = {
+  const out = [];
+  for (let pid = 0; pid < num_programs; pid++) {
+    const start = pid * BLOCK_SIZE;
+    for (let lane = 0; lane < BLOCK_SIZE; lane++) {
+      const idx = start + lane;
+      out.push({
+        pid: pid,
+        lane: lane,
+        index: idx,
+        in_bounds: idx < N,
+        state: idx < N ? "in-bounds" : "masked"
+      });
+    }
+  }
+  return out;
+}
+
+Plot.plot({
+  width: 720,
+  height: 60 + num_programs * 32,
+  x: {label: "lane within program", domain: [0, BLOCK_SIZE], ticks: d3.range(BLOCK_SIZE + 1)},
+  y: {label: "program id (pid)", domain: [0, num_programs], ticks: d3.range(num_programs + 1), reverse: true},
+  color: {legend: true, domain: ["in-bounds", "masked"], range: ["steelblue", "lightgray"]},
+  marks: [
+    Plot.rect(tiles, {
+      x1: d => d.lane,
+      x2: d => d.lane + 1,
+      y1: d => d.pid,
+      y2: d => d.pid + 1,
+      fill: "state",
+      stroke: "white",
+      strokeWidth: 2,
+      title: d => `pid=${d.pid} lane=${d.lane} index=${d.index} ${d.in_bounds ? "" : "(masked)"}`
+    }),
+    Plot.text(tiles, {
+      x: d => d.lane + 0.5,
+      y: d => d.pid + 0.5,
+      text: d => d.in_bounds ? `${d.index}` : "x",
+      fill: "white",
+      fontSize: 11
+    })
+  ]
+})
+
+md`**Grid size:** ${num_programs} program(s). **Masked lanes in last tile:** ${
+  num_programs * BLOCK_SIZE - N
+}.`
+```
+
+### Pointer arithmetic and masks
+
+`x_ptr` is a pointer to fp32 (when `x.dtype == torch.float32`). Adding an integer offset advances the pointer in *element units*, not bytes. So `x_ptr + offsets` is a `(BLOCK_SIZE,)` tensor of pointers, each pointing at the corresponding element of `x`. `tl.load` takes a pointer (or a tile of pointers) and returns the value(s) at those addresses. The `mask` argument suppresses loads on lanes where `mask` is false — those lanes return `other=` (defaulting to `0`) and, crucially, do not perform the memory access. That last bit is the whole point of the mask: it prevents out-of-bounds reads on the tail tile.
+
+`tl.store` is symmetric. Masked lanes simply do not write.
+
+`other=` matters for reductions, not for elementwise. In Chapter 4 you will see why `other=0` is right for sums and `other=-inf` is right for maxes. For `vector_add` the default `other=0` is fine because we never read the masked lanes of the result.
+
+### Correctness test
+
+The full test module is in `tests/test_ch02_vector_add.py`. The core of it:
+
+```{python}
+#| eval: false
+@pytest.mark.parametrize("n", [7, 1024, 1023, 1025, 1_048_576])
+def test_vector_add_fp32(n):
+    x = torch.randn(n, device="cuda", dtype=torch.float32)
+    y = torch.randn(n, device="cuda", dtype=torch.float32)
+    out = vector_add(x, y)
+    torch.testing.assert_close(out, x + y, rtol=1e-5, atol=1e-5)
+```
+
+`n=7` is small enough to step through by hand. `n=1023` and `n=1025` force the tail-mask path on either side of the `BLOCK_SIZE=1024` boundary. `n=1_048_576` is a round number for the benchmark below.
+
+### Benchmark
+
+`triton.testing.do_bench` runs the callable, warms up, syncs, and returns the median elapsed time in milliseconds. Use it.
+
+```{python}
+#| eval: false
+import triton
+
+def bench(x, y):
+    return triton.testing.do_bench(lambda: vector_add(x, y))
+
+# Effective bandwidth for fp32 vector_add:
+#   2 loads + 1 store per element = 3 * N * 4 bytes
+ms = bench(x, y)
+gbps = 3 * x.numel() * 4 / (ms * 1e-3) / 1e9
+```
+
+For a 2070 SUPER (~448 GB/s peak), expect to see ~390–420 GB/s on a 4 MB-or-larger working set. Anything dramatically lower means the kernel is launch-bound (try larger `N`) or you forgot to warm up (`do_bench` does this for you, so don't).
+
+::: {.callout-warning appearance="simple"}
+**Placeholder data.** The numbers below are hardcoded illustrative values, not measurements. Replace with output from your own `triton.testing.do_bench` run before drawing conclusions.
+:::
+
+```{ojs}
+//| echo: false
+//| label: fig-vector-add-bench
+//| fig-cap: "Vector-add median latency vs tensor length N (log x-axis). Lower is better. Compares the Triton kernel (steelblue) against eager torch.add (orange)."
+{
+  const data = [
+    {N: 4096,      triton_ms: 0.012, torch_ms: 0.015},
+    {N: 65536,     triton_ms: 0.018, torch_ms: 0.022},
+    {N: 1048576,   triton_ms: 0.085, torch_ms: 0.092},
+    {N: 16777216,  triton_ms: 1.30,  torch_ms: 1.45},
+  ];
+  const long = data.flatMap(d => [
+    {N: d.N, impl: "triton", ms: d.triton_ms},
+    {N: d.N, impl: "torch",  ms: d.torch_ms}
+  ]);
+  return Plot.plot({
+    color: {legend: true, domain: ["triton", "torch"], range: ["steelblue", "orange"]},
+    x: {type: "log", label: "N (elements)"},
+    y: {label: "median latency (ms) — lower is better"},
+    marks: [
+      Plot.line(long, {x: "N", y: "ms", stroke: "impl"}),
+      Plot.dot(long,  {x: "N", y: "ms", fill: "impl"})
+    ]
+  });
+}
+```
+
+### Optimization discussion
+
+The only knob in `vector_add` is `BLOCK_SIZE`. The benchmark script sweeps `[64, 128, 256, 1024, 4096]`. The typical pattern on a modern NVIDIA GPU:
+
+- `BLOCK_SIZE=64`: many small programs, launch overhead dominates at small `N`, bandwidth flat at large `N`.
+- `BLOCK_SIZE=256`: usually a good balance.
+- `BLOCK_SIZE=1024`: the default in this book for elementwise. It is the right answer often enough that you should start here and only deviate with a measurement to justify it.
+- `BLOCK_SIZE=4096`: more registers per program, fewer programs total, occupancy may drop, marginal change for elementwise.
+
+The right answer depends on the GPU and on `N`. For real production code use `triton.autotune` (Chapter 26). For learning, a fixed default plus a manual sweep teaches you more.
+
+The kernel is memory-bound. The compute (one add per element) is trivial; you are limited by how fast you can stream from HBM. The bound is the peak HBM bandwidth of your GPU times whatever fraction of it the access pattern can achieve. Coalesced, contiguous reads at `BLOCK_SIZE >= 256` typically hit 90 %+ of peak.
+
+### Common bugs
+
+1. **Forgot the mask.** Without `mask=mask` on `tl.load`, the tail program reads past the end of the tensor. You may get garbage values or a memory fault depending on alignment. Always add the mask, even when you "know" `N` is a multiple of `BLOCK_SIZE` — production code does not know.
+2. **`BLOCK_SIZE` not `tl.constexpr`.** Without the annotation, Triton cannot specialize the loop bounds at compile time and you get either a confusing compile error or, worse, a slow kernel. The annotation lives on the *parameter*, not on a Python variable inside the kernel.
+3. **Passing a non-contiguous tensor without strides.** The kernel above assumes contiguous storage. If you pass `x.t()` or `x[::2]`, the data is no longer at consecutive addresses and `x_ptr + offsets` walks into the wrong cells. Chapter 3 handles strides explicitly.
+4. **Wrong grid math.** `(n_elements // BLOCK_SIZE,)` drops the tail tile. Use `triton.cdiv(n, BLOCK_SIZE)`.
+
+### Exercises
+
+See `exercises/ch02_exercises.md` for the full text; here are the prompts in brief:
+
+**Beginner:** (B1) `vector_sub`. (B2) `scalar_mul(x, alpha)`. (B3) Fused `fma(x, y, z) = x * y + z`.
+
+**Intermediate:** (I1) `clamp(x, lo, hi)`. (I2) `where(cond, x, y)` for a `torch.bool` mask tensor.
+
+**Advanced:** (A1) `vector_add_strided` — accept non-contiguous 1-D inputs, pass strides as kernel args. A teaser for Chapter 3, where strides are first-class.
+
+Worked solutions are in `solutions/ch02_solutions.py`. Try them blind first.

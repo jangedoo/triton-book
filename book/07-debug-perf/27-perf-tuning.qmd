@@ -1,0 +1,138 @@
+---
+title: "Chapter 27: Performance Tuning Mental Model"
+---
+
+The capstone of Part 7. This chapter does not introduce a new kernel; it distills the rules that decide whether a kernel is fast. Bookmark it. Every time a kernel is slow and you do not know why, walk the diagnosis checklist at the bottom.
+
+::: {.callout-warning}
+## Hardware caveat
+Specific numbers in this chapter — peak bandwidth, peak TFLOP/s, SM count, the size of L2 — are for the author's 2070 SUPER. The **shape** of the reasoning is universal; the **numbers** change. When you read "40 SMs", substitute your GPU's count. When you read "448 GB/s", substitute its DRAM bandwidth. `nvidia-smi --query-gpu=name,clocks.gr,memory.total --format=csv` and the GPU's product page have the rest.
+:::
+
+## Memory-bound vs compute-bound
+
+Every kernel falls on a spectrum from purely memory-bound (one FLOP per byte loaded) to purely compute-bound (many FLOPs per byte). The point at which you cross from one to the other is the **roofline**: peak FLOPs per byte for the hardware. For the 2070 SUPER, that is roughly `57e12 FLOPs / 448e9 bytes ≈ 127 FLOPs per byte` for fp16 tensor cores. Below 127 ops per byte, you are memory-bound and the time to run is fixed by bandwidth. Above 127, you are compute-bound and the time is fixed by FLOP throughput.
+
+Most kernels in this book outside Part 3 are memory-bound. Elementwise ops (add, GELU, RMSNorm) have arithmetic intensity of 1–10 ops per byte. Softmax is similar. Attention without Flash is memory-bound by the materialized score matrix. The fix is always the same: reduce trips to DRAM (fusion), pack more data into each transfer (vectorization, larger blocks), or skip computation entirely (mask early, early exit).
+
+Matmul is the canonical compute-bound op: each fp16 weight loaded is reused `O(BLOCK_M)` times inside the K-loop. FlashAttention is also compute-bound when blocks are large enough. The fix when these are slow: bigger blocks, more warps, better autotune, check tensor cores are actually being used.
+
+## Occupancy
+
+Each SM (Streaming Multiprocessor) runs many warps concurrently. The number of warps it can hold is **occupancy** — limited by registers per warp, shared-memory per program, and the architectural cap (32 warps per SM on Turing).
+
+High occupancy hides DRAM latency: while warp A waits for its load to come back, warp B runs. Low occupancy leaves the SM idle when any warp stalls.
+
+You drive occupancy down by:
+
+- Using large BLOCKs (more registers per program).
+- Using large `num_warps` (more registers per program, fewer programs per SM).
+- Allocating large `tl.zeros((BLOCK_M, BLOCK_N), dtype=fp32)` accumulators.
+
+You drive it up by the opposites. The autotuner finds the trade-off empirically — but knowing the trade-off exists tells you why two configs that "should be equivalent" have wildly different perf.
+
+## Register pressure and spill
+
+Each warp gets a fixed register file. If your kernel needs more registers than the warp has, the compiler **spills** the extra registers to local memory (which lives in DRAM). Spilled accesses are 100x slower than register accesses; a spilling kernel is unrecognizably slower than a non-spilling one.
+
+Signs of spill:
+
+- A `BLOCK_M = BLOCK_N = 256` config that should be fast is 10x slower than `128 × 128`.
+- Compile output mentions "register usage" warnings (when you compile with Triton's verbose mode).
+- The kernel runs at single-digit percent of peak.
+
+Avoid by:
+
+- Keeping the accumulator small (`BLOCK_M * BLOCK_N <= 16384` fp32 elements is a safe rule of thumb for Turing).
+- Avoiding unnecessary intermediate tiles (don't materialize `tmp = x + y` if you can fold the `+y` into the next op).
+- Letting `num_warps` distribute the register cost across more threads.
+
+## Shared memory and SRAM
+
+Triton manages shared memory for you — you do not see `__shared__` declarations. But the kernel's tiles still need to fit. For matmul, the working set is roughly `(BLOCK_M * BLOCK_K + BLOCK_K * BLOCK_N) * sizeof(dtype)` bytes per program. For FlashAttention, it is `BLOCK_M * D + BLOCK_N * D + BLOCK_M * BLOCK_N`. The 2070 SUPER has 64 KB of shared memory per SM; an Ampere card has 100–164 KB. Going over the cap is a compile error; staying close to the cap reduces occupancy.
+
+In practice: if a config compiles, the shared memory fits. If you want to know how much you used, the autotune output prints it.
+
+## Coalesced memory access
+
+Adjacent threads in a warp should read adjacent memory addresses. Then the hardware issues one wide load instead of 32 small ones. The default Triton pattern — `base_ptr + tl.arange(0, BLOCK)` — naturally coalesces because `arange` is contiguous.
+
+You break coalescing by:
+
+- Reading transposed views without rewriting the offset math. `x.t()` swaps strides; `tl.load(x_ptr + offs * stride_n + pid * stride_m)` with the wrong axis on `offs` reads scattered addresses.
+- Indirect loads: `tl.load(x_ptr + idx)` where `idx` is a non-contiguous tensor (e.g., gather). The hardware cannot coalesce; you pay the latency for every element.
+
+For most book kernels, the default pattern is fine. When you write a gather or a non-trivial stride layout, audit it.
+
+## Reuse
+
+Every byte loaded should serve as many FLOPs as possible. Matmul reuses each loaded tile `O(min(BLOCK_M, BLOCK_N))` times. Layernorm reuses each loaded element exactly twice (mean pass + normalize pass) — that low reuse is why layernorm is bandwidth-bound.
+
+When you find a memory-bound kernel and want to speed it up, the move is almost always: **fuse with whatever loads or stores the same memory**. RMSNorm + linear is the canonical example. Bias + activation + dropout. Cross-entropy + softmax. The fused kernel reads each tile once and gets multiple ops out of it.
+
+## Vectorized loads
+
+When alignment allows (typically 16-byte alignment), Triton emits 4-element vectorized loads. You do not need to do anything — pass contiguous tensors and the compiler handles it. Non-contiguous tensors fall back to scalar loads, which is one of the silent reasons stride bugs (Chapter 24) destroy performance.
+
+## Why bigger BLOCK is not always better
+
+Bigger BLOCK:
+
+- More reuse per loaded element. Good.
+- More registers per program. Bad past a threshold (spill).
+- Fewer programs to launch. Bad past a threshold (cannot fill SMs).
+- Longer tail when the input is not a multiple of BLOCK. Bad for narrow shapes.
+
+The right BLOCK is the largest one that does not spill **and** still launches enough programs to fill all SMs. The 2070 SUPER has 40 SMs; you want roughly `num_programs >= 2 * 40 = 80` for good occupancy (one rule of thumb is 1–4 programs per SM for memory-bound, 1–2 for compute-bound).
+
+For a matmul with `M = N = 1024` and `BLOCK_M = BLOCK_N = 128`, the grid is `(8, 8) = 64` programs — already short of the 80 threshold. Cutting to `BLOCK_M = BLOCK_N = 64` produces 256 programs, way over. Autotune picks the right balance per shape.
+
+## Why benchmarks vary by GPU
+
+The same kernel can be 2x faster or 2x slower on a different GPU with the same architecture, because:
+
+- **SM count** differs. A 2070 SUPER has 40, an RTX 4090 has 128, an H100 has 132. More SMs means a smaller config fills the chip.
+- **Memory bandwidth** differs. A 2070 SUPER is 448 GB/s; an A100 is 1555 GB/s; H100 is 3000 GB/s. The same memory-bound kernel runs proportionally faster.
+- **Tensor-core throughput** differs by generation. Volta < Turing < Ampere < Hopper, by factors of 2–4 per generation for fp16; for bf16 and fp8, the gaps are much bigger because the older hardware does not have the instructions at all.
+- **L2 cache size** differs. A bigger L2 means super-grouping (Chapter 9) helps more, because more tiles fit in L2.
+
+When you read a paper's benchmark, the architecture matters as much as the kernel. A paper that claims 95% of peak on an A100 may run at 60% of peak on a 2070 SUPER, not because the kernel is bad but because the trade-offs land differently.
+
+## Avoiding unnecessary global memory writes
+
+Every `tl.store` is a trip to DRAM. The fastest version of a kernel is the one with the fewest stores. If you can keep a partial result in registers across multiple inner loops and write only the final answer, do it. This is why FlashAttention's online softmax is fast — the per-block partial sums never hit DRAM.
+
+For chains of elementwise ops, the rule is "fuse until you cannot fuse any more". `x + bias` followed by `GELU(x)` is two kernels (two reads, two writes) or one kernel (one read, one write) depending on whether you fuse.
+
+## The diagnosis checklist
+
+When a kernel is slow, walk this in order. The first step is to compute the actual GB/s or TFLOP/s. Without that number, you are guessing.
+
+1. **Is it memory-bound or compute-bound?** Compute the achieved GB/s (memory-bound side) and TFLOP/s (compute-bound side). Compare to the GPU's peak DRAM bandwidth and peak FLOP rate. Whichever is closer to peak is your bound.
+2. **If memory-bound, are you reading/writing more than necessary?** Count the bytes the kernel actually moves vs the bytes it needs to move. The difference points at fusion opportunities or redundant materialization.
+3. **If compute-bound, are you using `tl.dot`?** Check the kernel for tensor-core instructions. A naive Python loop over elements compiles to scalar code that ignores the tensor cores entirely. The right dtype matters too — `tl.dot(int8, int8, out_dtype=int32)` for int8 cores, `tl.dot(fp16, fp16, out_dtype=fp32)` for fp16 cores.
+4. **Is BLOCK_SIZE a power of two and the right size for your GPU?** Powers of 2 give clean masking and vectorization. The right size is set by trial (autotune) or by the cap on register usage.
+5. **Are you autotuning?** Even a small autotune grid (2–4 configs) usually finds a 20–50% improvement over a single hand-picked config.
+6. **`num_warps` for your kernel size?** 2 for tiny (single row, BLOCK <= 128). 4 for typical matmul tiles (128 × 128). 8 for large tiles (256 × 128 and above). Higher loses to register pressure.
+7. **`num_stages` for your GPU?** 2 is safe everywhere. 3 helps on Ampere+. **No effect on Turing**, so don't bother on a 2070 SUPER.
+8. **Register spill?** Symptom: a "big" config is dramatically slower than its smaller neighbor. Fix: drop the big config, or compile with Triton's verbose mode and look at register usage. On modern Triton, `kernel.cache[key].n_spills` or the autotune output reports spill count.
+9. **Is the kernel the bottleneck, or is launch overhead?** If your kernel runs in 5 microseconds and is called from a Python loop, the loop and the launch cost may dwarf the kernel. Batch the work, use CUDA graphs, or move the loop into the kernel.
+10. **Are you launching enough programs to fill the SMs?** Rule of thumb: `num_programs >= 2 * num_SMs` for memory-bound, `>= num_SMs` for compute-bound. With 40 SMs on a 2070 SUPER, that is 40–80 programs minimum. Fewer means the GPU is idle.
+
+## The shape of a fast kernel
+
+A fast kernel:
+
+- Reads each input exactly once.
+- Stores each output exactly once.
+- Keeps intermediates in registers.
+- Uses `tl.dot` when there is a matmul.
+- Uses fp32 accumulators with low-precision inputs.
+- Picks BLOCK sizes that fill the SMs without spilling.
+- Is autotuned over a small relevant grid, with the autotune cache persisted.
+
+You have written several kernels with these properties already in this book. The chapters in Part 8 ask you to combine them into a small library and to replace whole modules of a real transformer. The mental model above is what you will reach for when those kernels do not perform as expected.
+
+## Exercises
+
+See `exercises/ch27_exercises.md`. Three diagnosis puzzles — given a benchmark number, identify the bound and the next experiment. Solutions in `solutions/ch27_solutions.py`.

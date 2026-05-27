@@ -1,0 +1,149 @@
+---
+title: "Chapter 00: Why Triton Exists"
+---
+
+You already know PyTorch. You know that `nn.Linear(x)` calls into cuBLAS, that `F.softmax(x, dim=-1)` dispatches to a hand-tuned CUDA kernel, and that most of the time you do not think about either. This book is about the times you do have to think about them — and what Triton gives you when you do.
+
+## The landscape: four ways to run math on a GPU
+
+For any operation you want to perform on a GPU, you have roughly four implementation tiers. Each one trades effort for control.
+
+**PyTorch eager** is what you write by default. `y = x @ w + b`. Every operator is its own CUDA launch. You pay a fixed launch overhead per op (single-digit microseconds), and every intermediate tensor is materialized in HBM. For training loops dominated by large matmuls this is fine; cuBLAS does the heavy lifting and the launch overhead is amortized. For a long chain of small element-wise ops on a small tensor, the launch tax dominates and you are leaving most of the GPU idle.
+
+**`torch.compile`** is the right next step nine times out of ten. It traces your forward (and optionally backward), groups element-wise and reduction ops into fused regions, and lowers them to Triton kernels behind the scenes. You write normal PyTorch; the compiler decides what to fuse. For most workloads where the bottleneck is "too many small ops", `torch.compile` solves the problem with zero kernel code. Reach for it first.
+
+**Triton** is what you use when `torch.compile` cannot express the fusion you want, when you need an *algorithmic* rewrite (FlashAttention is the canonical case), or when you want predictable control over tile sizes, accumulator dtypes, and memory layout. You write the kernel in a Python-like DSL. The compiler handles register allocation, instruction scheduling, and the lowering to PTX. You are still working at the tile level, not the thread level.
+
+**Raw CUDA** is what you use when Triton's abstractions get in your way: when you need warp-specialization patterns the Triton compiler does not yet expose, when you need WGMMA orchestration that the Hopper backend has not surfaced, or when you are squeezing the last 5% out of a kernel that already runs at 90% of peak. The effort cost jumps by an order of magnitude. For 95% of LLM kernels you will not need it.
+
+The rest of this book lives in the third tier. Before we commit, look at why it exists at all.
+
+## Why custom kernels matter for LLMs
+
+A modern decoder-only transformer is mostly two things: matrix multiplications and "everything that connects them". cuBLAS handles the matmuls — usually well, sometimes excellently. The connective tissue is where Triton earns its keep.
+
+Consider a single transformer block. RMSNorm, then Q/K/V projection, then RoPE, then attention, then output projection, then residual add, then RMSNorm again, then the MLP (up projection, SwiGLU gate, down projection), then another residual add. In eager PyTorch that is roughly 15 distinct kernel launches per block, with several gigabytes of intermediate activations written to HBM and then read back. At inference time, with small batch sizes, the launch overhead alone can exceed the compute time.
+
+Custom kernels let you collapse that chain. Fused residual + RMSNorm becomes one kernel that reads the residual once and the input once, computes the sum and the normalization in registers, and writes the normalized output once. Fused bias + SiLU + multiply (the SwiGLU body) collapses three element-wise passes into one. FlashAttention collapses the entire attention block — Q @ K^T, softmax, P @ V — into a single tiled kernel that never writes the N x N attention matrix to HBM. These are not micro-optimizations. They change the asymptotic memory traffic of the model.
+
+## What fusion actually does
+
+Fusion is the art of doing more work per byte read from HBM. The mental model is simple: HBM is slow, registers and SRAM are fast, kernel launches have overhead. If you can chain two element-wise ops in registers — read once, compute twice, write once — you halve the memory traffic and remove one launch.
+
+What fuses well: element-wise ops on tensors of the same shape (add, multiply, ReLU, SiLU, sigmoid), broadcasts where one operand is small enough to live in registers, reductions that immediately feed an element-wise op (the softmax pattern: reduce to a max, broadcast back, subtract, exp, reduce to a sum, broadcast back, divide), and matmul-then-element-wise patterns where the element-wise op runs on the matmul tile while it is still in registers (bias add after a GEMM, activation after a GEMM).
+
+What does not fuse easily: ops where the producer's output shape does not match the consumer's input layout (e.g., a reduction along axis 0 followed by an operation that needs axis-1 locality), ops separated by a synchronization barrier across the whole tensor (a full softmax cannot fuse with an op that needs the output in row-major order if you computed it in column-major), and anything where the two ops need genuinely different block sizes. `torch.compile` knows most of these rules and will fuse what it can.
+
+## Memory bandwidth vs. compute
+
+Every kernel sits on a roofline. The vertical axis is achievable throughput in FLOP/s. The horizontal axis is arithmetic intensity in FLOPs per byte of HBM traffic. The roof has two pieces: a sloped section equal to peak bandwidth times intensity, and a flat section equal to peak FLOPs. The intersection is the **ridge point**. Kernels to the left of the ridge are memory-bound — their performance is set by how fast you can move bytes. Kernels to the right are compute-bound — their performance is set by the math units.
+
+For an RTX 2070 SUPER, peak HBM bandwidth is roughly 448 GB/s and peak FP16 throughput is roughly 18 TFLOP/s. The ridge point sits near 40 FLOPs per byte. Most LLM kernels that are not matmul live well to the left of that ridge.
+
+The interactive plot below lets you slide an operation's arithmetic intensity along the roofline. Watch where the dashed line crosses the roof: that is your achievable throughput. Notice how far you have to push intensity before you escape the bandwidth region.
+
+```{ojs}
+//| echo: false
+viewof intensity = Inputs.range([0.1, 200], {value: 5, step: 0.1, label: "Arithmetic intensity (FLOPs/byte)"})
+```
+
+```{ojs}
+//| echo: false
+//| label: fig-roofline
+//| fig-cap: "Roofline plot for an approximate RTX 2070 SUPER (peak HBM ~448 GB/s, peak FP16 ~18 TFLOP/s). Blue line is the achievable-throughput envelope (memory-bound on the left, compute-bound on the right); dashed gray rule marks the ridge point; the crimson dot tracks the operation chosen by the slider."
+peak_bw = 448        // GB/s, RTX 2070 SUPER (approximate)
+peak_flops = 18000   // GFLOP/s = 18 TFLOP/s FP16 (approximate)
+ridge = peak_flops / peak_bw
+
+roof_xs = d3.range(0.1, 200, 0.5)
+roof = roof_xs.map(x => ({
+  intensity: x,
+  achievable: Math.min(peak_bw * x, peak_flops)
+}))
+
+op_point = [{
+  intensity: intensity,
+  achievable: Math.min(peak_bw * intensity, peak_flops)
+}]
+
+bound_label = intensity < ridge ? "memory-bound" : "compute-bound"
+achievable_gflops = Math.min(peak_bw * intensity, peak_flops)
+
+Plot.plot({
+  width: 720,
+  height: 420,
+  x: {type: "log", label: "arithmetic intensity (FLOPs/byte)", domain: [0.1, 200]},
+  y: {type: "log", label: "achievable throughput (GFLOP/s) — higher is better", domain: [10, 30000]},
+  marks: [
+    Plot.line(roof, {x: "intensity", y: "achievable", stroke: "steelblue", strokeWidth: 2}),
+    Plot.ruleX([ridge], {stroke: "gray", strokeDasharray: "4,4"}),
+    Plot.dot(op_point, {x: "intensity", y: "achievable", fill: "crimson", r: 6}),
+    Plot.ruleX([intensity], {stroke: "crimson", strokeDasharray: "2,2"}),
+    Plot.text([{x: ridge, y: 25000, t: `ridge ≈ ${ridge.toFixed(1)} FLOPs/byte (roof envelope, blue)`}],
+              {x: "x", y: "y", text: "t", fill: "gray", textAnchor: "start", dx: 6}),
+    Plot.text([{x: intensity, y: achievable_gflops, t: `op point: ${bound_label}, ${(achievable_gflops/1000).toFixed(2)} TFLOP/s`}],
+              {x: "x", y: "y", text: "t", fill: "crimson", textAnchor: "start", dx: 8, dy: -8})
+  ]
+})
+```
+
+```{ojs}
+//| echo: false
+md`At intensity ${intensity.toFixed(1)} FLOPs/byte your kernel is **${bound_label}**, achievable throughput ≈ ${(achievable_gflops/1000).toFixed(2)} TFLOP/s on the reference 2070 SUPER (peak BW ≈ 448 GB/s, peak FP16 ≈ 18 TFLOP/s — approximate).`
+```
+
+The slider is a toy, but the lesson is real: a kernel with intensity 1 (one FLOP per byte read, like a plain element-wise add) can never run faster than the memory system delivers data, no matter how fast your tensor cores are. If you want that kernel to go faster, you do not optimize the math. You read fewer bytes — by fusing it with its neighbors so the bytes stay in registers.
+
+## Three motivating examples
+
+Three operations capture the three regimes you will live in for the rest of this book.
+
+**RMSNorm — memory-bound.** For an input of shape `(M, N)`, RMSNorm reads `M * N` elements, computes `M * N` squares, sums them across the row (M reductions of length N), divides by N, takes a reciprocal square root, and writes `M * N` outputs. The arithmetic per element is a multiply, a squared accumulate, and a multiply-by-scale. Three or four FLOPs per element loaded. Arithmetic intensity is a fraction of one FLOP/byte once you account for the FP16 load width. You will measure RMSNorm performance in fraction of peak HBM bandwidth, never in TFLOP/s. The PyTorch reference for the operation we will rebuild in Chapter 7 is short enough to sit here as an anchor:
+
+```python
+def rmsnorm_ref(x: torch.Tensor, weight: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    rms = x.pow(2).mean(dim=-1, keepdim=True).add(eps).rsqrt()
+    return x * rms * weight
+```
+
+Three lines. The fused Triton version is more lines but performs less memory traffic — one read of `x`, one read of `weight`, one write of the output — and that is the whole game.
+
+**Matmul — compute-bound.** A GEMM with shapes `(M, K)` times `(K, N)` reads `M*K + K*N` elements and performs `2*M*N*K` FLOPs. For square shapes around 4096 the arithmetic intensity is in the thousands of FLOPs per byte, well to the right of the ridge. Tensor cores on Ampere and later push FP16 GEMM into the tens of TFLOP/s. Your job in a matmul kernel is not to reduce memory traffic — cuBLAS is already near-optimal on bandwidth. Your job is to keep the tensor cores fed: pick the right tile sizes, accumulate in FP32, use the right `num_stages` for software pipelining, and avoid bank conflicts. We will spend three chapters on this (Part 3).
+
+**Attention — IO-aware algorithmic.** Naive attention is the trap that taught the field a lesson. Compute `S = Q @ K^T`, apply softmax along the last axis, compute `O = P @ V`. Two matmuls, one softmax. The matmuls are compute-bound; the softmax is memory-bound. But the *combination* is memory-bound because the N x N matrix `S` has to be written to HBM after the first matmul and read back for the softmax, and again for the second matmul. For sequence length 8192 that is 64 million entries per head — gigabytes of traffic per layer.
+
+FlashAttention's insight is not a math change. The math is identical. The change is the schedule: tile the K and V tensors, stream them through the kernel, maintain a running max and a running normalizer per query row, and never write `S` to HBM at all. The N x N matrix only ever exists in tiles that live in SRAM. Same answer, asymptotically less memory traffic, dramatic speedup on long sequences. We rebuild it in Chapter 14. The point for this chapter is that you cannot get FlashAttention by fusing kernels. You have to rewrite the algorithm with memory hierarchy in mind. That is what Triton lets you do.
+
+## When not to write a Triton kernel
+
+Custom kernels are expensive to write, test, and maintain. Do not write one when:
+
+- The op is a matmul on standard shapes. cuBLAS is the result of many engineer-years; you will not beat it for general FP16/BF16 GEMM. Use `torch.matmul` and move on. Write a Triton matmul to *learn* (Chapter 9), not to ship.
+- `torch.compile` already fuses the chain you are worried about. Profile the compiled version first. If the bottleneck moved somewhere else, you are done.
+- You are still prototyping the model. Iterating on architecture is faster than iterating on kernels. Get the math right in eager mode, then compile, then write a kernel for the one hot spot that remains.
+- The hot spot is not on the GPU. Tokenization, data loading, host-side bookkeeping — none of these care about Triton.
+- You do not have a benchmark. Without numbers, "this kernel is faster" is a guess. Always measure against a real PyTorch baseline before claiming a speedup.
+
+The right reflex is: profile, try `torch.compile`, profile again, and only then reach for Triton — and only for the kernel that actually matters.
+
+## What the rest of the book delivers
+
+This is a tour, not a textbook. Each Part hands you one piece of the picture, ending with a kernel you have written and benchmarked yourself.
+
+**Part 1 — Triton Fundamentals.** The mental model, pointer arithmetic and strides, reductions. After this Part you can read any simple Triton kernel without staring.
+
+**Part 2 — Basic Neural Network Kernels.** Fused softmax, LayerNorm, RMSNorm, SwiGLU. Memory-bound kernels where fusion is the whole story.
+
+**Part 3 — Matrix Multiplication.** Tiled GEMM, batched and linear, persistent matmul. Compute-bound kernels where tile sizing and the accumulator dtype matter.
+
+**Part 4 — Attention and Transformer Kernels.** Naive attention, FlashAttention forward and backward, RoPE and ALiBi, KV cache. The algorithmic chapters.
+
+**Part 5 — Modern LLM Layer Fusion.** Fused residual + RMSNorm, fused bias + activation + gate, cross-entropy, sampling. The kernels that make a real serving stack fast.
+
+**Part 6 — Quantization-Oriented Kernels.** Low-precision storage and dequant-matmul.
+
+**Part 7 — Debugging, Testing, Profiling, Optimization.** The tooling chapters. Read these out of order whenever you get stuck.
+
+**Part 8 — Capstone.** Assemble a mini library, replace transformer pieces with your own kernels, and apply the design playbook to a kernel of your choosing.
+
+Next chapter: get your environment running so you can verify each of those kernels on your own GPU. See [Chapter 01](01-setup.qmd) for the setup, and the [kernel design checklist](../../kernel_checklist.qmd) and [LLM kernel map](../../llm_kernel_map.qmd) for the running references you will return to.

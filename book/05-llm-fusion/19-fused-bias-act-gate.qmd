@@ -1,0 +1,271 @@
+---
+title: "Chapter 19: Fused Bias + Activation + Gate"
+---
+
+The LLaMA-family MLP is a three-matmul sandwich:
+
+```
+gate = x @ W_gate.T + b_gate
+up   = x @ W_up.T   + b_up
+mlp  = (silu(gate) * up) @ W_down.T + b_down
+```
+
+The two outer matmuls are big and compute-bound — leave them to cuBLAS or to the matmul kernel you wrote in Chapter 9. The interesting fusion target is the middle: take `gate` and `up`, add biases, apply SiLU, and multiply. Done naively this is three separate elementwise kernels and three HBM round-trips. Fused, it is one read of each, one write, no intermediate materialisation.
+
+This chapter writes that epilogue kernel for both SwiGLU (SiLU gate) and GEGLU (GELU gate).
+
+### PyTorch reference
+
+```{python}
+#| eval: false
+import torch
+import torch.nn.functional as F
+
+def swiglu_bias_ref(x_gate, b_gate, x_up, b_up):
+    """SiLU(x_gate + b_gate) * (x_up + b_up)."""
+    g = x_gate + b_gate
+    u = x_up + b_up
+    return F.silu(g) * u
+
+def geglu_bias_ref(x_gate, b_gate, x_up, b_up):
+    g = x_gate + b_gate
+    u = x_up + b_up
+    return F.gelu(g, approximate="tanh") * u
+```
+
+Shapes: `x_gate`, `x_up` are `[M, H]` where `M = B*T` and `H` is the intermediate dim (typically 11008 or 14336 for 7B-class models). Biases are `[H]` and broadcast across rows.
+
+### Triton implementation
+
+One program per tile of `(BLOCK_M, BLOCK_H)`. The kernel is pure elementwise plus a row-broadcast of the bias.
+
+```{python}
+#| eval: false
+import torch
+import triton
+import triton.language as tl
+
+
+@triton.jit
+def _swiglu_bias_kernel(
+    xg_ptr, bg_ptr, xu_ptr, bu_ptr, y_ptr,
+    stride_xg_m, stride_xg_h,
+    stride_xu_m, stride_xu_h,
+    stride_y_m,  stride_y_h,
+    M, H,
+    HAS_BG: tl.constexpr,
+    HAS_BU: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_H: tl.constexpr,
+):
+    pid_m = tl.program_id(0)
+    pid_h = tl.program_id(1)
+    offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_h = pid_h * BLOCK_H + tl.arange(0, BLOCK_H)
+    mask_m = offs_m < M
+    mask_h = offs_h < H
+    mask = mask_m[:, None] & mask_h[None, :]
+
+    xg = tl.load(
+        xg_ptr + offs_m[:, None] * stride_xg_m + offs_h[None, :] * stride_xg_h,
+        mask=mask, other=0.0,
+    ).to(tl.float32)
+    xu = tl.load(
+        xu_ptr + offs_m[:, None] * stride_xu_m + offs_h[None, :] * stride_xu_h,
+        mask=mask, other=0.0,
+    ).to(tl.float32)
+
+    if HAS_BG:
+        bg = tl.load(bg_ptr + offs_h, mask=mask_h, other=0.0).to(tl.float32)
+        xg = xg + bg[None, :]
+    if HAS_BU:
+        bu = tl.load(bu_ptr + offs_h, mask=mask_h, other=0.0).to(tl.float32)
+        xu = xu + bu[None, :]
+
+    # SiLU computed in fp32: x * sigmoid(x).
+    silu_g = xg * tl.sigmoid(xg)
+    y = silu_g * xu
+
+    tl.store(
+        y_ptr + offs_m[:, None] * stride_y_m + offs_h[None, :] * stride_y_h,
+        y, mask=mask,
+    )
+
+
+def swiglu_bias(x_gate, b_gate, x_up, b_up, BLOCK_M=32, BLOCK_H=128):
+    assert x_gate.shape == x_up.shape and x_gate.is_cuda
+    M, H = x_gate.shape
+    y = torch.empty_like(x_gate)
+    grid = (triton.cdiv(M, BLOCK_M), triton.cdiv(H, BLOCK_H))
+    _swiglu_bias_kernel[grid](
+        x_gate, b_gate, x_up, b_up, y,
+        x_gate.stride(0), x_gate.stride(1),
+        x_up.stride(0),   x_up.stride(1),
+        y.stride(0),      y.stride(1),
+        M, H,
+        HAS_BG=b_gate is not None,
+        HAS_BU=b_up is not None,
+        BLOCK_M=BLOCK_M, BLOCK_H=BLOCK_H,
+    )
+    return y
+```
+
+The GEGLU variant replaces `silu_g` with the tanh GELU approximation:
+
+```{python}
+#| eval: false
+@triton.jit
+def _gelu_tanh(x):
+    # 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))
+    k0 = 0.7978845608028654  # sqrt(2/pi)
+    k1 = 0.044715
+    inner = k0 * (x + k1 * x * x * x)
+    return 0.5 * x * (1.0 + tl.math.tanh(inner))
+```
+
+Same kernel shape, swap the activation. See `src/ch19_fused_swiglu/geglu_bias.py`.
+
+### Shape trace
+
+```
+Inputs:                    x_gate : (M, H)     fp16
+                           b_gate : (H,)       fp16   # or None
+                           x_up   : (M, H)     fp16
+                           b_up   : (H,)       fp16   # or None
+Program owns:              one (BLOCK_M, BLOCK_H) tile of the output
+pid_m = tl.program_id(0)   scalar              int32
+pid_h = tl.program_id(1)   scalar              int32
+offs_m = pid_m*BM + arange (BM,)               int32
+offs_h = pid_h*BH + arange (BH,)               int32
+mask_m, mask_h             (BM,), (BH,)        bool
+mask = mask_m & mask_h     (BM, BH)            bool   # via broadcasting
+xg = tl.load(xg_ptrs, ...)  (BM, BH)           fp32   # cast on load
+xu = tl.load(xu_ptrs, ...)  (BM, BH)           fp32
+bg = tl.load(bg, mask_h, ..) (BH,)             fp32
+xg = xg + bg[None, :]       (BM, BH)           fp32   # row broadcast
+silu_g = xg * sigmoid(xg)   (BM, BH)           fp32
+y = silu_g * xu             (BM, BH)           fp32
+tl.store(y_ptrs, y, mask)   -                  cast back to fp16
+```
+
+The bias load is `(BH,)`, then broadcast across the `M` axis via `bg[None, :]`. This is the natural shape Triton supports — bias broadcasts cost one load per tile column, not one per element.
+
+### Pointer arithmetic and masks
+
+This is a 2D-tile kernel, so masks are 2D. Build them with `mask_m[:, None] & mask_h[None, :]`. Without that combination you would either load garbage out of bounds in `M` or read past the bias buffer in `H`.
+
+Strides are passed in for both axes of `x_gate`, `x_up`, and `y`. For contiguous row-major tensors `stride(0) = H` and `stride(1) = 1`, but never hardcode this — callers may pass slices.
+
+The bias is 1D and uses `mask_h` alone. `other=0.0` is safe here: a zero bias is a no-op when added.
+
+### Correctness test
+
+```{python}
+#| eval: false
+import pytest, torch
+import torch.nn.functional as F
+from ch19_fused_swiglu import swiglu_bias, geglu_bias
+
+pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda only")
+
+@pytest.mark.parametrize("shape", [(7, 13), (64, 11008), (33, 14337)])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
+def test_swiglu(shape, dtype):
+    M, H = shape
+    torch.manual_seed(0)
+    xg = torch.randn(M, H, device="cuda", dtype=dtype)
+    bg = torch.randn(H,    device="cuda", dtype=dtype)
+    xu = torch.randn(M, H, device="cuda", dtype=dtype)
+    bu = torch.randn(H,    device="cuda", dtype=dtype)
+    y_ref = F.silu((xg + bg).float()) * (xu + bu).float()
+    y_ref = y_ref.to(dtype)
+    y = swiglu_bias(xg, bg, xu, bu)
+    tol = dict(rtol=1e-2, atol=1e-2) if dtype != torch.float32 else dict(rtol=1e-5, atol=1e-5)
+    torch.testing.assert_close(y, y_ref, **tol)
+```
+
+### Benchmark
+
+```{python}
+#| eval: false
+import torch, triton
+import torch.nn.functional as F
+from ch19_fused_swiglu import swiglu_bias
+
+def torch_unfused(xg, bg, xu, bu):
+    return F.silu(xg + bg) * (xu + bu)
+
+for H in [4096, 8192, 11008, 14336]:
+    M = 4096
+    xg = torch.randn(M, H, device="cuda", dtype=torch.float16)
+    bg = torch.randn(H,    device="cuda", dtype=torch.float16)
+    xu = torch.randn(M, H, device="cuda", dtype=torch.float16)
+    bu = torch.randn(H,    device="cuda", dtype=torch.float16)
+    t = triton.testing.do_bench(lambda: swiglu_bias(xg, bg, xu, bu))
+    p = triton.testing.do_bench(lambda: torch_unfused(xg, bg, xu, bu))
+    print(f"H={H}: triton={t:.3f} torch={p:.3f}")
+```
+
+::: {.callout-warning appearance="simple"}
+**Placeholder data.** The numbers below are hardcoded illustrative values, not measurements. Replace with output from your own `triton.testing.do_bench` run before drawing conclusions.
+:::
+
+```{ojs}
+//| echo: false
+//| label: fig-swiglu-bias-bench
+//| fig-cap: "Fused SiLU(x_gate + b_gate) * (x_up + b_up) median latency vs intermediate hidden size H (M=4096, fp16). Lower is better. Triton fused kernel vs eager unfused PyTorch."
+{
+  const data = [
+    {H: 4096,  triton_ms: 0.18, torch_ms: 0.55},
+    {H: 8192,  triton_ms: 0.34, torch_ms: 1.05},
+    {H: 11008, triton_ms: 0.45, torch_ms: 1.40},
+    {H: 14336, triton_ms: 0.58, torch_ms: 1.80},
+  ];
+  const long = data.flatMap(d => [
+    {H: d.H, impl: "triton fused", ms: d.triton_ms},
+    {H: d.H, impl: "torch unfused", ms: d.torch_ms}
+  ]);
+  return Plot.plot({
+    color: {legend: true, domain: ["triton fused", "torch unfused"], range: ["steelblue", "orange"]},
+    x: {label: "H (intermediate hidden size, elements)"},
+    y: {label: "median latency (ms, M=4096) — lower is better"},
+    marks: [
+      Plot.line(long, {x: "H", y: "ms", stroke: "impl"}),
+      Plot.dot(long,  {x: "H", y: "ms", fill: "impl"})
+    ]
+  });
+}
+```
+
+### Optimization discussion
+
+Pure memory-bound kernel. The fused traffic is `(2 + has_bg + has_bu) * H * sizeof(dtype)` read plus `M * H * sizeof(dtype)` written. The unfused version touches the gate and up tensors three times each.
+
+Knobs:
+
+- `(BLOCK_M, BLOCK_H)`: `(32, 128)` is a reasonable default. For `H >= 8192`, try `(16, 256)` to reduce the bias re-load count.
+- `num_warps`: 4 to 8 covers most shapes.
+- Bias caching: the bias is reloaded for each row-tile. If `H` is small enough that the bias fits in shared memory, you could persist it across tiles via a persistent kernel pattern (see Chapter 11). For LLaMA-scale `H = 11008`, this is not worth it.
+
+The next-step fusion is to fold this epilogue into the second matmul itself. Triton matmul kernels can apply a post-mma epilogue in-tile, which removes the intermediate `gate` and `up` tensors entirely. That is a Chapter 11-level project, not a one-evening exercise.
+
+### Common bugs
+
+- **Bias broadcast direction.** `bg[None, :]` broadcasts across the `M` axis (correct). Writing `bg[:, None]` broadcasts the bias across `H`, which is wrong and produces a kernel that silently runs but gives garbage.
+- **fp16 SiLU at extremes.** `silu(x) = x * sigmoid(x)`; in fp16, large positive `x` saturates the sigmoid to 1 and you lose precision, large negative `x` produces `sigmoid(x) ~ 0` and the multiply underflows. Always cast `x` to fp32 before the sigmoid, then cast back at the store.
+- **Forgetting the 2D mask.** `mask_m[:, None] & mask_h[None, :]` — both axes, every time. A 1D mask leaves the dead corner of the last tile unmasked.
+- **GELU approximation mismatch.** PyTorch's default `F.gelu` uses the exact erf-based formula. The tanh approximation differs by up to ~1e-4 even in fp32. If you compare against `F.gelu` with no `approximate` argument, the test fails. Use `approximate="tanh"` on both sides.
+
+### Exercises
+
+**Beginner 1 — bias + SiLU only.** Drop the gate multiplication. Implement `silu(x + b)` as a one-kernel op. The smallest possible fused kernel in this family.
+
+**Beginner 2 — SiLU * gate, no bias.** Pass `b_gate=None` and `b_up=None` and confirm via the `HAS_BG=False` / `HAS_BU=False` constexpr paths.
+
+**Beginner 3 — GEGLU.** Run the GEGLU variant and compare against `F.gelu(g, approximate="tanh") * u`. Hint: import `tl.math.tanh`.
+
+**Intermediate 1 — optional biases.** Implement a launcher that accepts any combination of `b_gate` and `b_up` being `None`. Verify all four combinations produce correct output.
+
+**Intermediate 2 — in-place writeback.** Write the result back into `x_up` to save one allocation. Test that the original `x_up` is correctly overwritten and that no race conditions exist when the kernel reads `x_up` after writing it (hint: read first, then store — Triton's per-program tile lifetime makes this safe).
+
+**Advanced — backward kernel.** Derive `d(x_gate)`, `d(x_up)`, `d(b_gate)`, `d(b_up)`. The SiLU derivative is `silu(x) + sigmoid(x) * (1 - silu(x))`. Implement the backward as a single 2D-tile kernel with row-wise atomic adds for the bias gradients.

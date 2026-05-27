@@ -1,0 +1,230 @@
+---
+title: "Chapter 7: RMSNorm"
+---
+
+RMSNorm is what every modern open-weights LLM uses in place of LayerNorm — LLaMA, Mistral, Gemma, Qwen, Phi, DeepSeek. It is structurally simpler than LayerNorm: one reduction instead of two, no bias, no mean subtraction. The kernel is shorter, faster, and the fewer moving parts make it the right base for the fused residual+norm of Chapter 18.
+
+## What RMSNorm computes
+
+For $x \in \mathbb{R}^H$ with per-channel scale $\gamma \in \mathbb{R}^H$:
+
+$$
+\text{RMSNorm}(x)_i = \frac{x_i}{\sqrt{\tfrac{1}{H}\sum_{j=1}^H x_j^2 + \epsilon}} \cdot \gamma_i
+$$
+
+There is no centering ($x - \mu$) and no bias term ($\beta$). The argument for ditching them — made by [Zhang and Sennrich, 2019](https://arxiv.org/abs/1910.07467) — is that the rescaling-by-magnitude is what actually stabilizes training; the centering does not add much, and removing it saves one reduction.
+
+### PyTorch reference
+
+```{.python}
+import torch
+
+def pytorch_rmsnorm(x, weight, eps=1e-6):
+    # x: (..., H), weight: (H,)
+    x32 = x.to(torch.float32)
+    rstd = torch.rsqrt(x32.pow(2).mean(-1, keepdim=True) + eps)
+    return (x32 * rstd * weight.to(torch.float32)).to(x.dtype)
+```
+
+We compute in fp32 deliberately. `x.pow(2).mean(-1)` for `H = 4096` and typical post-attention activations (magnitudes around 1 to 10) easily produces sums on the order of $10^5$. fp16 sustains roughly four significant figures past $10^4$, so the mean of squares is the first thing to lose precision.
+
+### Triton implementation
+
+```{.python}
+import torch
+import triton
+import triton.language as tl
+
+@triton.jit
+def _rmsnorm_fwd_kernel(
+    x_ptr, y_ptr, w_ptr,
+    rstd_ptr,           # saved for backward
+    x_row_stride, y_row_stride,
+    H, eps,
+    BLOCK_SIZE: tl.constexpr,
+):
+    row = tl.program_id(0)
+    cols = tl.arange(0, BLOCK_SIZE)
+    mask = cols < H
+    x = tl.load(x_ptr + row * x_row_stride + cols, mask=mask, other=0.0).to(tl.float32)
+    mean_sq = tl.sum(x * x, axis=0) / H
+    rstd = 1.0 / tl.sqrt(mean_sq + eps)
+    tl.store(rstd_ptr + row, rstd)
+    w = tl.load(w_ptr + cols, mask=mask, other=0.0).to(tl.float32)
+    y = x * rstd * w
+    in_dtype = tl.load(x_ptr + row * x_row_stride + cols, mask=mask, other=0.0).dtype
+    tl.store(y_ptr + row * y_row_stride + cols, y.to(in_dtype), mask=mask)
+```
+
+Compared to the LayerNorm kernel of Chapter 6:
+
+- No mean computation.
+- No bias load, no bias add.
+- One reduction (`tl.sum(x*x)`) instead of two.
+- No `tl.where(mask, x - mean, 0.0)` step, because squaring `0.0` is `0.0` and contributes nothing to the sum even if the lane is masked off.
+
+The last point matters: with `other=0.0` on the load, out-of-bounds lanes contribute `0 * 0 = 0` to the sum-of-squares, so we do not need the defensive re-mask that LayerNorm needs. One fewer thing to forget.
+
+#### Compared to LayerNorm in numerics
+
+For an input with mean ~0 and variance ~1 (typical post-LN activations), `mean(x^2) ~= var ~= 1`, so RMSNorm and LayerNorm produce nearly the same output. They diverge when the input has a non-zero mean. In practice, training a model with RMSNorm yields slightly different (not better, not worse) representations than training with LayerNorm; the choice has become "pick one and stick with it", and the community has picked RMSNorm because it is cheaper.
+
+#### Hidden-size coverage
+
+Modern LLMs use hidden sizes in the range 768 (GPT-2 small) to 8192 (Llama-3-70B). Even 16384 fits in a single tile on most GPUs. The launcher uses `BLOCK_SIZE = triton.next_power_of_2(H)`, scaling `num_warps` upward at 2048 and 4096:
+
+```{.python}
+BLOCK_SIZE = triton.next_power_of_2(H)
+num_warps = 4
+if BLOCK_SIZE >= 2048: num_warps = 8
+if BLOCK_SIZE >= 4096: num_warps = 16
+```
+
+Past `H = 16384` you need the streaming variant — exercise for the reader, building on the online-softmax pattern from Chapter 5.
+
+### Shape trace
+
+```
+Input:                       x   : (M, H)         fp16 / bf16 / fp32
+Input:                       w   : (H,)           same dtype as x
+Program owns:                one row of x          (axis=0 grid, size M)
+pid = tl.program_id(0)       scalar               int32
+cols = tl.arange(0, BH)      (BH,)                int32  # BH = next_pow2(H)
+mask = cols < H              (BH,)                bool
+x = tl.load(..., other=0.0)  (BH,)                fp16
+x = x.to(tl.float32)         (BH,)                fp32
+sq = x * x                   (BH,)                fp32   # 0*0=0 so no re-mask needed
+mean_sq = sum(sq) / H        scalar               fp32
+rstd = 1 / sqrt(mean_sq + eps) scalar             fp32
+store(rstd_ptr + pid, rstd)
+w = load(w_ptr + cols).f32   (BH,)                fp32
+y = x * rstd * w             (BH,)                fp32
+y_fp16 = y.to(fp16)          (BH,)                fp16
+tl.store(y_ptr + ..., y_fp16, mask)
+```
+
+### Pointer arithmetic and masks
+
+Same as LayerNorm. Row base `x_ptr + pid * x_row_stride`. Per-element offsets `cols = tl.arange(0, BLOCK_SIZE)`. Mask `cols < H`.
+
+`other=0.0` is the only sensible choice here. Sum-of-squares wants zeros on masked lanes; we are not doing a max, so `-inf` is wrong. The load for `gamma` uses `other=0.0` too — masked lanes do not get stored, so it does not matter what we multiply by there.
+
+### Correctness test
+
+```{.python}
+import pytest, torch
+from src.ch07_rmsnorm import rmsnorm
+
+pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda only")
+
+def _ref(x, w, eps=1e-6):
+    x32 = x.to(torch.float32)
+    rstd = torch.rsqrt(x32.pow(2).mean(-1, keepdim=True) + eps)
+    return (x32 * rstd * w.to(torch.float32)).to(x.dtype)
+
+@pytest.mark.parametrize("shape", [(3, 7), (128, 768), (16, 4096), (32, 31)])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
+def test_rmsnorm(shape, dtype):
+    torch.manual_seed(0)
+    M, H = shape
+    x = torch.randn(M, H, device="cuda", dtype=dtype)
+    w = torch.randn(H, device="cuda", dtype=dtype) * 0.1 + 1.0
+    out = rmsnorm(x, w, eps=1e-6)
+    ref = _ref(x, w)
+    rtol, atol = (1e-5, 1e-5) if dtype == torch.float32 else (1e-2, 1e-2)
+    torch.testing.assert_close(out, ref, rtol=rtol, atol=atol)
+```
+
+`(32, 31)` is the obligatory non-power-of-two test. Hidden sizes 768 and 4096 cover the real-world LLM range.
+
+### Benchmark
+
+```{.python}
+import torch, triton
+from src.ch07_rmsnorm import rmsnorm
+
+def torch_rmsnorm(x, w, eps=1e-6):
+    x32 = x.to(torch.float32)
+    rstd = torch.rsqrt(x32.pow(2).mean(-1, keepdim=True) + eps)
+    return (x32 * rstd * w.to(torch.float32)).to(x.dtype)
+
+M, H = 4096, 4096
+x = torch.randn(M, H, device="cuda", dtype=torch.float16)
+w = torch.randn(H, device="cuda", dtype=torch.float16) * 0.1 + 1.0
+ms_torch    = triton.testing.do_bench(lambda: torch_rmsnorm(x, w))
+ms_triton   = triton.testing.do_bench(lambda: rmsnorm(x, w))
+compiled    = torch.compile(torch_rmsnorm); compiled(x, w); torch.cuda.synchronize()
+ms_compiled = triton.testing.do_bench(lambda: compiled(x, w))
+```
+
+::: {.callout-warning appearance="simple"}
+**Placeholder data.** The numbers below are hardcoded illustrative values, not measurements. Replace with output from your own `triton.testing.do_bench` run before drawing conclusions.
+:::
+
+```{ojs}
+//| echo: false
+//| label: fig-rmsnorm-bench
+//| fig-cap: "RMSNorm forward median latency vs hidden size H (log x-axis, M=4096). Lower is better. Triton kernel vs eager PyTorch reference vs torch.compile."
+{
+  const data = [
+    {H: 768,  triton_ms: 0.15, torch_ms: 0.30, compiled_ms: 0.16},
+    {H: 1024, triton_ms: 0.20, torch_ms: 0.40, compiled_ms: 0.21},
+    {H: 2048, triton_ms: 0.35, torch_ms: 0.75, compiled_ms: 0.38},
+    {H: 4096, triton_ms: 0.65, torch_ms: 1.45, compiled_ms: 0.72},
+    {H: 8192, triton_ms: 1.30, torch_ms: 2.90, compiled_ms: 1.45},
+  ];
+  const long = data.flatMap(d => [
+    {H: d.H, impl: "triton",   ms: d.triton_ms},
+    {H: d.H, impl: "torch",    ms: d.torch_ms},
+    {H: d.H, impl: "compiled", ms: d.compiled_ms}
+  ]);
+  return Plot.plot({
+    color: {legend: true, domain: ["triton", "torch", "compiled"], range: ["steelblue", "orange", "seagreen"]},
+    y: {label: "median latency (ms, M=4096) — lower is better"},
+    x: {label: "H (hidden size, elements)", type: "log"},
+    marks: [
+      Plot.line(long, {x: "H", y: "ms", stroke: "impl"}),
+      Plot.dot(long,  {x: "H", y: "ms", fill: "impl"}),
+    ]
+  });
+}
+```
+
+PyTorch has no built-in `F.rms_norm` until recent versions, so the eager baseline (multiple kernels for `pow`, `mean`, `rsqrt`, multiply) is genuinely slow — a 2x win over eager is realistic. `torch.compile` closes the gap; you and `torch.compile` should land near identical wall-clock. The reason to ship the Triton version is the fusion in Chapter 18, where you cannot rely on `torch.compile` to weave through your custom KV cache update.
+
+### Optimization discussion
+
+Memory-bound, same regime as LayerNorm. The relevant levers:
+
+- `num_warps`: 4 to 16 as `H` grows past 2048 and 4096.
+- `BLOCK_SIZE = next_power_of_2(H)` is non-negotiable for the single-tile variant; Triton's reductions assume power-of-two extents.
+- For `H > 16384`: switch to the streaming pattern from Chapter 5. Welford's online mean-of-squares is the cleanest formulation (sums of large positives lose less precision than the differences in the online softmax).
+
+The biggest available optimization is *not* in this kernel — it is fusion with the surrounding residual add and the next linear. Chapter 18 covers `residual + RMSNorm` as one kernel. Chapter 19 fuses `RMSNorm + linear + SiLU` for the MLP entry.
+
+### Common bugs
+
+1. **fp16 accumulation.** `tl.sum(x*x)` in fp16 for `H = 4096` loses precision aggressively, then `rsqrt` of that wrong sum is wrong by enough to fail the test. Cast to fp32 before the multiply, always. This is the most common Triton-RMSNorm bug, and it only manifests at the hidden sizes you actually use (768+).
+2. **Eps too small.** `eps = 1e-12` works in fp32 but is below fp16's machine epsilon (~5.96e-8). If your sum-of-squares can be near zero (post-attention deltas can be), use `eps = 1e-6` or larger.
+3. **Forgetting the rstd save.** If you intend to add a backward later, save `rstd` from the forward — recomputing it in the backward doubles the memory traffic. The kernel here writes it unconditionally; allocate the buffer once and ignore it if you only need inference.
+4. **Wrong `other=`.** `other=-inf` on the load corrupts the sum-of-squares for out-of-bounds lanes (you get `+inf` after squaring). `other=0.0` is the only correct choice.
+5. **Hidden size exceeds register budget.** A `BLOCK_SIZE` of 16384 in fp32 needs 64 kB of registers, more than any GPU. Triton will spill. Use the streaming variant past ~16384.
+
+### Exercises
+
+#### Beginner
+
+1. **Forward from scratch.** Implement the forward without peeking at `src/ch07_rmsnorm/rmsnorm.py`. Pass the test on H in {768, 1024, 2048, 4096, 8192} in fp16.
+2. **No-gamma.** Add a `WEIGHTED: tl.constexpr` flag. When `False`, skip the multiply by `w`.
+3. **`eps` as `tl.constexpr` vs runtime arg.** Write both variants. Benchmark. The constexpr version recompiles per distinct eps but may fold the constant.
+
+#### Intermediate
+
+4. **Backward kernel.** Derive $dx_j = r (w_j dy_j) - \hat{x}_j \cdot \tfrac{1}{H} \sum_i \hat{x}_i w_i dy_i$ with $\hat{x} = x \cdot r$. Implement and compare against PyTorch autograd.
+5. **In-place RMSNorm.** Reuse `x`'s storage for the output. Safe because the row is in registers between the load and the store. Useful for tight-memory inference.
+
+#### Advanced
+
+6. **Fused residual-add + RMSNorm.** Compute `y = rmsnorm(x + residual, w)` in one kernel, also returning `x + residual` (next block's residual stream needs it). This is the kernel from Chapter 18; try yourself first. Benchmark vs two separate kernels — expect ~1.5x.
+
+Worked solutions in `solutions/ch07_solutions.py`.

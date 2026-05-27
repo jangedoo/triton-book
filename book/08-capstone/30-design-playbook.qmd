@@ -1,0 +1,281 @@
+---
+title: "Chapter 30: Final Kernel Design Playbook"
+---
+
+This is the chapter you will keep coming back to. The previous twenty-nine chapters taught the moves. This one organizes them into a recipe you can follow under deadline, when the layer is unfamiliar and the GPU is unforgiving.
+
+The recipe has fifteen steps. They are in order on purpose. Every shortcut you take here, you pay for in debugging time later — usually at 2 AM, on a Sunday, the day before a deadline.
+
+We walk all fifteen steps using one running example: a **fused residual + LayerNorm + dropout** kernel. The reference lives at `src/ch30_playbook/fused_residual_ln_dropout.py`. Read it alongside this chapter.
+
+### The fifteen-step playbook
+
+#### 1. Write the PyTorch reference
+
+**What to do.** Write the layer in plain PyTorch. The clearest version you can. No premature optimization. This is your oracle: every test compares against it.
+
+**Worked example.**
+
+```{python}
+#| eval: false
+def fused_residual_ln_dropout_ref(x, residual, weight, bias, p, eps):
+    h = x + residual                                     # residual stream
+    n = F.layer_norm(h, (h.shape[-1],), weight, bias, eps=eps)
+    if p > 0:
+        m = (torch.rand_like(n) < (1 - p)).to(n.dtype) / (1 - p)
+        n = n * m
+    return h, n                                          # return both
+```
+
+**Common pitfall.** "I will skip the reference and tune the Triton kernel directly." You will spend the next four hours arguing with yourself about whether a 0.003 mismatch is a real bug or a tolerance issue. Write the reference.
+
+**Chapter link.** Chapter 5 on softmax shows the pattern: PyTorch reference first, Triton second.
+
+#### 2. Identify inputs/outputs and their shapes
+
+**What to do.** Make a table. Tensor name, shape, dtype, role (input / output / scratch). Pin down which dims are batch, which are feature, which are reduced.
+
+**Worked example.**
+
+| name      | shape    | dtype | role             |
+|-----------|----------|-------|------------------|
+| `x`       | (M, N)   | fp16  | input            |
+| `residual`| (M, N)   | fp16  | input            |
+| `weight`  | (N,)     | fp16  | input (param)    |
+| `bias`    | (N,)     | fp16  | input (param)    |
+| `h`       | (M, N)   | fp16  | output (residual)|
+| `y`       | (M, N)   | fp16  | output (normed)  |
+
+`M = batch * sequence`. The kernel does not care; it flattens.
+
+**Common pitfall.** Forgetting that the kernel produces two outputs. Many fused kernels do.
+
+**Chapter link.** Chapter 18 (residual + RMSNorm) is the canonical two-output case.
+
+#### 3. Identify shape patterns and the reduction axis
+
+**What to do.** Which dims are mapped over independently? Which dim is *reduced* (mean, max, sum)? Mapped dims become grid dims; reduced dims become loops or block-wise reductions inside the kernel.
+
+**Worked example.** The N axis is reduced (mean and variance go over it). The M axis is mapped over: each row's normalization is independent of every other row.
+
+**Common pitfall.** Confusing "broadcast" with "reduce". `weight` is broadcast across rows (one weight vector for all `M`); the N axis inside the row is reduced.
+
+**Chapter link.** Chapter 4 on reductions.
+
+#### 4. Decide program/block mapping
+
+**What to do.** Pick the grid. The default for a row-wise layer is "one program per row". For 2D tile layers, it is "one program per (row tile, col tile)". For attention, it is "one program per (batch, head, query tile)".
+
+**Worked example.** `grid = (M,)`. One program owns one row. `BLOCK_SIZE = next_pow2(N)`, one block covers the whole row. If `N` is larger than your hardware's per-program register/SRAM budget, switch to a multi-block strategy (Chapter 5 covers this for softmax).
+
+**Common pitfall.** Choosing the grid based on tensor shape alone, then discovering that one program needs more SRAM than the hardware has. Check the register budget early.
+
+**Chapter link.** Chapter 2 on the mental model; Chapter 7 on RMSNorm for the row-per-program pattern.
+
+#### 5. Decide what each program loads
+
+**What to do.** Enumerate every `tl.load`. For each, write down what the pointer expression looks like and what mask you will use.
+
+**Worked example.** One program (row `pid`) loads:
+
+- `x[pid, :]` — `(BLOCK_SIZE,)`, masked by `offs < N`, fp16, cast to fp32.
+- `residual[pid, :]` — same as above.
+- `weight[:]` — `(BLOCK_SIZE,)`, masked, fp16, cast to fp32.
+- `bias[:]` — same as `weight`.
+
+**Common pitfall.** Loading `weight` and `bias` inside an inner loop instead of once at the top of the program. They are tiny; load them once.
+
+**Chapter link.** Chapter 3 on pointers and strides.
+
+#### 6. Decide what each program computes
+
+**What to do.** Pseudocode the math. Mark every place the dtype changes. Mark every reduction.
+
+**Worked example.**
+
+```
+h        = x + residual                  (fp32, BLOCK_SIZE)
+mean     = sum(h) / N                    (fp32, scalar)
+centered = (h - mean) * mask             (fp32, BLOCK_SIZE)
+var      = sum(centered ** 2) / N        (fp32, scalar)
+inv      = rsqrt(var + eps)              (fp32, scalar)
+n        = centered * inv * weight + bias (fp32, BLOCK_SIZE)
+if dropout:
+    rand = tl.rand(seed, row * BLOCK_SIZE + offs)  (fp32, BLOCK_SIZE)
+    n    = n * (rand < p_keep) / p_keep
+```
+
+**Common pitfall.** Computing `centered` without masking the out-of-range lanes back to zero before the variance sum. Masked-off lanes will contribute garbage to the reduction.
+
+**Chapter link.** Chapter 6 on LayerNorm for the mean-then-variance pattern; Chapter 5 for the "shift by max" trick that motivates fp32 in reductions.
+
+#### 7. Decide what each program stores
+
+**What to do.** Two outputs need two `tl.store`s. Same mask as the input loads.
+
+**Worked example.**
+
+```
+tl.store(h_ptr + row * stride_hm + offs, h, mask)
+tl.store(y_ptr + row * stride_ym + offs, n, mask)
+```
+
+**Common pitfall.** Forgetting to mask the store and scribbling past the last valid element. Memory checkers will not catch this on power-of-two `N`; it manifests as a flaky test on `N=257`.
+
+**Chapter link.** Chapter 3 on masks.
+
+#### 8. Add masks for boundary conditions
+
+**What to do.** Every load and store touching a partial tile needs `mask=`. Every reduction whose summand could include masked-off lanes needs `other=` set to the reduction's identity (`0.0` for sum, `-inf` for max).
+
+**Worked example.** `mask = offs < N`. Load with `other=0.0` (because we are summing). The dropout mask uses the same `mask`; out-of-range lanes are not stored, so their RNG draws are wasted but harmless.
+
+**Common pitfall.** Using `other=0.0` for a max reduction or `other=-inf` for a sum. The kernel runs, gives wrong answers, and passes any test where `N` is a multiple of `BLOCK_SIZE`.
+
+**Chapter link.** Chapter 3 on masks and `other=`.
+
+#### 9. Decide dtype policy
+
+**What to do.** Write down: input dtype, accumulator dtype, output dtype. For every reduction, sum in fp32. For softmax exponents, fp32. For matmul accumulator, fp32 unless you have explicit fp64 needs.
+
+**Worked example.** Input fp16. Compute fp32 (loads cast on read). Output fp16 (stores cast on write). Weight/bias loaded in their stored dtype, cast to fp32 for the multiply-add.
+
+**Common pitfall.** Accumulating fp16 inputs in fp16. The variance of even moderate-magnitude activations will saturate fp16's range.
+
+**Chapter link.** Chapter 7 on RMSNorm spells out the fp32 accumulator policy.
+
+#### 10. Test tiny shapes first
+
+**What to do.** Pick `N=7, M=3`. Run the kernel. Compare to the reference element-wise. If this fails you cannot debug a larger shape.
+
+**Worked example.** The Chapter 30 test file's first case is `N=7`. It catches mask bugs and stride bugs before anything else.
+
+**Common pitfall.** Jumping to `N=4096` and seeing a 1e-3 deviation, then spending an hour wondering if it is precision or correctness. Start small.
+
+**Chapter link.** Chapter 24 on debugging.
+
+#### 11. Test weird shapes
+
+**What to do.** Non-power-of-two `N` (e.g. 511, 1023). `N` equal to `BLOCK_SIZE`, `BLOCK_SIZE - 1`, `BLOCK_SIZE + 1`. Non-contiguous inputs if you claim to support them (otherwise mark them `xfail` with a comment).
+
+**Worked example.** `tests/test_ch30_playbook.py` parametrizes over `N in [7, 64, 511, 1024]`. 7 is hand-traceable, 64 is power-of-two, 511 forces the mask, 1024 is the realistic case.
+
+**Common pitfall.** "It works on `N=4096` so it works." It does not. The mask path is a separate code path and you must exercise it.
+
+**Chapter link.** Chapter 24 on debugging.
+
+#### 12. Benchmark
+
+**What to do.** `triton.testing.do_bench` against the PyTorch reference. Same shapes. Median ms. Compute GB/s for memory-bound kernels and TFLOP/s for compute-bound ones. Report both numbers, plus the GPU you ran on.
+
+**Worked example.** See `benchmarks/bench_ch30_playbook.py`. Four shapes, fp16, dropout p=0.1. The Triton kernel saves the round-trip of `h` between the residual op and the LayerNorm, and the round-trip of `n` between the LayerNorm and the dropout. Both wins are real and measurable.
+
+**Common pitfall.** Benchmarking the kernel and reporting "10x faster" because PyTorch was running on fp32 and your kernel on fp16. Apples to apples.
+
+**Chapter link.** Chapter 25 on benchmarking.
+
+#### 13. Optimize
+
+**What to do.** Identify the bound (memory or compute). Try larger `BLOCK_SIZE`, more `num_warps`, more `num_stages`. Look for fusion opportunities with neighboring ops.
+
+**Worked example.** Our kernel is memory-bound (one read per input byte, one write per output byte). `BLOCK_SIZE` is already covering the whole row; the knobs left are `num_warps` (try 2, 4, 8) and potentially fusing the *next* layer's residual-add into the same kernel. (At which point you are reinventing Chapter 18.)
+
+**Common pitfall.** Optimizing before establishing the baseline. Without the baseline you cannot tell whether a change is a 5% win or a 5% loss.
+
+**Chapter link.** Chapter 27 on perf tuning.
+
+#### 14. Autotune
+
+**What to do.** Wrap the kernel with `triton.autotune` over a handful of configs that span the realistic shape space. Three to six configs is usually enough. `key=` should list the shape dims the optimal config depends on.
+
+**Worked example.** For our kernel:
+
+```{python}
+#| eval: false
+@triton.autotune(
+    configs=[
+        triton.Config({}, num_warps=2),
+        triton.Config({}, num_warps=4),
+        triton.Config({}, num_warps=8),
+    ],
+    key=["N"],
+)
+```
+
+`BLOCK_SIZE` is computed from `N` at launch time, so it does not appear in the autotuner.
+
+**Common pitfall.** Autotuning over fifty configs. Every config adds compile time and warmup overhead. Three to six is usually the sweet spot.
+
+**Chapter link.** Chapter 26 on autotuning.
+
+#### 15. Document limitations
+
+**What to do.** Docstring on the launcher, in three sections: supported shapes, supported dtypes, known limitations. Add a "future work" note for anything you punted on.
+
+**Worked example.**
+
+```
+"""
+Supported shapes: any (..., N) with N <= 16384.
+Supported dtypes: fp16, bf16, fp32.
+Limitations:
+  - dropout is forward-only; no autograd support.
+  - row width N > 16384 will OOM the SRAM; split rows or move to a
+    multi-block reduction (Chapter 5 pattern).
+"""
+```
+
+**Common pitfall.** Documenting at launch time and never updating. Update the docstring when you add a feature or hit a regression.
+
+**Chapter link.** Chapter 25 on benchmark reporting; the checklist in `kernel_checklist.qmd`.
+
+### The checklist, inline
+
+Keep this on your wall. It is the Phase summary of `kernel_checklist.qmd`.
+
+**Phase 1 — Design.** Plain-math statement. PyTorch oracle. Shape table. Reduction axis. One-program ownership. Grid shape. Block sizes. Accumulator dtype. SRAM vs registers. Numerical hazards listed.
+
+**Phase 2 — Implement.** Kernel signature. `pid` per axis. Offsets from `pid` * `stride`. `tl.arange` per-element. Masks on partial tiles. `tl.load` with safe `other=`. Compute. `tl.store` with mask. Launcher allocates output and validates inputs.
+
+**Phase 3 — Test.** Tiny shape. Power-of-two. Non-power-of-two. Boundary (`BS`, `BS-1`, `BS+1`). Every dtype. Non-contiguous if supported. Compare to PyTorch with `assert_close` and dtype-appropriate tolerances.
+
+**Phase 4 — Optimize.** Baseline. Identify bound. Sweep `BLOCK_SIZE`. Sweep `num_warps`. Sweep `num_stages`. Autotune. Re-measure.
+
+**Phase 5 — Document.** Signature, shapes, dtypes, hardware. Numerical contract. Benchmark numbers and the GPU.
+
+### Summary table: LLM components to library functions
+
+When you sit down to wire up a new model, this is the lookup table.
+
+| Component                          | Chapter | Library function                  |
+|------------------------------------|---------|-----------------------------------|
+| Embedding lookup                   | 3       | (PyTorch is fine)                 |
+| Softmax (logits, attention)        | 5       | `mini_triton_llm.softmax`         |
+| LayerNorm                          | 6       | (Chapter 6 kernel, not in lib)    |
+| RMSNorm                            | 7       | `mini_triton_llm.rmsnorm`         |
+| SiLU / SwiGLU                      | 8, 19   | `mini_triton_llm.swiglu`          |
+| Linear (Q/K/V/O, up/down)          | 9, 10   | `torch.nn.Linear` (cuBLAS)        |
+| Persistent matmul (large hidden)   | 11      | (Chapter 11 kernel, not in lib)   |
+| Attention (naive)                  | 13      | (Chapter 13 kernel, debug only)   |
+| FlashAttention forward             | 14      | `mini_triton_llm.flash_attention` |
+| Attention backward                 | 15      | (Chapter 15 kernel, not in lib)   |
+| RoPE                               | 16      | `mini_triton_llm.rope`            |
+| KV cache decode                    | 17      | (Chapter 17 kernel, not in lib)   |
+| Residual + RMSNorm fusion          | 18      | `mini_triton_llm.residual_rmsnorm`|
+| Cross-entropy loss                 | 20      | `mini_triton_llm.cross_entropy`   |
+| Sampling                           | 21      | (Chapter 21 kernels, not in lib)  |
+| Quantized matmul (int8/int4)       | 23      | (Chapter 23 kernel, not in lib)   |
+
+Items marked "not in lib" are intentional. The library exposes the components you would actually drop into a forward pass. The chapter-only kernels are educational scaffolding (the naive attention) or kernels that need more maturation before they belong in a shared library (LayerNorm, persistent matmul, quantized matmul, attention backward).
+
+### Where to look next
+
+This book stopped at the kernels you need for a modern transformer forward pass. There is a lot more out there. Pointers:
+
+- **FlashAttention v3.** Asynchronous TMA loads, warp specialization, FP8 compute. Hopper-only.
+- **Persistent kernels with TMA.** Chapter 11 introduced persistent; TMA is the H100 instruction that makes the inner loop cheaper.
+- **FP8 training and inference.** Chapter 22 introduced the dtype; the production story is `transformer_engine` and FlashAttention v3.
+- **vLLM internals.** The paged KV cache and the continuous-batching scheduler are kernel-level engineering on top of Chapter 17.
+- **AMD ROCm Triton.** Triton compiles for AMD. The mental model carries over; the autotune configs do not.
+
+The appendix that follows has a study plan, a list of kernels worth reimplementing from memory, and the capstone challenge. Read it once. Pick one project. Build it.

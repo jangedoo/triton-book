@@ -1,0 +1,20 @@
+[project]
+name = "triton-llm-book"
+version = "0.1.0"
+description = "Learning Triton by Rebuilding Modern LLM Kernels"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [
+    { name = "Sanjaya Subedi" },
+]
+dependencies = [
+    "torch>=2.4",
+    "triton>=3.0",
+    "pytest>=8",
+    "numpy>=1.26",
+    "plotly>=5",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

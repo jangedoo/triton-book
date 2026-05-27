@@ -1,0 +1,164 @@
+---
+title: "Chapter 29: Replace Pieces of a Tiny Transformer"
+---
+
+The mini library exists. Now we put it in a transformer. The goal is honest: build a one-layer GPT-style block in plain PyTorch, then build the same block with the Triton kernels from Chapter 28, prove the outputs agree, and report the latency and memory deltas. Some of the deltas will be wins. Some will be wash. One of them will be a loss. We will name each one.
+
+### The reference block
+
+A pre-norm transformer block, GPT-style:
+
+```
+x          (B, S, hidden)
+|
+RMSNorm
+|
+Q,K,V proj
+RoPE on Q, K
+Causal multi-head self-attention
+O proj
++ x  (residual)
+|
+RMSNorm
+SwiGLU MLP (up_proj -> chunk -> silu * gate -> down_proj)
++ x  (residual)
+|
+y          (B, S, hidden)
+```
+
+Hidden dim 256, four heads, head dim 64, intermediate dim 1024. Small on purpose: every component is representative of what a real LLM block uses, but the whole thing fits on the author's 2070 SUPER.
+
+`src/ch29_transformer_swap/pytorch_block.py` implements this with `_rmsnorm_torch` (plain PyTorch), `_apply_rope_torch`, `F.scaled_dot_product_attention`, and `F.silu(a) * b`. The linear projections are `nn.Linear`. Read it; it is intentionally boring.
+
+### The Triton block
+
+Same structure, four ops swapped:
+
+| Op                            | Reference                         | Triton replacement                  |
+|-------------------------------|-----------------------------------|-------------------------------------|
+| RMSNorm                       | `_rmsnorm_torch`                  | `mini_triton_llm.rmsnorm`           |
+| RoPE on Q, K                  | `_apply_rope_torch`               | `mini_triton_llm.rope`              |
+| Causal self-attention         | `F.scaled_dot_product_attention`  | `mini_triton_llm.flash_attention`   |
+| SwiGLU activation             | `F.silu(a) * b`                   | `mini_triton_llm.swiglu`            |
+
+Linears stay PyTorch. cuBLAS already wins this race; revisit Chapter 9 if you want a refresher on why we do not reimplement matmul here.
+
+`TritonBlock.from_pytorch(ref)` clones the reference block's `state_dict` so we can swap forwards with identical weights. That is the prerequisite for every correctness test below.
+
+### Correctness
+
+Identical weights, identical inputs, outputs close to fp16 tolerances:
+
+```{python}
+#| eval: false
+from ch29_transformer_swap import BlockConfig, PyTorchBlock, TritonBlock
+
+cfg = BlockConfig(hidden_dim=256, num_heads=4, head_dim=64, intermediate_dim=1024)
+ref = PyTorchBlock(cfg, dtype=torch.float16).cuda().eval()
+tri = TritonBlock.from_pytorch(ref).cuda().eval()
+
+x = torch.randn(2, 512, 256, dtype=torch.float16, device="cuda") * 0.1
+with torch.no_grad():
+    y_ref = ref(x)
+    y_tri = tri(x)
+
+# fp16 end-to-end; loosened from the per-kernel 1e-2 to 3e-2 because of
+# the compounding of four kernels' errors.
+torch.testing.assert_close(y_tri, y_ref, rtol=3e-2, atol=3e-2)
+```
+
+The looser tolerance is a deliberate choice. Each kernel meets its individual 1e-2 spec; chain four of them through a residual stream and the errors compound. 3e-2 is what a careful reading of "fp16 end-to-end" actually allows.
+
+### Latency
+
+Forward time at `B=4` and `S in {512, 1024, 2048}`:
+
+```{python}
+#| eval: false
+from mini_triton_llm.benchmarking import bench
+
+for S in [512, 1024, 2048]:
+    x = torch.randn(4, S, 256, dtype=torch.float16, device="cuda") * 0.1
+    with torch.no_grad():
+        t_torch = bench(lambda: ref(x))
+        t_tri = bench(lambda: tri(x))
+    print(f"S={S}: torch {t_torch:.3f} ms   triton {t_tri:.3f} ms")
+```
+
+What you will see, roughly:
+
+- **RMSNorm + SwiGLU win small.** Fewer kernel launches, no intermediate `silu(a)` tensor.
+- **RoPE wins small.** PyTorch's RoPE is several elementwise ops; the Triton version does them in one pass.
+- **Attention is close to a wash, possibly a loss.** PyTorch's SDPA dispatches to the production `flash_attn` kernel on a recent GPU. Your educational kernel is correct but has had hours of tuning, not years.
+
+The aggregate forward usually comes out a touch faster on Triton, dominated by the fusion wins. Do not expect a 2x. If your benchmark shows a 2x, suspect a bug.
+
+### Memory
+
+This is where the Triton path has a real, structural win:
+
+```{python}
+#| eval: false
+for S in [512, 1024, 2048]:
+    x = torch.randn(4, S, 256, dtype=torch.float16, device="cuda") * 0.1
+    torch.cuda.reset_peak_memory_stats()
+    with torch.no_grad(): _ = ref(x)
+    mb_torch = torch.cuda.max_memory_allocated() / (1024**2)
+
+    torch.cuda.reset_peak_memory_stats()
+    with torch.no_grad(): _ = tri(x)
+    mb_tri = torch.cuda.max_memory_allocated() / (1024**2)
+    print(f"S={S}: torch {mb_torch:.1f} MiB   triton {mb_tri:.1f} MiB")
+```
+
+`F.scaled_dot_product_attention` on a recent PyTorch + GPU will also avoid materializing the `[S, S]` score matrix (SDPA's fast path is FlashAttention under the hood). On an older PyTorch, or on a GPU without the fast path, the score matrix is materialized and the torch number grows quadratically with `S`. Your Triton path stays linear in `S` because the FlashAttention kernel never writes the score matrix to HBM.
+
+On the same hot path the SwiGLU swap saves one full bandwidth pass over the `(B, S, intermediate_dim)` `silu(a)` tensor — at `S=2048` and `intermediate=1024` that is ~32 MiB per call. Small in this toy block; meaningful in a 32-layer model.
+
+::: {.callout-warning appearance="simple"}
+**Placeholder data.** The numbers below are hardcoded illustrative values, not measurements. Replace with output from your own `triton.testing.do_bench` run before drawing conclusions.
+:::
+
+```{ojs}
+//| echo: false
+//| label: fig-transformer-block-bench
+//| fig-cap: "One-layer transformer block forward median latency vs sequence length S (B=4 fp16). Lower is better. PyTorch reference block vs the same block with four ops swapped to Triton kernels."
+{
+  const data = [
+    {S: 512,  torch_ms: 0.55, triton_ms: 0.50, torch_mib: 110, triton_mib: 100},
+    {S: 1024, torch_ms: 1.10, triton_ms: 0.95, torch_mib: 220, triton_mib: 200},
+    {S: 2048, torch_ms: 2.40, triton_ms: 2.10, torch_mib: 540, triton_mib: 410},
+  ];
+  const long = data.flatMap(d => [
+    {S: d.S, impl: "torch reference", ms: d.torch_ms},
+    {S: d.S, impl: "triton swap",     ms: d.triton_ms}
+  ]);
+  return Plot.plot({
+    color: {legend: true, domain: ["torch reference", "triton swap"], range: ["orange", "steelblue"]},
+    x: {label: "S (sequence length, tokens)"},
+    y: {label: "median latency (ms, B=4) — lower is better"},
+    marks: [
+      Plot.line(long, {x: "S", y: "ms", stroke: "impl"}),
+      Plot.dot(long,  {x: "S", y: "ms", fill: "impl"})
+    ]
+  });
+}
+```
+
+### Honesty section
+
+A few things to say plainly:
+
+1. **PyTorch SDPA already dispatches to FlashAttention.** The attention-axis "win" you might have expected is not yours to take. Be glad: it means the production version of your kernel exists and works.
+2. **Fusion gains are real but small per layer.** Multiply by 32 layers in a real model and they add up — but in a one-layer toy they will look unimpressive.
+3. **fp16 end-to-end accumulates error.** Tolerances of 3e-2 are what the block actually delivers; quote that, not the per-kernel 1e-2.
+4. **You did not write a backward kernel.** Training this block end-to-end through Triton requires wrapping each launcher in `torch.autograd.Function`. Exercise 6 walks through it.
+
+### Exercises
+
+See `exercises/ch29_exercises.md`. The headline pieces:
+
+- Swap one op at a time (Beginner 1–3) to measure each contribution in isolation.
+- Stack four layers (Intermediate 4) and see if the wins compound.
+- Add a KV cache and benchmark decode (Intermediate 5) — this is where the Triton path will pull away.
+- Wire backward (Advanced 6).

@@ -1,0 +1,310 @@
+---
+title: "Chapter 15: Attention Backward — Conceptual and Optional Implementation"
+---
+
+The forward pass from Chapter 14 (`book/04-attention/14-flashattention-fwd.qmd`) showed how to compute attention without materializing the `[B, H, S, S]` score matrix. The backward pass has the same constraint, plus an extra twist: softmax backward needs the softmax *outputs*, not the inputs. Forward kept only `O` and the per-row log-sum-exp; backward has to reconstruct everything else.
+
+This chapter is mostly conceptual. We walk through the gradient math, map it to a kernel layout, and provide an honest **educational** implementation for tiny shapes. For real workloads you call `torch.nn.functional.scaled_dot_product_attention` and let it dispatch to the production Flash backward, which is several thousand lines of hand-tuned Triton.
+
+## Why backward is harder than forward
+
+Forward attention has a tidy structure: each row of `Q` independently scans `K` and `V`, accumulating an output and a running normalizer. The K/V loop can be tiled with no cross-row coordination.
+
+Backward breaks that locality.
+
+- Softmax backward at row `i` is `dS_i = P_i * (dP_i - rowsum(dP_i * P_i))`. The row-sum couples every column to every other column in the same row, so you need the full `P_i` row in scope when you compute `dS_i`.
+- `dV` is `P^T @ dO`. The transpose flips the loop nest: now each *column* of `P` (i.e. each `K` row) aggregates contributions from every `Q` row.
+- The same gradient (`dS`) feeds two different reductions: one over `j` to produce `dQ`, one over `i` to produce `dK`.
+
+Naively materializing `[B, H, S, S]` for `P` and `dP` gives the right answer for tiny `S` and OOMs by `S=4096`. The whole point of FlashAttention was to avoid that, and the backward has to avoid it too.
+
+## Two strategies in the literature
+
+**Recompute attention during backward.** This is FlashAttention v1 and v2. Forward stores `O` and a per-row scalar `L = m + log(sum(exp(s - m)))` (log-sum-exp). Backward streams over `K`/`V` tiles, *recomputes* the scores `S = Q @ K^T * scale`, recovers `P = exp(S - L)`, and uses that to compute partial gradients. You pay extra FLOPs but never materialize `P`.
+
+**Store the attention matrix.** Only works when `S` is so small that the `[B, H, S, S]` matrix fits in memory and the bandwidth cost is acceptable. Useful for prototyping. Useless past a few hundred tokens.
+
+We use the second strategy for our educational kernel because the chapter is about understanding, not throughput.
+
+## The gradient math
+
+Given `Q, K, V` of shape `[N, D]` (drop batch/head for clarity), `scale = 1/sqrt(D)`, and an upstream gradient `dO` of shape `[N, D]`:
+
+```
+S  = Q @ K^T * scale            # [N, N] scores
+P  = softmax(S, axis=-1)        # [N, N] probs
+O  = P @ V                      # [N, D] output
+```
+
+The gradients flowing back are:
+
+```
+dV = P^T @ dO                                       # [N, D]
+dP = dO @ V^T                                       # [N, N]
+dS = P * (dP - rowsum(dP * P, keepdim=True))        # [N, N]
+dQ = dS @ K * scale                                 # [N, D]
+dK = dS^T @ Q * scale                               # [N, D]
+```
+
+The softmax-row Jacobian for one row is `J_ij = P_i * (delta_ij - P_j)`, and `dS_i = J_i^T @ dP_i` collapses to the formula above. Derive it once with pencil and paper and the rest of the chapter clicks.
+
+## Mapping gradients to kernels
+
+Production Flash backward (see Triton's `06-fused-attention.py` tutorial) splits the work into three kernels:
+
+- `_attn_bwd_preprocess`: computes `delta = rowsum(O * dO)` per row. This is the same `rowsum(dP * P)` term, since `rowsum(dO @ V^T * P) = rowsum(dO * (P @ V)) = rowsum(dO * O)`. Caching `delta` lets the main kernels skip a redundant reduction.
+- `_attn_bwd_dkdv`: one program per `K`/`V` tile. Loops over `Q` tiles, recomputes scores, accumulates `dV` and `dK` for the owned `K`/`V` rows.
+- `_attn_bwd_dq`: one program per `Q` tile. Loops over `K`/`V` tiles, recomputes scores, accumulates `dQ`. (Separating `dQ` from `dKdV` avoids cross-program reductions.)
+
+Each kernel reads the per-row `L` (log-sum-exp) stored by forward and uses it to recover `P` from `S` without a fresh max-and-sum pass. Storing `L` in fp32 is non-negotiable — fp16 loses too many digits for the exponent recovery.
+
+Our educational kernel collapses everything into one straightforward function. Use it to internalize the math, then read the tutorial.
+
+### PyTorch reference
+
+```{python}
+#| eval: false
+import torch
+import torch.nn.functional as F
+
+
+def attention_reference(q, k, v):
+    """Standard scaled dot-product attention, no mask, no dropout."""
+    return F.scaled_dot_product_attention(q, k, v)
+
+
+def attention_grads_reference(q, k, v, do):
+    """Returns (dq, dk, dv) via autograd."""
+    q = q.detach().requires_grad_(True)
+    k = k.detach().requires_grad_(True)
+    v = v.detach().requires_grad_(True)
+    o = F.scaled_dot_product_attention(q, k, v)
+    dq, dk, dv = torch.autograd.grad(o, [q, k, v], do)
+    return dq, dk, dv
+```
+
+### Triton implementation
+
+The educational backward stores `P` as a `[B, H, S, S]` tensor in fp32 and runs three small kernels: one for `dV`, one for `dQ`, one for `dK`. Each is essentially a matmul. The point is that you can see, line by line, where the math comes from.
+
+```{python}
+#| eval: false
+"""
+Educational implementation. Not production.
+For S > 256 use F.scaled_dot_product_attention, which dispatches to a
+proper Flash backward.
+"""
+import torch
+import triton
+import triton.language as tl
+
+
+@triton.jit
+def _dv_kernel(
+    p_ptr, do_ptr, dv_ptr,
+    B, H, S, D,
+    stride_pb, stride_ph, stride_pm, stride_pn,
+    stride_dob, stride_doh, stride_dom, stride_dod,
+    stride_dvb, stride_dvh, stride_dvm, stride_dvd,
+    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_D: tl.constexpr,
+):
+    pid_bh = tl.program_id(0)
+    pid_n  = tl.program_id(1)
+    b = pid_bh // H
+    h = pid_bh %  H
+
+    offs_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    offs_d = tl.arange(0, BLOCK_D)
+
+    acc = tl.zeros((BLOCK_N, BLOCK_D), dtype=tl.float32)
+    for m_start in range(0, S, BLOCK_M):
+        offs_m = m_start + tl.arange(0, BLOCK_M)
+        # P^T tile: load P[m, n] then implicitly transpose by index order.
+        p_ptrs = (
+            p_ptr + b * stride_pb + h * stride_ph
+            + offs_m[:, None] * stride_pm + offs_n[None, :] * stride_pn
+        )
+        do_ptrs = (
+            do_ptr + b * stride_dob + h * stride_doh
+            + offs_m[:, None] * stride_dom + offs_d[None, :] * stride_dod
+        )
+        m_mask = offs_m < S
+        n_mask = offs_n < S
+        p  = tl.load(p_ptrs,  mask=m_mask[:, None] & n_mask[None, :], other=0.0)
+        do = tl.load(do_ptrs, mask=m_mask[:, None],                   other=0.0)
+        # dV[n, d] += sum_m P[m, n] * dO[m, d]
+        acc += tl.dot(tl.trans(p), do.to(tl.float32))
+
+    dv_ptrs = (
+        dv_ptr + b * stride_dvb + h * stride_dvh
+        + offs_n[:, None] * stride_dvm + offs_d[None, :] * stride_dvd
+    )
+    tl.store(dv_ptrs, acc, mask=(offs_n < S)[:, None])
+```
+
+`dQ` and `dK` follow the same shape (full source in `src/ch15_attention_backward/educational_backward.py`). The launcher first computes `P` once on the device with a vanilla `torch.softmax`, then computes `dP = dO @ V^T`, then `dS = P * (dP - rowsum(dP * P, keepdim=True))`, then dispatches the kernels for the three matmuls. We let PyTorch do the small pieces and Triton do the GEMM shape so the structure shows clearly.
+
+### Shape trace
+
+For the `_dv_kernel` above (one program owns a `(BLOCK_N, BLOCK_D)` tile of `dV`):
+
+```
+P:              (B, H, S, S)        fp32
+dO:             (B, H, S, D)        fp16
+dV:             (B, H, S, D)        fp32 accumulator, fp16 store
+
+Program owns:   one (b, h) and one BLOCK_N slice of dV
+pid_bh, pid_n   scalars             int32
+b, h            scalars             int32
+offs_n          (BLOCK_N,)          int32
+offs_d          (BLOCK_D,)          int32
+acc             (BLOCK_N, BLOCK_D)  fp32
+
+# inner loop, per m tile:
+offs_m          (BLOCK_M,)          int32
+p  = tl.load    (BLOCK_M, BLOCK_N)  fp32   # P[m, n] tile
+do = tl.load    (BLOCK_M, BLOCK_D)  fp16   # dO[m, d] tile
+tl.trans(p)     (BLOCK_N, BLOCK_M)  fp32
+tl.dot(...)     (BLOCK_N, BLOCK_D)  fp32   # accumulates into acc
+
+tl.store(dv)    (BLOCK_N, BLOCK_D)  fp32   # masked on offs_n < S
+```
+
+### Pointer arithmetic and masks
+
+`P` is logically `[B, H, S, S]`. We pass per-axis strides so the kernel works on either contiguous or already-transposed layouts. For one `(b, h)` slice:
+
+- `b * stride_pb + h * stride_ph` selects the head.
+- `offs_m[:, None] * stride_pm + offs_n[None, :] * stride_pn` walks the `(M, N)` plane.
+- `tl.trans(p)` is the cheap form of transposing the loaded tile; do not try to load with swapped index order — the strides will be wrong.
+
+Masks: `m_mask = offs_m < S` and `n_mask = offs_n < S` handle the non-multiple-of-block edge. `other=0.0` is safe because zero contributes nothing to either the matmul (`0 * anything = 0`) or the subsequent accumulator.
+
+### Correctness test
+
+```{python}
+#| eval: false
+import pytest
+import torch
+import torch.nn.functional as F
+from src.ch15_attention_backward.educational_backward import attention_backward_educational
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda only")
+def test_small_grads_match_autograd():
+    torch.manual_seed(0)
+    B, H, S, D = 1, 2, 64, 32
+    q = torch.randn(B, H, S, D, device="cuda", dtype=torch.float32)
+    k = torch.randn(B, H, S, D, device="cuda", dtype=torch.float32)
+    v = torch.randn(B, H, S, D, device="cuda", dtype=torch.float32)
+    do = torch.randn(B, H, S, D, device="cuda", dtype=torch.float32)
+
+    q_ref = q.clone().requires_grad_(True)
+    k_ref = k.clone().requires_grad_(True)
+    v_ref = v.clone().requires_grad_(True)
+    o_ref = F.scaled_dot_product_attention(q_ref, k_ref, v_ref)
+    dq_ref, dk_ref, dv_ref = torch.autograd.grad(o_ref, [q_ref, k_ref, v_ref], do)
+
+    dq, dk, dv = attention_backward_educational(q, k, v, do)
+    torch.testing.assert_close(dq, dq_ref, rtol=1e-4, atol=1e-4)
+    torch.testing.assert_close(dk, dk_ref, rtol=1e-4, atol=1e-4)
+    torch.testing.assert_close(dv, dv_ref, rtol=1e-4, atol=1e-4)
+```
+
+### Benchmark
+
+A single timing point is enough for this chapter. The educational backward is much slower than the real Flash backward (which is itself ~3x slower than the forward). Do not chase performance here.
+
+```{python}
+#| eval: false
+import torch
+import triton
+import torch.nn.functional as F
+from src.ch15_attention_backward.educational_backward import attention_backward_educational
+
+
+def bench():
+    B, H, S, D = 1, 8, 256, 64
+    q = torch.randn(B, H, S, D, device="cuda", dtype=torch.float32)
+    k = torch.randn_like(q); v = torch.randn_like(q); do = torch.randn_like(q)
+
+    edu_ms = triton.testing.do_bench(
+        lambda: attention_backward_educational(q, k, v, do)
+    )
+
+    def torch_bwd():
+        q_ = q.detach().requires_grad_(True)
+        k_ = k.detach().requires_grad_(True)
+        v_ = v.detach().requires_grad_(True)
+        o = F.scaled_dot_product_attention(q_, k_, v_)
+        torch.autograd.grad(o, [q_, k_, v_], do)
+
+    torch_ms = triton.testing.do_bench(torch_bwd)
+    print(f"educational backward: {edu_ms:.3f} ms")
+    print(f"torch SDPA backward : {torch_ms:.3f} ms")
+```
+
+::: {.callout-warning appearance="simple"}
+**Placeholder data.** The numbers below are hardcoded illustrative values, not measurements. Replace with output from your own `triton.testing.do_bench` run before drawing conclusions.
+:::
+
+```{ojs}
+//| echo: false
+//| label: fig-attn-backward-bench
+//| fig-cap: "Attention backward median latency at B=1, H=8, S=256, D=64 fp32. Lower is better. Educational three-kernel Triton backward vs torch SDPA autograd."
+{
+  const data = [
+    {kernel: "triton educational", ms: 5.0},
+    {kernel: "torch SDPA",         ms: 0.3},
+  ];
+  return Plot.plot({
+    color: {legend: true, domain: ["triton educational", "torch SDPA"], range: ["steelblue", "orange"]},
+    y: {label: "median latency (ms) — lower is better"},
+    x: {label: "implementation"},
+    marks: [Plot.barY(data, {x: "kernel", y: "ms", fill: "kernel"})]
+  });
+}
+```
+
+### Optimization discussion
+
+What the educational kernel leaves on the table:
+
+- Materializes `P` and `dP` as `[B, H, S, S]` fp32. Production stores only `(O, L)` from forward and recomputes `P` tile-by-tile.
+- Computes `dV`, `dQ`, `dK` in three separate matmul kernels. Production fuses `dK` and `dV` into one kernel that holds a `K/V` tile in registers and sweeps `Q`.
+- Uses fp32 throughout for clarity. Production loads in fp16/bf16, accumulates in fp32, stores in the input dtype.
+- No causal mask, no varlen, no dropout, no GQA, no head-dim padding. Each of those is its own knob in the real backward.
+
+If you want to push this further, the next step is to drop the materialized `P` and start streaming. Once you do, you have rebuilt the tutorial — and at that point you should just read it.
+
+### Optional: guided reading of the Triton tutorial
+
+The official Triton tutorial at `python/tutorials/06-fused-attention.py` has a production-ish Flash backward. Skim it in this order:
+
+1. `_attn_bwd_preprocess` — computes `delta = rowsum(O * dO)` per row. Cache for later.
+2. `_attn_bwd_dkdv` — one program per `K/V` tile, loops over `Q` tiles, accumulates `dK` and `dV`. Watch how it reads `L` (the saved log-sum-exp) and recovers `P` with `exp(S - L)`.
+3. `_attn_bwd_dq` — one program per `Q` tile, loops over `K/V` tiles, accumulates `dQ`. Same recovery trick.
+4. The launcher — how the three kernels are wired with a single Python-level call.
+
+### Common bugs
+
+- **Forgetting `rowsum(dP * P)` in the softmax-row Jacobian.** The naive `dS = P * dP` is wrong; you need the row-sum subtraction. Symptom: gradients have the right shape and look "close" for random inputs, but fail an `assert_close`.
+- **Mixing up `P` and `S`.** `S` is pre-softmax scores; `P` is post-softmax. `dV` uses `P^T`, not `S^T`. Easy to typo, especially in a tile-based kernel where you might have both in scope.
+- **Dropping the `1/sqrt(D)` scale in `dQ` and `dK`.** The scale appears in the forward `S = Q @ K^T * scale`, so it appears in *both* `dQ = dS @ K * scale` and `dK = dS^T @ Q * scale`. Forgetting one but not the other gives gradients that are off by `sqrt(D)`.
+- **Storing `L` in fp16.** Log-sum-exp can be tens or hundreds in magnitude; fp16 has ~3-4 decimal digits of precision. Keep `L` in fp32, always.
+
+### Exercises
+
+The exercises here are lighter than other chapters and lean on derivations rather than throughput.
+
+**Beginner 1.** Re-derive the softmax-row Jacobian. Start from `p_i = exp(s_i) / sum_j exp(s_j)`. Differentiate `p_i` with respect to `s_j` for both `i = j` and `i != j`. Show that the result simplifies to `dS_i = P_i * (dP_i - rowsum(dP_i * P_i))`. Hint: factor `P_i` out of the diagonal and off-diagonal cases separately.
+
+**Beginner 2.** Implement just `dV = P^T @ dO` as a kernel, given `P` precomputed on the host. Use the kernel template in `src/ch15_attention_backward/educational_backward.py` as a starting point. Hint: this is the simplest of the three gradients and a good warm-up for the others.
+
+**Beginner 3.** Count FLOPs and bytes. For `B=1, H=16, S=4096, D=64`, estimate the memory cost of storing `P` as fp32 versus the FLOP cost of recomputing it once during backward. Hint: `P` is `B * H * S * S * 4` bytes; recomputation is `2 * B * H * S * S * D` FLOPs for `Q @ K^T` plus the softmax.
+
+**Intermediate 1.** Implement `dQ` as a kernel, given `dS` precomputed. Mirror the `_dv_kernel` structure: one program per `(b, h, BLOCK_M)`, loop over `K`-tiles, accumulate `dS @ K * scale`. Hint: the loop variable plays the role of the "scan" dimension; do not transpose this one.
+
+**Intermediate 2.** Read the Triton tutorial's `_attn_bwd_preprocess` and explain in a paragraph what it precomputes and why. Hint: look for the identity `rowsum(dP * P) = rowsum(dO * O)` and ask yourself when each side is cheaper to evaluate.
+
+**Advanced.** Extend the educational backward to `causal=True`. The forward causal mask zeros the upper triangle of `S` before softmax; the backward has to skip the masked positions everywhere. Hint: for `dV` and `dK`, the contributing `Q` rows are only those at positions `>= n`. For `dQ`, the contributing `K`/`V` rows are only those at positions `<= m`.

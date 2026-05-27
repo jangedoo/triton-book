@@ -1,0 +1,5 @@
+---
+title: "Part 1: Triton Fundamentals"
+---
+
+The mental model: programs, blocks, masks, pointers, strides, and reductions. These three chapters are the vocabulary every later chapter assumes. Read them carefully — almost every bug you hit later in the book can be traced back to a concept introduced here.

@@ -1,0 +1,74 @@
+## Interactive: how `BLOCK_SIZE` tiles a 1D tensor
+
+This widget visualizes how a 1D tensor of length `N` is covered by program
+instances when each program owns one tile of size `BLOCK_SIZE`. Drag the
+sliders to see how the grid changes — in particular, watch the final
+(rightmost) tile when `N` is not a multiple of `BLOCK_SIZE`. The shaded
+portion of that tile is the part that needs a mask in the kernel.
+
+Copy this whole block into a chapter and change the defaults at the top. Keep
+the comments — they explain to the reader what they are looking at.
+
+```{ojs}
+//| echo: false
+//| label: fig-grid-mapping-template
+//| fig-cap: "Template: per-program tile coverage of a length-N 1D tensor by BLOCK_SIZE lanes. Steel-blue cells are in-bounds, light-gray cells are masked tail lanes."
+
+// --- Inputs -------------------------------------------------------------
+viewof N = Inputs.range([1, 64], {value: 17, step: 1, label: "N (tensor length)"})
+viewof BLOCK_SIZE = Inputs.range([1, 32], {value: 4, step: 1, label: "BLOCK_SIZE"})
+
+// --- Derived ------------------------------------------------------------
+num_programs = Math.ceil(N / BLOCK_SIZE)
+
+// Build one record per program with its element indices and a flag for
+// which lanes are masked off (out of bounds).
+tiles = {
+  const out = [];
+  for (let pid = 0; pid < num_programs; pid++) {
+    const start = pid * BLOCK_SIZE;
+    for (let lane = 0; lane < BLOCK_SIZE; lane++) {
+      const idx = start + lane;
+      out.push({
+        pid: pid,
+        lane: lane,
+        index: idx,
+        in_bounds: idx < N
+      });
+    }
+  }
+  return out;
+}
+
+// --- Render -------------------------------------------------------------
+// One row per program, lanes laid out left-to-right. In-bounds lanes are
+// solid; masked lanes are hatched/faded so the reader can see exactly which
+// values need `mask=...` on the `tl.load` / `tl.store`.
+Plot.plot({
+  width: 720,
+  height: 60 + num_programs * 32,
+  x: {label: "lane within program", domain: [-0.5, BLOCK_SIZE - 0.5]},
+  y: {label: "program id (pid)", domain: [-0.5, num_programs - 0.5], reverse: true},
+  color: {legend: true, domain: ["in-bounds", "masked"], range: ["steelblue", "lightgray"]},
+  marks: [
+    Plot.cell(tiles, {
+      x: "lane",
+      y: "pid",
+      fill: d => d.in_bounds ? "in-bounds" : "masked",
+      stroke: "white",
+      title: d => `pid=${d.pid} lane=${d.lane} index=${d.index} ${d.in_bounds ? "" : "(masked)"}`
+    }),
+    Plot.text(tiles, {
+      x: "lane",
+      y: "pid",
+      text: d => d.in_bounds ? `${d.index}` : "x",
+      fill: "white",
+      fontSize: 11
+    })
+  ]
+})
+
+md`**Grid size:** ${num_programs} program(s). **Masked lanes in last tile:** ${
+  num_programs * BLOCK_SIZE - N
+}.`
+```

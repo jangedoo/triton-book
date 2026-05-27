@@ -1,0 +1,76 @@
+project:
+  type: book
+  output-dir: _site
+
+book:
+  title: "Learning Triton by Rebuilding Modern LLM Kernels"
+  author: "Sanjaya Subedi"
+  search: true
+  chapters:
+    - index.qmd
+    - part: "Part 0: Orientation"
+      chapters:
+        - book/00-orientation/00-why-triton.qmd
+        - book/00-orientation/01-setup.qmd
+    - part: "Part 1: Triton Fundamentals"
+      chapters:
+        - book/01-fundamentals/02-mental-model.qmd
+        - book/01-fundamentals/03-memory-pointers-strides.qmd
+        - book/01-fundamentals/04-reductions.qmd
+    - part: "Part 2: Basic Neural Network Kernels"
+      chapters:
+        - book/02-basic-nn/05-fused-softmax.qmd
+        - book/02-basic-nn/06-layernorm.qmd
+        - book/02-basic-nn/07-rmsnorm.qmd
+        - book/02-basic-nn/08-activations-swiglu.qmd
+    - part: "Part 3: Matrix Multiplication"
+      chapters:
+        - book/03-matmul/09-matmul.qmd
+        - book/03-matmul/10-batched-matmul-linear.qmd
+        - book/03-matmul/11-persistent-matmul.qmd
+    - part: "Part 4: Attention and Transformer Kernels"
+      chapters:
+        - book/04-attention/12-attention-math.qmd
+        - book/04-attention/13-naive-attention.qmd
+        - book/04-attention/14-flashattention-fwd.qmd
+        - book/04-attention/15-attention-backward.qmd
+        - book/04-attention/16-rope-alibi.qmd
+        - book/04-attention/17-kv-cache.qmd
+    - part: "Part 5: Modern LLM Layer Fusion"
+      chapters:
+        - book/05-llm-fusion/18-residual-rmsnorm.qmd
+        - book/05-llm-fusion/19-fused-bias-act-gate.qmd
+        - book/05-llm-fusion/20-cross-entropy.qmd
+        - book/05-llm-fusion/21-sampling.qmd
+    - part: "Part 6: Quantization-Oriented Kernels"
+      chapters:
+        - book/06-quantization/22-low-precision.qmd
+        - book/06-quantization/23-dequant-matmul.qmd
+    - part: "Part 7: Debugging, Testing, Profiling, Optimization"
+      chapters:
+        - book/07-debug-perf/24-debugging.qmd
+        - book/07-debug-perf/25-benchmarking.qmd
+        - book/07-debug-perf/26-autotuning.qmd
+        - book/07-debug-perf/27-perf-tuning.qmd
+    - part: "Part 8: Capstone Projects"
+      chapters:
+        - book/08-capstone/28-mini-library.qmd
+        - book/08-capstone/29-replace-transformer-pieces.qmd
+        - book/08-capstone/30-design-playbook.qmd
+    - book/appendix-study-plan.qmd
+    - kernel_checklist.qmd
+    - llm_kernel_map.qmd
+
+format:
+  html:
+    theme: cosmo
+    code-fold: false
+    code-tools: true
+    code-overflow: wrap
+    toc: true
+    toc-depth: 3
+    mermaid:
+      theme: default
+
+execute:
+  enabled: false

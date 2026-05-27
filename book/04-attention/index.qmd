@@ -1,0 +1,5 @@
+---
+title: "Part 4: Attention and Transformer Kernels"
+---
+
+The longest Part of the book. We derive attention from first principles, write the naive in-Triton version on purpose to feel its cost, then build FlashAttention forward and backward, RoPE/ALiBi positional encodings, and the KV cache. If you only read one Part of this book to its end, read this one.

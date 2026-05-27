@@ -1,0 +1,246 @@
+---
+title: "Chapter 8: Activation Functions and Gated MLPs"
+---
+
+Activation kernels are the simplest possible Triton kernels — pure elementwise, one read, one write, no reduction, no inter-program coordination. That is also why this chapter exists: they are the right place to internalize the basic launcher template before we start building anything stateful.
+
+The honest framing for this chapter: activations are memory-bound, `torch.compile` is excellent at memory-bound elementwise ops, and you should expect to *tie* the compiled baseline, not beat it. The reason to write these kernels yourself is not standalone speed; it is so you can fuse them into the matmul epilogue (Chapter 10) and the gated MLP (Chapter 19), where `torch.compile` cannot reach.
+
+## What we are building
+
+- **GELU**: exact (via `erf`) and tanh approximation.
+- **SiLU / Swish**: `x * sigmoid(x)`.
+- **ReLU**: as a one-line exercise.
+- **SwiGLU**: `silu(x_gate) * x_up`.
+- **GEGLU**: `gelu(x_gate) * x_up`.
+
+LLaMA, Mistral, Gemma, Qwen all use SwiGLU. GEGLU shows up in T5-v1.1, Gemini's MLPs, and a few others. The pattern is: the MLP's first linear projects to `2 * d_ff`, you split into halves, gate one with an activation, multiply, project back to `d_model`.
+
+## Where these kernels actually live
+
+Most production setups fuse activations into the producer matmul's epilogue — the elementwise op happens in registers right after the dot product, before the C tile is stored. That gives you the activation for free in terms of memory traffic. We cover epilogue fusion in Chapter 10. But there are still cases where a standalone activation kernel is the right thing: pre-norm inputs, attention output projections, anywhere the activation is between two ops you do not own.
+
+### PyTorch reference
+
+```{.python}
+import torch.nn.functional as F
+
+def pytorch_gelu(x, approximate="none"):
+    return F.gelu(x, approximate=approximate)
+
+def pytorch_silu(x):
+    return F.silu(x)
+
+def pytorch_swiglu(x_gate, x_up):
+    return F.silu(x_gate) * x_up
+```
+
+`F.gelu`'s `approximate` argument toggles between the exact form ($0.5 x (1 + \text{erf}(x/\sqrt{2}))$) and the tanh approximation Hendrycks and Gimpel proposed ($0.5 x (1 + \tanh(\sqrt{2/\pi}(x + 0.044715 x^3)))$). Most pretrained checkpoints use the tanh form because it was the only one available when they were trained; new code should match the checkpoint.
+
+### Triton implementation
+
+#### GELU
+
+```{.python}
+import math
+import triton
+import triton.language as tl
+
+_INV_SQRT2 = 1.0 / math.sqrt(2.0)
+_SQRT_2_OVER_PI = math.sqrt(2.0 / math.pi)
+_COEFF = 0.044715
+
+@triton.jit
+def _gelu_kernel(
+    x_ptr, y_ptr, N,
+    BLOCK_SIZE: tl.constexpr,
+    APPROX: tl.constexpr,
+    INV_SQRT2: tl.constexpr,
+    SQRT_2_OVER_PI: tl.constexpr,
+    COEFF: tl.constexpr,
+):
+    pid = tl.program_id(0)
+    offs = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    mask = offs < N
+    x = tl.load(x_ptr + offs, mask=mask, other=0.0).to(tl.float32)
+    if APPROX == 0:
+        y = 0.5 * x * (1.0 + tl.erf(x * INV_SQRT2))
+    else:
+        inner = SQRT_2_OVER_PI * (x + COEFF * x * x * x)
+        # tanh(z) = 2 sigmoid(2z) - 1, written out so it compiles on older
+        # Triton versions that lack tl.tanh.
+        y = 0.5 * x * (1.0 + 2.0 / (1.0 + tl.exp(-2.0 * inner)) - 1.0)
+    in_dtype = tl.load(x_ptr + offs, mask=mask, other=0.0).dtype
+    tl.store(y_ptr + offs, y.to(in_dtype), mask=mask)
+```
+
+`APPROX` is a `tl.constexpr` so the `if` resolves at compile time — there is no branch in the generated code, you get the right code path baked in. The same trick will appear in matmul epilogues (Chapter 10) and FlashAttention (Chapter 14) for things like causal-mask toggles.
+
+`INV_SQRT2` and friends are also `tl.constexpr`; we hand them in as kernel arguments rather than importing `math` inside the kernel, because Triton kernels run in their own narrow Python-like environment that does not have full Python imports.
+
+#### SiLU
+
+```{.python}
+@triton.jit
+def _silu_kernel(x_ptr, y_ptr, N, BLOCK_SIZE: tl.constexpr):
+    pid = tl.program_id(0)
+    offs = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    mask = offs < N
+    x = tl.load(x_ptr + offs, mask=mask, other=0.0).to(tl.float32)
+    y = x * (1.0 / (1.0 + tl.exp(-x)))
+    in_dtype = tl.load(x_ptr + offs, mask=mask, other=0.0).dtype
+    tl.store(y_ptr + offs, y.to(in_dtype), mask=mask)
+```
+
+Pure elementwise. The fp32 cast guards against the edge case where `exp(-x)` for very negative `x` underflows to zero in fp16 — fine here (you just get `x * 1 = x`), but the habit is correct.
+
+#### SwiGLU
+
+```{.python}
+@triton.jit
+def _swiglu_kernel(g_ptr, u_ptr, y_ptr, N, BLOCK_SIZE: tl.constexpr):
+    pid = tl.program_id(0)
+    offs = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    mask = offs < N
+    g = tl.load(g_ptr + offs, mask=mask, other=0.0).to(tl.float32)
+    u = tl.load(u_ptr + offs, mask=mask, other=0.0).to(tl.float32)
+    silu_g = g * (1.0 / (1.0 + tl.exp(-g)))
+    y = silu_g * u
+    in_dtype = tl.load(g_ptr + offs, mask=mask, other=0.0).dtype
+    tl.store(y_ptr + offs, y.to(in_dtype), mask=mask)
+```
+
+Two reads, one write. The kernel structure is identical to SiLU; the only difference is that we load a second tensor and multiply at the end. GEGLU swaps in GELU; same structure.
+
+### Shape trace
+
+Elementwise. Pick `x: (N,)` flat for simplicity; the launcher reshapes any-rank inputs to 1D and the kernel does not care about shape past the total element count.
+
+```
+Input:                       x   : (N,)           fp16
+Program owns:                BLOCK_SIZE elements  (axis=0 grid, size ceil(N / BLOCK_SIZE))
+pid = tl.program_id(0)       scalar               int32
+offs = pid * BS + range(0,BS) (BS,)               int32
+mask = offs < N              (BS,)                bool
+x = tl.load(x_ptr + offs)    (BS,)                fp16
+x = x.to(tl.float32)         (BS,)                fp32
+y = activation(x)            (BS,)                fp32
+y_fp16 = y.to(fp16)          (BS,)                fp16
+tl.store(y_ptr + offs, y_fp16, mask)
+```
+
+For SwiGLU, the trace is the same but with two loads — `g` and `u` of the same shape.
+
+### Pointer arithmetic and masks
+
+Trivial 1D mapping. `offs = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)`. Mask `offs < N`. `other=0.0` is fine on the load because the masked lanes are never written to the output.
+
+For the fused bias variant (exercise 3), the bias is broadcast along the last dim: `bias_idx = offs % D` where `D = x.shape[-1]`. The modulo is cheap; the load pattern is small-vector broadcast, which the compiler handles well.
+
+### Correctness test
+
+```{.python}
+import pytest, torch
+import torch.nn.functional as F
+from src.ch08_activations import gelu, silu, swiglu, geglu
+
+pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda only")
+
+@pytest.mark.parametrize("approximate", ["none", "tanh"])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16])
+def test_gelu(approximate, dtype):
+    x = torch.randn(4, 1024 + 1, device="cuda", dtype=dtype)
+    out = gelu(x, approximate=approximate)
+    ref = F.gelu(x, approximate=approximate)
+    rtol, atol = (1e-5, 1e-5) if dtype == torch.float32 else (1e-2, 1e-2)
+    torch.testing.assert_close(out, ref, rtol=rtol, atol=atol)
+```
+
+The `1024 + 1` shape forces the last tile to be partial; that exercises the mask. Both `approximate` values must pass.
+
+### Benchmark
+
+```{.python}
+import torch, triton, torch.nn.functional as F
+from src.ch08_activations import gelu, silu, swiglu
+
+N = 1 << 24  # 16M elements
+x = torch.randn(N, device="cuda", dtype=torch.float16)
+g = torch.randn(N, device="cuda", dtype=torch.float16)
+u = torch.randn(N, device="cuda", dtype=torch.float16)
+
+ms_torch    = triton.testing.do_bench(lambda: F.silu(x))
+ms_triton   = triton.testing.do_bench(lambda: silu(x))
+compiled    = torch.compile(F.silu); compiled(x); torch.cuda.synchronize()
+ms_compiled = triton.testing.do_bench(lambda: compiled(x))
+```
+
+::: {.callout-warning appearance="simple"}
+**Placeholder data.** The numbers below are hardcoded illustrative values, not measurements. Replace with output from your own `triton.testing.do_bench` run before drawing conclusions.
+:::
+
+```{ojs}
+//| echo: false
+//| label: fig-activations-bench
+//| fig-cap: "Activation kernel median latency for N=16M fp16 elements, grouped by kernel. Lower is better. Triton vs eager PyTorch vs torch.compile."
+{
+  const data = [
+    {kernel: "silu",   triton_ms: 0.40, torch_ms: 0.55, compiled_ms: 0.40},
+    {kernel: "gelu",   triton_ms: 0.45, torch_ms: 0.60, compiled_ms: 0.43},
+    {kernel: "swiglu", triton_ms: 0.65, torch_ms: 1.10, compiled_ms: 0.65},
+    {kernel: "geglu",  triton_ms: 0.70, torch_ms: 1.15, compiled_ms: 0.68},
+  ];
+  const long = data.flatMap(d => [
+    {kernel: d.kernel, impl: "triton",   ms: d.triton_ms},
+    {kernel: d.kernel, impl: "torch",    ms: d.torch_ms},
+    {kernel: d.kernel, impl: "compiled", ms: d.compiled_ms}
+  ]);
+  return Plot.plot({
+    marginLeft: 80,
+    color: {legend: true, domain: ["triton", "torch", "compiled"], range: ["steelblue", "orange", "seagreen"]},
+    y: {label: "median latency (ms, N = 16M fp16) — lower is better"},
+    x: {label: "kernel"},
+    fx: {label: "kernel"},
+    marks: [
+      Plot.barY(long, {fx: "kernel", x: "impl", y: "ms", fill: "impl"})
+    ]
+  });
+}
+```
+
+Expect `torch.compile` and Triton to land within a few percent of each other. Eager PyTorch loses to both because SwiGLU in eager dispatches three separate kernels (silu, multiply, then maybe a result allocation).
+
+### Optimization discussion
+
+These kernels are bandwidth-pinned. The roofline is `bytes_moved / bandwidth`: for SiLU on N=16M fp16, that is 64 MB / 448 GB/s ~= 0.14 ms. Anything from 0.4 to 0.5 ms (what you actually measure) tells you you are running at ~30% of peak — which is roughly what you get when the kernel launches and memory controllers ramp.
+
+Two ways to push further. One: increase `BLOCK_SIZE`. We use 1024; bumping to 4096 reduces launch count by 4x but increases register pressure. Try 2048 first. Two: increase `num_warps` to 8 so the compiler has more latency hiding. Both help marginally; neither is going to bring you past `torch.compile`.
+
+The real optimization is *not in this kernel*. Fuse with the upstream linear (Chapter 10) and the activation costs zero extra HBM traffic. Fuse with a downstream RMSNorm and you save another round trip. Chapter 19 fuses the entire MLP entry: `rmsnorm -> linear -> gate -> silu -> multiply -> linear`. Standalone activations are a stepping stone.
+
+### Common bugs
+
+1. **Wrong `approximate` mode.** A model trained with `gelu(approximate="tanh")` and inferred with `approximate="none"` is a measurable regression. Match the checkpoint, exactly.
+2. **fp16 sigmoid.** `1 / (1 + exp(-x))` for `x = -100` in fp16: `exp(100)` overflows, the whole thing is `+inf`, the result is `0` — by accident, the right answer. For `x = +100`, `exp(-100) = 0` in fp16, result is `1` — also right by accident. fp16 silu is mostly forgiving, but always cast to fp32 first to make it not depend on accident.
+3. **Forgetting the cast back to input dtype on store.** If you store fp32 into an fp16 output buffer, you get garbage values (the store reads four bytes and writes them as if they were a half-precision pair). Always `y.to(in_dtype)` before `tl.store`.
+4. **GEGLU/SwiGLU shape mismatch.** The two inputs must have identical shape and dtype. If you accidentally pass `g.shape = (M, D)` and `u.shape = (M, 2D)` (a common bug because the producer linear projects to `2D` and you forgot to split), you read past the end of `g`. Assert the shapes match in the launcher.
+5. **Computing `tanh(z)` in fp16 without enough range.** `tanh` saturates around `|z| = 5`. In fp16 that is fine, but if you write the rational form `(e^z - e^{-z}) / (e^z + e^{-z})`, `e^z` for `z = 10` is `22026`, which overflows fp16. Use `2 sigmoid(2z) - 1` (what the kernel above does) or `tl.tanh` directly.
+
+### Exercises
+
+#### Beginner
+
+1. **GELU exact.** Implement the exact erf-based form. Compare against `F.gelu(x, approximate="none")`.
+2. **SiLU.** Implement `x * sigmoid(x)`.
+3. **Fused bias + GELU.** Compute `gelu(x + b)` with `b: (D,)` broadcast along the last dim of `x: (..., D)`. Hint: `bias_idx = offs % D`.
+
+#### Intermediate
+
+4. **SwiGLU.** Two inputs, one output. Same kernel as SiLU plus one extra load and one multiply.
+5. **Linear + bias + activation (skeleton).** Write the launcher signature and the kernel skeleton for `y = gelu(x @ W + b)`. Do NOT implement the matmul body (Chapter 10 does that); just place the activation in the epilogue. The point is to think through where the activation slots in.
+
+#### Advanced
+
+6. **GEGLU.** Implement `gelu(g) * u` with both exact and tanh forms of GELU. Benchmark against `F.gelu(g) * u` and `torch.compile(lambda g, u: F.gelu(g) * u)`. Report which variant of GELU is faster and whether either Triton path beats the compiled baseline. Expect a tie; the point is to see the ceiling that pure-elementwise kernels hit.
+
+Worked solutions in `solutions/ch08_solutions.py`.

@@ -1,0 +1,387 @@
+---
+title: "Chapter 14: FlashAttention Forward in Triton"
+---
+
+This is the marquee chapter of Part 4. We rewrite attention forward so the `[B, H, S, S]` score tensor is never materialized in HBM. The trick is **online softmax**: process K/V in tiles, and maintain a running max, running denominator, and running output accumulator that stay in registers. Each output row is finalized exactly once at the end, after all K/V tiles have been seen.
+
+The algorithm is due to Dao et al. (2022). The Triton fused-attention tutorial is the reference implementation; this chapter is a teaching adaptation of that tutorial, simplified to one configuration so you can read it end to end.
+
+## The online softmax recurrence
+
+Softmax over a row of length `S` is, in the stable form:
+
+```
+m   = max(s)
+e   = exp(s - m)
+l   = sum(e)
+p   = e / l
+out = p @ V   # shape [D]
+```
+
+The standard formulation requires `s` in its entirety before you can take `max`. The online formulation processes `s` in blocks `s_1, s_2, ..., s_K` and maintains running state `(m, l, acc)` such that after seeing all blocks, `acc / l` equals `softmax(s) @ V`.
+
+The recurrence for block `j` is:
+
+```
+m_new   = max(m_old, max(s_j))
+alpha   = exp(m_old - m_new)            # correction factor
+p_j     = exp(s_j - m_new)               # block probs (unnormalized)
+l_new   = alpha * l_old + sum(p_j)       # running denominator
+acc_new = alpha * acc_old + p_j @ V_j    # running numerator
+m       <- m_new
+l       <- l_new
+acc     <- acc_new
+```
+
+The `alpha` factor is the algebraic core. When a later block raises the running max, every quantity accumulated so far was scaled by the **wrong** max. `alpha = exp(m_old - m_new)` is exactly the rescaling needed to fold the old contributions into the new normalization. Without `alpha` the algorithm is wrong; with it, the algorithm is **exact** — it produces bit-identical results to one-shot softmax (up to floating-point reorderings) regardless of block size.
+
+Stop and play with the widget below until that lands.
+
+## Interactive: stepping through the online softmax accumulator
+
+This widget steps through `(m, l, acc)` for a score vector processed in blocks. The same recurrence drives the FlashAttention kernel. Drag the slider to advance one K/V block at a time.
+
+```{ojs}
+//| echo: false
+
+// --- Inputs -------------------------------------------------------------
+scores = [3, 1, 4, 1, 5, 9, 2, 6]
+BLOCK_K = 2
+num_blocks = Math.ceil(scores.length / BLOCK_K)
+
+viewof step = Inputs.range([0, num_blocks], {value: num_blocks, step: 1, label: "K/V blocks processed"})
+
+// --- Online softmax state machine --------------------------------------
+rows = {
+  const out = [];
+  let m = -Infinity;
+  let l = 0.0;
+  let acc = 0.0;
+  for (let b = 0; b < step; b++) {
+    const start = b * BLOCK_K;
+    const block = scores.slice(start, start + BLOCK_K);
+    const block_max = Math.max(...block);
+    const m_new = Math.max(m, block_max);
+    const alpha = isFinite(m) ? Math.exp(m - m_new) : 0.0;
+    const block_sum = block.reduce((s, v) => s + Math.exp(v - m_new), 0.0);
+    const l_new = alpha * l + block_sum;
+    const acc_new = alpha * acc + block_sum;
+    out.push({
+      block: b,
+      block_values: block.join(", "),
+      block_max: block_max,
+      m_prev: isFinite(m) ? m.toFixed(4) : "-inf",
+      m_new: m_new.toFixed(4),
+      alpha: alpha.toFixed(4),
+      l_new: l_new.toFixed(4),
+      acc_new: acc_new.toFixed(4)
+    });
+    m = m_new;
+    l = l_new;
+    acc = acc_new;
+  }
+  return out;
+}
+
+Inputs.table(rows, {
+  columns: ["block", "block_values", "block_max", "m_prev", "m_new", "alpha", "l_new", "acc_new"],
+  header: {
+    block: "block",
+    block_values: "block scores",
+    block_max: "block_max",
+    m_prev: "m (prev)",
+    m_new: "m (new)",
+    alpha: "alpha = exp(m_prev - m_new)",
+    l_new: "l (running)",
+    acc_new: "acc (running)"
+  }
+})
+
+md`After ${step} block(s), the softmax output is \`acc / l\`. Watch how
+\`alpha\` kicks in only when \`m_new > m_prev\` — and notice how, in
+this example, the block containing the value 9 produces a tiny
+\`alpha\` that almost zeros out the previously-accumulated mass.
+That is the algorithm correcting for the old max being far below
+the true max.`
+```
+
+In the real kernel `acc` is not a scalar but a `[BLOCK_M, D]` matrix — one row per query, `D` channels per row — and the "block sum" is replaced by `p_j @ V_j`. The recurrence is otherwise identical.
+
+### PyTorch reference
+
+Same as Chapter 13: the oracle is `F.scaled_dot_product_attention(q, k, v, is_causal=causal)`. PyTorch's SDPA already uses a Flash-style backend by default, so we will be racing against a kernel that solves the same problem. That is fine — the goal of this chapter is the kernel construction, not winning the benchmark.
+
+### Triton implementation
+
+Grid: `(num_q_blocks, B * H)`. One program owns `BLOCK_M` rows of `Q` for one `(batch, head)` slice. We flatten `(B, H)` to `BH = B * H` so the launcher passes 3D-strided tensors and the kernel sees one slab at a time.
+
+Inside the kernel:
+
+1. **Load the Q tile** into registers/SRAM. Shape `[BLOCK_M, D]`, fp16.
+2. **Initialize state.** `m_i` (running max, `[BLOCK_M]`, fp32, init `-inf`), `l_i` (running denom, `[BLOCK_M]`, fp32, init `0`), `acc` (running numerator, `[BLOCK_M, D]`, fp32, init `0`).
+3. **Loop over K/V tiles.** Pick `BLOCK_N` rows of K and V at a time. For each:
+   - `s_ij = (Q @ K_j^T) * scale` in fp32.
+   - Mask out-of-range columns to `-inf` (for ragged tail and causal).
+   - `m_ij = max(m_i, max(s_ij, axis=1))`.
+   - `alpha = exp(m_i - m_ij)`.
+   - `p_ij = exp(s_ij - m_ij)`.
+   - `l_i = alpha * l_i + sum(p_ij, axis=1)`.
+   - `acc = alpha[:, None] * acc + p_ij @ V_j`.
+   - `m_i = m_ij`.
+4. **Normalize** `acc = acc / l_i[:, None]` once after the loop.
+5. **Cast and store** as fp16.
+
+The full kernel:
+
+```python
+@triton.jit
+def flash_attn_fwd_kernel(
+    q_ptr, k_ptr, v_ptr, o_ptr,
+    BH, S,
+    stride_qb, stride_qm, stride_qd,
+    stride_kb, stride_kn, stride_kd,
+    stride_vb, stride_vn, stride_vd,
+    stride_ob, stride_om, stride_od,
+    scale,
+    IS_CAUSAL: tl.constexpr,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_D: tl.constexpr,
+):
+    pid_m = tl.program_id(0)
+    pid_b = tl.program_id(1)
+
+    offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_d = tl.arange(0, BLOCK_D)
+    mask_m = offs_m < S
+
+    q_ptrs = q_ptr + pid_b * stride_qb \
+        + offs_m[:, None] * stride_qm + offs_d[None, :] * stride_qd
+    q = tl.load(q_ptrs, mask=mask_m[:, None], other=0.0)
+
+    m_i = tl.full((BLOCK_M,), float("-inf"), dtype=tl.float32)
+    l_i = tl.zeros((BLOCK_M,), dtype=tl.float32)
+    acc = tl.zeros((BLOCK_M, BLOCK_D), dtype=tl.float32)
+
+    if IS_CAUSAL:
+        n_end = tl.minimum(((pid_m + 1) * BLOCK_M + BLOCK_N - 1), S)
+    else:
+        n_end = S
+
+    for start_n in range(0, n_end, BLOCK_N):
+        offs_n = start_n + tl.arange(0, BLOCK_N)
+        mask_n = offs_n < S
+
+        k_ptrs = k_ptr + pid_b * stride_kb \
+            + offs_n[:, None] * stride_kn + offs_d[None, :] * stride_kd
+        v_ptrs = v_ptr + pid_b * stride_vb \
+            + offs_n[:, None] * stride_vn + offs_d[None, :] * stride_vd
+        k = tl.load(k_ptrs, mask=mask_n[:, None], other=0.0)
+        v = tl.load(v_ptrs, mask=mask_n[:, None], other=0.0)
+
+        s_ij = tl.dot(q, tl.trans(k)).to(tl.float32) * scale
+        s_ij = tl.where(mask_n[None, :], s_ij, float("-inf"))
+        if IS_CAUSAL:
+            s_ij = tl.where(offs_m[:, None] >= offs_n[None, :], s_ij, float("-inf"))
+
+        m_ij = tl.maximum(m_i, tl.max(s_ij, axis=1))
+        alpha = tl.exp(m_i - m_ij)
+        p_ij = tl.exp(s_ij - m_ij[:, None])
+        l_i = alpha * l_i + tl.sum(p_ij, axis=1)
+        acc = alpha[:, None] * acc + tl.dot(p_ij.to(v.dtype), v).to(tl.float32)
+        m_i = m_ij
+
+    acc = acc / l_i[:, None]
+
+    o_ptrs = o_ptr + pid_b * stride_ob \
+        + offs_m[:, None] * stride_om + offs_d[None, :] * stride_od
+    tl.store(o_ptrs, acc.to(tl.float16), mask=mask_m[:, None])
+```
+
+The launcher (in `src/ch14_flashattention/flash_attn_fwd.py`) reshapes `[B, H, S, D]` to `[BH, S, D]`, computes `scale = 1/sqrt(D)`, picks `BLOCK_M = BLOCK_N = 64` and `BLOCK_D = D`, and launches with `num_warps=4, num_stages=2`. Those last two knobs are the only autotuner-style choices in the chapter; see the exercises for sweeping them.
+
+### Shape trace
+
+Take `B = 2, H = 8, S = 2048, D = 64, BLOCK_M = BLOCK_N = 64, BLOCK_D = 64`. After flattening to `BH = 16`:
+
+```
+Grid:                     (S/BLOCK_M, BH) = (32, 16)    → 512 programs total
+
+Per program:
+  Q tile load:            (BLOCK_M, BLOCK_D) = (64, 64)            fp16  → SRAM
+  State (registers):
+    m_i                   (BLOCK_M,)         = (64,)               fp32
+    l_i                   (BLOCK_M,)         = (64,)               fp32
+    acc                   (BLOCK_M, BLOCK_D) = (64, 64)             fp32
+
+  Loop bound (causal):    n_end = min((pid_m+1)*64 + 63, 2048)
+                          pid_m = 0  → n_end = 127  → 2 iterations
+                          pid_m = 1  → n_end = 191  → 3 iterations
+                          pid_m = 31 → n_end = 2048 → 32 iterations
+                          average ≈ 17 iterations (half of 32 + 1)
+
+  Per loop iteration:
+    K tile                (BLOCK_N, BLOCK_D) = (64, 64)            fp16  → SRAM
+    V tile                (BLOCK_N, BLOCK_D) = (64, 64)            fp16  → SRAM
+    s_ij = Q @ K^T * sc.  (BLOCK_M, BLOCK_N) = (64, 64)            fp32  → registers
+    mask                  same shape                                bool
+    m_ij                  (BLOCK_M,)                                fp32
+    alpha                 (BLOCK_M,)                                fp32
+    p_ij                  (BLOCK_M, BLOCK_N) = (64, 64)             fp32
+    p_ij @ V              (BLOCK_M, BLOCK_D) = (64, 64)             fp32
+    acc update            (BLOCK_M, BLOCK_D)                        fp32
+
+Final:
+  acc / l_i               (BLOCK_M, BLOCK_D) = (64, 64)             fp32
+  output store            (BLOCK_M, BLOCK_D)                        fp16  → HBM
+
+Output tensor in HBM:     (BH, S, D) = (16, 2048, 64) → (2, 8, 2048, 64)  fp16
+```
+
+Total HBM transfer per `(B, H)` slice (non-causal): one read of `Q` (`S * D` elements), `S / BLOCK_M` reads of each K row (so `S^2 / BLOCK_M` for K, and the same for V), one write of `out` (`S * D`). With `BLOCK_M = 64` and `S = 2048` that is `2048 * 64 + 2 * 2048 * 2048 + 2048 * 64 = ~8.65M` elements. Compare to naive's `S^2 = 4M` for the score read plus `S^2 = 4M` for the probs write plus `S^2 = 4M` for the probs read in the PV matmul — total `~12M` elements, none of which are reusable. The Flash version's K and V reads are themselves reusable across many warps in the same SM, so the **effective** HBM traffic is lower again.
+
+The causal version cuts the loop in half on average (exercise 4 in Chapter 12).
+
+### Pointer arithmetic and masks
+
+Three distinct masks are at play and it is worth slowing down on each.
+
+**Row mask (`mask_m`).** Guards the Q-row index against the sequence length. `mask_m = offs_m < S`. Used on `tl.load` of `Q` and on the final `tl.store` of `out`. Boundary rows that fall off the end are loaded as zeros and never written.
+
+**Column mask (`mask_n`).** Guards the K/V row index against the sequence length. `mask_n = offs_n < S`. Used on `tl.load` of `K` and `V`. **And used on the score `s_ij` via `tl.where`**, replacing out-of-range columns with `-inf` so they cannot win the row max and cannot contribute to the exp sum. This second use is the subtle one: if you load garbage K/V rows and let them flow into the dot product, they corrupt the score even when their `other=0.0` zeros the load — because zero is a perfectly valid score and `exp(0) = 1` will inflate `l_i`.
+
+**Causal mask.** `offs_m[:, None] >= offs_n[None, :]`. Allows token `m` to attend to itself and to all earlier tokens. Uses `>=`, not `>`, because the diagonal is included.
+
+The `other=` value for K/V loads is `0.0`. Because we override out-of-range scores with `-inf` immediately after the matmul, the zero load is invisible. The `other=` value for the Q load is also `0.0`; this is safe because the corresponding output rows are masked off on the store.
+
+### Correctness test
+
+The pytest module in `tests/test_ch14_flashattention.py` covers small power-of-two shapes, non-power-of-two seqlens, three head-dim variants, and a sanity check that `BLOCK_M` doesn't change the answer. Inline:
+
+```python
+@pytest.mark.parametrize("causal", [True, False])
+@pytest.mark.parametrize("S", [64, 128])
+def test_flash_matches_sdpa_small(S, causal):
+    torch.manual_seed(0)
+    B, H, D = 1, 2, 64
+    q = torch.randn(B, H, S, D, device="cuda", dtype=torch.float16)
+    k = torch.randn(B, H, S, D, device="cuda", dtype=torch.float16)
+    v = torch.randn(B, H, S, D, device="cuda", dtype=torch.float16)
+
+    got = flash_attn_forward(q, k, v, causal=causal)
+    expected = F.scaled_dot_product_attention(q, k, v, is_causal=causal)
+    torch.testing.assert_close(got, expected, rtol=2e-2, atol=2e-2)
+```
+
+The tolerances are loose, deliberately. fp16 inputs through any attention kernel can differ from a reference by a couple percent because of reordered fp16-to-fp32 accumulations. `rtol=2e-2, atol=2e-2` is the right setting for this kernel; tighten to `1e-2` only after you cross-check against a pure-fp32 reference.
+
+### Benchmark
+
+The benchmark in `benchmarks/bench_ch14_flashattention.py` compares this kernel to the Chapter 13 naive pipeline and to SDPA across `S in [256, 512, 1024, 2048, 4096]`:
+
+```python
+flash_ms = triton.testing.do_bench(
+    lambda: flash_attn_forward(q, k, v, causal=causal)
+)
+sdpa_ms = triton.testing.do_bench(
+    lambda: F.scaled_dot_product_attention(q, k, v, is_causal=causal)
+)
+```
+
+::: {.callout-warning}
+## Hardware caveat
+On a 2070 SUPER (sm_75, 8 GB), this kernel runs at `S = 4096`, `B = 2`, `H = 8`, `D = 64`, but the Ch13 naive pipeline OOMs at the same shape because the `[B, H, S, S]` fp32 score tensor alone is 4 GB. The Flash kernel never allocates that tensor. SDPA's PyTorch backend will also be Flash-based on Ampere+; on Turing it may fall back to the math backend, which still does not materialize the full score tensor in fp32 (PyTorch uses a memory-efficient variant).
+:::
+
+::: {.callout-warning appearance="simple"}
+**Placeholder data.** The numbers below are hardcoded illustrative values, not measurements. Replace with output from your own `triton.testing.do_bench` run before drawing conclusions.
+:::
+
+```{ojs}
+//| echo: false
+//| label: fig-flashattention-fwd-bench
+//| fig-cap: "Attention forward median latency vs sequence length S (both axes log). Lower is better. Ch 13 naive pipeline vs this chapter's FlashAttention forward vs torch F.scaled_dot_product_attention. The naive pipeline OOMs at S=4096 and is omitted there."
+{
+  const data = [
+    {S: 256,  naive_ms: 0.30, flash_ms: 0.08, sdpa_ms: 0.06},
+    {S: 512,  naive_ms: 0.95, flash_ms: 0.22, sdpa_ms: 0.18},
+    {S: 1024, naive_ms: 3.40, flash_ms: 0.70, sdpa_ms: 0.55},
+    {S: 2048, naive_ms: 13.1, flash_ms: 2.50, sdpa_ms: 1.90},
+    {S: 4096, naive_ms: null, flash_ms: 9.50, sdpa_ms: 7.20},
+  ];
+  const long = data.flatMap(d => {
+    const rows = [
+      {S: d.S, impl: "triton flash", ms: d.flash_ms},
+      {S: d.S, impl: "torch SDPA",   ms: d.sdpa_ms}
+    ];
+    if (d.naive_ms !== null) rows.push({S: d.S, impl: "triton naive (Ch 13)", ms: d.naive_ms});
+    return rows;
+  });
+  return Plot.plot({
+    color: {legend: true,
+            domain: ["triton naive (Ch 13)", "triton flash", "torch SDPA"],
+            range: ["steelblue", "crimson", "orange"]},
+    x: {type: "log", label: "S (sequence length, tokens)"},
+    y: {type: "log", label: "median latency (ms) — lower is better"},
+    marks: [
+      Plot.line(long, {x: "S", y: "ms", stroke: "impl"}),
+      Plot.dot(long,  {x: "S", y: "ms", fill: "impl"})
+    ]
+  });
+}
+```
+
+Expect SDPA to be ~10-30% faster than this kernel. Their kernel is hand-tuned for many configurations; ours is one configuration written for clarity. The gap closes when you autotune `num_warps`, `num_stages`, and the block sizes.
+
+### Optimization discussion
+
+The two free knobs are `(BLOCK_M, BLOCK_N)` and `(num_warps, num_stages)`.
+
+**Block sizes.** Bigger `BLOCK_M` means more Q rows per program — better reuse of each K/V tile. Bigger `BLOCK_N` means longer inner loop body — fewer loop iterations, more work per loop. Both increase SRAM and register pressure. For `D = 64` on Turing, `(64, 64)` is a reasonable starting point; on Ampere/Ada with more registers, `(128, 64)` or `(128, 128)` typically win.
+
+**num_warps.** More warps means better instruction-level parallelism per block but smaller per-warp register file. For our tile sizes, `num_warps=4` is the sweet spot on Turing; Ampere+ often wants `8`.
+
+**num_stages.** Software pipelining depth. `num_stages=2` overlaps the K/V loads of iteration `j+1` with the compute of iteration `j`. Higher values use more SRAM for the prefetch buffers. `2` is the safe default for `D = 64`; `3` can help when `D = 128` and the inner loop is heavier.
+
+The bound to remember: this kernel is **compute-bound** on the two matmuls inside the loop. The two `tl.dot` calls together do roughly `BLOCK_M * BLOCK_N * (BLOCK_D + BLOCK_D) = 2 * 64 * 64 * 64 = 524k` FMAs per iteration. At `S = 2048`, that is `32 * 524k = ~16.8M` FMAs per program, and `16 * 32 = 512` programs total. On a 2070 SUPER's `9 TFLOP/s` fp16, the lower bound is around `1.9 ms`. The benchmark column will sit a little above that.
+
+If you find yourself memory-bound, the K/V reads dominate. Increase `BLOCK_M` to amortize each K/V tile over more Q rows.
+
+### Common bugs
+
+These are the bugs I have personally written and watched others write. Memorize them.
+
+1. **Wrong fp32 accumulation.** Initializing `acc` as fp16 silently loses precision after a few `BLOCK_N` iterations. `acc`, `l_i`, `m_i` must all be `tl.float32`. The score `s_ij` and prob `p_ij` must also be fp32.
+2. **Causal mask using block-local indices.** The causal comparison must use the **global** row and column indices `offs_m` and `offs_n`, not block-local `tl.arange(0, BLOCK_M)`. Forgetting the `pid_m * BLOCK_M` offset produces an upper-triangle mask **per block** instead of per matrix, which is wrong everywhere except the first block on the diagonal.
+3. **`alpha` correction missed on `l_i` or `acc`.** Both must be multiplied by `alpha` before the new contribution is added. If you forget the `alpha` on `l_i`, the denominator stays scaled to the old max and the final output is wildly wrong. If you forget it on `acc`, the numerator does the same.
+4. **Forgetting to divide by `l_i` at the end.** `acc` after the loop is the numerator; the final output is `acc / l_i`. Forgetting the divide gives unnormalized scores in the output — they will look "in the right ballpark" but every row will have the wrong magnitude.
+5. **Wrong sign on the `m_i` update.** `alpha = exp(m_i - m_ij)`, **not** `exp(m_ij - m_i)`. The old max is smaller; subtracting it gives a non-positive argument; the exp is in `(0, 1]`. Reversing the sign gives an argument that may be enormous and overflow.
+6. **Storing fp32 `acc` into fp16 `out` without an explicit cast.** Triton will refuse to compile, or worse, will silently reinterpret bits. Always `acc.to(tl.float16)` before the store.
+7. **Block sizes too large.** `BLOCK_M = 128, BLOCK_N = 128, D = 128` puts more than the register file can hold; Triton spills to local memory and the kernel slows down by an order of magnitude. The symptom is a benchmark number that is "way slower than expected." Profile with `triton.compiler.compile`'s SASS dump or use Nsight Compute to confirm spills.
+8. **Out-of-range K/V columns not masked to `-inf`.** Loading with `other=0.0` is necessary but not sufficient. A zero score is **valid**, so `exp(0) = 1` will inflate `l_i` on ragged tails. After loading, do `s_ij = tl.where(mask_n[None, :], s_ij, -inf)`.
+9. **`num_stages` too large for available SRAM.** The pipelined prefetch buffers eat SRAM. With `D = 128` and `num_stages = 3` you may exceed the SM's SRAM budget; the kernel still compiles but launches with reduced occupancy.
+
+### Extensions
+
+The implementation in `src/ch14_flashattention/flash_attn_fwd.py` is a teaching kernel. Real-world variants you will see in production:
+
+- **Non-causal.** Set `IS_CAUSAL = False`. The loop runs for all `S / BLOCK_N` blocks for every Q tile. Useful for encoder-style attention.
+- **Different head dims.** `D = 32` is fine — `BLOCK_D` shrinks proportionally. `D = 128` works but pushes the register budget; you may need to drop `BLOCK_M` to `64`. `D = 256` typically requires splitting into two `[D/2]` halves and a per-half accumulator. The constraint is that `tl.dot` operands must fit a single MMA fragment, and `BLOCK_M * BLOCK_D` cannot exceed roughly `8192` elements without spilling.
+- **Variable-length sequences.** Pass a `seq_lens: int32[B]` tensor and mask out positions past `seq_lens[b]`. Partial solution in `solutions/ch14_solutions.py`.
+- **GQA / MQA.** Multiple Q heads share one K/V head. Change the indexing on K/V so multiple `(B, H_q)` programs read the same `(B, H_kv)` slab. Saves bandwidth and KV-cache memory.
+- **Local windowed attention.** Restrict the K/V loop to a window of `[m - W, m + W]` for each Q row. Used by SWA and some long-context models.
+
+### Common bugs (recap)
+
+Listed above with the kernel. The most common in practice: forgotten `alpha` correction, wrong sign on `m`, fp16 accumulator. Build the kernel in stages — first non-causal, no mask, fp32 throughout, tiny shapes — and add complexity one step at a time, comparing against the PyTorch reference after every change.
+
+### Exercises
+
+1. **Beginner.** Verify that `IS_CAUSAL = False` matches `F.scaled_dot_product_attention(..., is_causal=False)` for `B=1, H=2, S=128, D=64`. Why is the loop length now `S` regardless of `pid_m`?
+2. **Beginner.** Run the kernel on `B=1, H=1, S=4, D=2`, `BLOCK_M=2, BLOCK_N=2`, and add `tl.device_print` to dump `m_i, l_i, acc` after each K/V block. Verify against a hand-computed reference using the recurrence from the widget.
+3. **Beginner.** Sweep `(BLOCK_M, BLOCK_N) in {(32, 32), (64, 64), (128, 64), (64, 128)}` for `S=2048, D=64`. Identify the fastest configuration and relate it to register pressure.
+4. **Intermediate.** Pad `D` up to the next power of two inside the kernel so non-power-of-two head dims work. Verify on `D = 48`.
+5. **Intermediate.** Add a `temperature: float` argument. `scale = 1 / (sqrt(D) * temperature)`. Verify that `temperature = 2.0` produces a softer distribution.
+6. **Advanced.** Implement variable-length sequences via a `seq_lens: int32[B]` tensor. Partial solution in `solutions/ch14_solutions.py`; the rest is yours.
+
+Solutions live in `solutions/ch14_solutions.py`. The backward pass is Chapter 15.

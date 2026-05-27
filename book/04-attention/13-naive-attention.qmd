@@ -1,0 +1,271 @@
+---
+title: "Chapter 13: Naive Attention in PyTorch and Triton Pieces"
+---
+
+The right way to appreciate FlashAttention is to first write the wrong way and feel what it costs. This chapter implements attention forward as four sequential Triton kernels — QK^T matmul, causal mask, row softmax, PV matmul — wired together by Python. The intermediate `[B, H, S, S]` score tensor is fully materialized in HBM. You will see the memory bill, the wall clock, and the gap versus PyTorch's `scaled_dot_product_attention`, which already dispatches to a Flash-style backend.
+
+The work pays off in Chapter 14, where the same four kernels collapse into one and the quadratic intermediate disappears.
+
+### PyTorch reference
+
+The oracle is exactly the textbook formula:
+
+```python
+import math
+import torch
+import torch.nn.functional as F
+
+def naive_attention_reference(q, k, v, causal=True):
+    # q, k, v: [B, H, S, D]
+    D = q.shape[-1]
+    scores = (q @ k.transpose(-2, -1)) / math.sqrt(D)
+    if causal:
+        S = q.shape[-2]
+        mask = torch.triu(
+            torch.ones(S, S, device=q.device, dtype=torch.bool), diagonal=1
+        )
+        scores = scores.masked_fill(mask, float("-inf"))
+    probs = scores.softmax(dim=-1)
+    return probs @ v
+```
+
+`F.scaled_dot_product_attention(q, k, v, is_causal=causal)` does the same math but with a Flash backend. We will use both as oracles — the formula above for clarity, SDPA for speed comparisons.
+
+### Triton implementation
+
+We split the forward into four kernels and a Python launcher. The split is intentional: it shows exactly which HBM transfers FlashAttention later eliminates.
+
+1. **QK^T matmul.** Compute `scores = (Q @ K^T) * scale` into a fresh `[B, H, S, S]` fp32 tensor. Treat `(B, H)` as a flattened batch dim of size `BH = B * H`; the kernel grid is `(num_M_tiles, num_N_tiles, BH)`.
+2. **Causal mask.** In-place set `scores[b, m, n] = -inf` for `n > m`. Same `(num_M_tiles, num_N_tiles, BH)` grid; each program zeroes out the upper triangle of its tile using `tl.where` on row/column indices.
+3. **Row softmax.** Reuse the Chapter 5 row-softmax kernel on the flattened `[BH * S, S]` view. For chapter readability we call `F.softmax` in the wrapper; swap in your Chapter 5 kernel as an exercise.
+4. **PV matmul.** Compute `out = probs @ V` into a `[B, H, S, D]` fp16 tensor. Grid is `(num_M_tiles, BH)`; each program loops over `K` in tiles of `BLOCK_N`.
+
+The wrapper is dead simple:
+
+```python
+def naive_attention_forward(q, k, v, causal=True):
+    scores = qkt_matmul(q, k)                  # [B, H, S, S] fp32
+    if causal:
+        scores = apply_causal_mask(scores)
+    probs = F.softmax(scores, dim=-1).to(torch.float16)
+    out = pv_matmul(probs, v)                  # [B, H, S, D] fp16
+    return out
+```
+
+Four kernel launches. Three full reads/writes of the `[B, H, S, S]` tensor. One full read/write of the `[B, H, S, D]` tensors. The full source lives in `src/ch13_naive_attention/`.
+
+Here is the QK^T kernel, which is the workhorse:
+
+```python
+@triton.jit
+def qkt_matmul_kernel(
+    q_ptr, k_ptr, s_ptr,
+    BH, S, D,
+    stride_qb, stride_qm, stride_qd,
+    stride_kb, stride_kn, stride_kd,
+    stride_sb, stride_sm, stride_sn,
+    scale,
+    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_D: tl.constexpr,
+):
+    pid_m = tl.program_id(0)
+    pid_n = tl.program_id(1)
+    pid_b = tl.program_id(2)
+
+    offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    offs_d = tl.arange(0, BLOCK_D)
+
+    q_ptrs = q_ptr + pid_b * stride_qb \
+        + offs_m[:, None] * stride_qm + offs_d[None, :] * stride_qd
+    k_ptrs = k_ptr + pid_b * stride_kb \
+        + offs_n[:, None] * stride_kn + offs_d[None, :] * stride_kd
+
+    mask_m = offs_m < S
+    mask_n = offs_n < S
+    mask_d = offs_d < D
+
+    q = tl.load(q_ptrs, mask=mask_m[:, None] & mask_d[None, :], other=0.0)
+    k = tl.load(k_ptrs, mask=mask_n[:, None] & mask_d[None, :], other=0.0)
+
+    acc = tl.dot(q, tl.trans(k)).to(tl.float32) * scale
+
+    s_ptrs = s_ptr + pid_b * stride_sb \
+        + offs_m[:, None] * stride_sm + offs_n[None, :] * stride_sn
+    tl.store(s_ptrs, acc, mask=mask_m[:, None] & mask_n[None, :])
+```
+
+This is the Chapter 9 grouped matmul, simplified for a single `(B, H)` slice per program and specialized so the K side is transposed via `tl.trans` rather than via strided loads.
+
+The causal mask kernel is even simpler — it loads its tile, compares row and column indices with `tl.where`, and stores back:
+
+```python
+causal = offs_n[None, :] > offs_m[:, None]
+cur = tl.load(s_ptrs, mask=in_bounds, other=0.0)
+new = tl.where(causal, NEG_INF, cur)
+tl.store(s_ptrs, new, mask=in_bounds)
+```
+
+The PV matmul is structurally identical to QK^T except its K-dimension loop walks over the score columns and its output is fp16.
+
+### Shape trace
+
+Take `B = 2`, `H = 8`, `S = 1024`, `D = 64`, all fp16 input, `BLOCK_M = BLOCK_N = 64`, `BLOCK_D = 64`. After flattening `(B, H)` to `BH = 16`:
+
+```
+Inputs:
+  Q, K, V                   : (B, H, S, D) = (2, 8, 1024, 64)        fp16
+  Q_flat, K_flat, V_flat    : (BH, S, D)   = (16, 1024, 64)          fp16
+
+QK^T kernel:
+  grid                       : (S/BLOCK_M, S/BLOCK_N, BH) = (16, 16, 16) = 4096 programs
+  per-program:
+    q_tile                   : (BLOCK_M, BLOCK_D) = (64, 64)         fp16  (registers/SRAM)
+    k_tile                   : (BLOCK_N, BLOCK_D) = (64, 64)         fp16
+    s_tile = q @ k^T * scale : (BLOCK_M, BLOCK_N) = (64, 64)         fp32  (registers, then to HBM)
+  output:
+    scores                   : (BH, S, S) = (16, 1024, 1024)         fp32
+    bytes                    : 16 * 1024 * 1024 * 4 = 64 MB
+
+Causal mask kernel:
+  grid                       : same as QK^T = 4096 programs
+  per-program:
+    in-place rewrite of one (64, 64) tile of scores                  fp32
+
+Softmax (PyTorch, dim=-1):
+  scores reshaped to         : (BH * S, S) = (16384, 1024)
+  output probs               : (BH, S, S)                            fp16 (cast at the end)
+
+PV matmul:
+  grid                       : (S/BLOCK_M, BH) = (16, 16) = 256 programs
+  per-program:
+    p_tile                   : (BLOCK_M, BLOCK_N) = (64, 64)         fp16
+    v_tile                   : (BLOCK_N, BLOCK_D) = (64, 64)         fp16
+    acc                      : (BLOCK_M, BLOCK_D) = (64, 64)         fp32
+    inner loop length        : S / BLOCK_N = 16 iterations
+  output:
+    out                      : (BH, S, D) = (16, 1024, 64) = (2, 8, 1024, 64)  fp16
+```
+
+The line that earns this whole chapter: **the `scores` tensor is 64 MB at `S = 1024`, and grows as `S^2`.** At `S = 4096` it is `16 * 4096 * 4096 * 4 = 1 GB` per `(B, H)` slice. Quadruple your sequence, quadruple your HBM bill four times over.
+
+### Pointer arithmetic and masks
+
+The interesting offset story is the QK^T launch. `Q` is laid out as `[BH, S, D]` contiguous, so for a `(BLOCK_M, BLOCK_D)` tile owned by `(pid_m, pid_b)`:
+
+```
+q_ptrs = q_ptr + pid_b * stride_qb
+                + (pid_m * BLOCK_M + arange(0, BLOCK_M))[:, None] * stride_qm
+                + arange(0, BLOCK_D)[None, :] * stride_qd
+```
+
+`stride_qb = S * D`, `stride_qm = D`, `stride_qd = 1` for a contiguous tensor. The `pid_b` offset jumps a whole `(S, D)` slab; the `pid_m * BLOCK_M` offset jumps `BLOCK_M` rows within that slab.
+
+The masks are:
+
+- `mask_m = offs_m < S` for ragged tail along the query axis.
+- `mask_n = offs_n < S` for ragged tail along the key axis.
+- `mask_d = offs_d < D` because `BLOCK_D = next_pow_2(D)` may overshoot.
+
+All three masks use `other=0.0`. A zero load contributes nothing to the dot product, so the resulting score is correct on the boundary — but the **store** mask `mask_m[:, None] & mask_n[None, :]` prevents writing the bogus boundary rows/cols back to HBM.
+
+The causal mask kernel uses `offs_n[None, :] > offs_m[:, None]` to make a `(BLOCK_M, BLOCK_N)` boolean. The `>` is critical: equal indices are the diagonal, which is **not** masked (a token attends to itself).
+
+### Correctness test
+
+The pytest module covers each kernel individually and then the wrapper end-to-end against `F.scaled_dot_product_attention`. Inline for the chapter:
+
+```python
+@pytest.mark.parametrize("S", [64, 128])
+@pytest.mark.parametrize("causal", [True, False])
+def test_naive_attention_matches_sdpa(S, causal):
+    torch.manual_seed(0)
+    B, H, D = 1, 2, 32
+    q = torch.randn(B, H, S, D, device="cuda", dtype=torch.float16)
+    k = torch.randn(B, H, S, D, device="cuda", dtype=torch.float16)
+    v = torch.randn(B, H, S, D, device="cuda", dtype=torch.float16)
+
+    got = naive_attention_forward(q, k, v, causal=causal)
+    expected = F.scaled_dot_product_attention(q, k, v, is_causal=causal)
+    # Two matmuls + softmax in fp16 accumulate roughly 3x the per-op error.
+    torch.testing.assert_close(got, expected, rtol=3e-2, atol=3e-2)
+```
+
+The tolerances are deliberately loose. There are two fp16 matmuls and a softmax stacked end-to-end. SDPA's Flash kernel will not produce bit-identical results either; it does its own fp32 accumulation in a different order.
+
+### Benchmark
+
+The benchmark in `benchmarks/bench_ch13_naive_attention.py` measures our pipeline vs SDPA across `S in [256, 512, 1024, 2048]`:
+
+```python
+naive_ms = triton.testing.do_bench(
+    lambda: naive_attention_forward(q, k, v, causal=causal)
+)
+sdpa_ms = triton.testing.do_bench(
+    lambda: F.scaled_dot_product_attention(q, k, v, is_causal=causal)
+)
+```
+
+::: {.callout-warning}
+## Hardware caveat
+On the author's 2070 SUPER (8 GB), the naive pipeline runs out of memory at `S = 4096` with `B = 4, H = 32, D = 64`, because the `[B, H, S, S]` fp32 score tensor alone is 8 GB. SDPA does not OOM at the same shape because its Flash backend never allocates that tensor. If your GPU is smaller, shrink `B` and `H` before increasing `S`.
+:::
+
+::: {.callout-warning appearance="simple"}
+**Placeholder data.** The numbers below are hardcoded illustrative values, not measurements. Replace with output from your own `triton.testing.do_bench` run before drawing conclusions.
+:::
+
+```{ojs}
+//| echo: false
+//| label: fig-naive-attention-bench
+//| fig-cap: "Attention forward median latency vs sequence length S (both axes log). Lower is better. Naive four-kernel pipeline from this chapter vs torch F.scaled_dot_product_attention."
+{
+  const data = [
+    {S: 256,  naive_ms: 0.30, sdpa_ms: 0.06},
+    {S: 512,  naive_ms: 0.95, sdpa_ms: 0.18},
+    {S: 1024, naive_ms: 3.40, sdpa_ms: 0.55},
+    {S: 2048, naive_ms: 13.1, sdpa_ms: 1.90},
+  ];
+  const long = data.flatMap(d => [
+    {S: d.S, impl: "triton naive", ms: d.naive_ms},
+    {S: d.S, impl: "torch SDPA",   ms: d.sdpa_ms}
+  ]);
+  return Plot.plot({
+    color: {legend: true, domain: ["triton naive", "torch SDPA"], range: ["steelblue", "orange"]},
+    x: {type: "log", label: "S (sequence length, tokens)"},
+    y: {type: "log", label: "median latency (ms) — lower is better"},
+    marks: [
+      Plot.line(long, {x: "S", y: "ms", stroke: "impl"}),
+      Plot.dot(long,  {x: "S", y: "ms", fill: "impl"})
+    ]
+  });
+}
+```
+
+The naive pipeline grows like `S^2`; SDPA grows close to `S^2` in floating-point work but does not pay the `S^2` HBM round-trip, so the constant factor is dramatically smaller.
+
+### Optimization discussion
+
+There is no good optimization for the naive pipeline. Every knob you might turn — increase `BLOCK_M`, switch to fp16 accumulation, split the softmax across blocks — saves a few percent but cannot escape the `O(S^2)` HBM traffic on the score tensor. The kernels are individually compute-bound for the matmuls and memory-bound for the mask and the softmax, but **the wrapper as a whole is HBM-bandwidth-bound on the `[B, H, S, S]` tensor**. You cannot beat that without restructuring the algorithm, which is what Chapter 14 does.
+
+The one optimization worth doing in this chapter is replacing `F.softmax` with the Chapter 5 Triton row-softmax. That removes a kernel-launch round-trip and trims a few percent. It does not change the asymptotic story.
+
+The bound to remember: at `S = 4096`, `B = 4`, `H = 32`, you need `4 GB` of HBM bandwidth for one pass over the `scores` tensor. On a 2070 SUPER with `448 GB/s` of peak bandwidth, the lower bound for one pass is `~9 ms`. The naive pipeline does at least three such passes (mask reads/writes scores, softmax reads scores and writes probs, PV matmul reads probs) before any compute time. FlashAttention reduces that to zero passes.
+
+### Common bugs
+
+1. **Forgetting to flatten `(B, H)` for the grid.** A 4D grid with `(B, H, S/BM, S/BN)` is wasteful and confuses Triton's autotuner. Flatten to `BH = B * H` and feed the launcher a 3D grid.
+2. **Causal mask using `>=`.** The diagonal must remain unmasked. Use `>`, not `>=`. A token attends to itself.
+3. **fp16 softmax denominator.** Computing the softmax denominator in fp16 will silently lose precision because the sum over `S = 4096` exponentials overflows the fp16 range. Cast to fp32 before the reduce.
+4. **Storing the bogus boundary tile.** When `S` is not a multiple of `BLOCK_M`, the last tile contains garbage rows. The compute mask `mask_m[:, None] & mask_d[None, :]` keeps the dot product clean, but you must also mask the **store** or you will write garbage past the end of the score tensor.
+5. **Transposed K layout.** `tl.dot(q, k.T)` requires `k` to be loaded as `[BLOCK_N, BLOCK_D]` and then `tl.trans`'d to `[BLOCK_D, BLOCK_N]`. Loading `k` as `[BLOCK_D, BLOCK_N]` directly with swapped strides also works, but it is easy to mis-order the strides and silently transpose the wrong axis.
+
+### Exercises
+
+1. **Beginner.** Compute the approximate memory of the `scores` tensor for `B = 4, H = 32, S = 4096`, fp16 (≈ 4 GB) and `S = 8192` (≈ 16 GB). Argue why the latter will not fit on an 8 GB 2070 SUPER.
+2. **Beginner.** Take the standalone `causal_mask_kernel` and verify it against `torch.triu(...).masked_fill(...)` for `S = 9`, a non-power-of-two extent.
+3. **Beginner.** Use `triton.testing.do_bench` to time the four-kernel pipeline for `S in [512, 1024, 2048]` with `B = 1, H = 4, D = 64`. Confirm the quadratic growth.
+4. **Intermediate.** Implement a chunked softmax that processes the `S` axis in blocks of `256`, storing only `[B, H, S]` per-row max and normalizer between passes. Two passes; still materializes the score tensor.
+5. **Intermediate.** Add a `causal: bool` parameter that skips the mask kernel when false, and add a non-causal test case.
+6. **Advanced.** Write a single Triton kernel that computes `softmax((Q @ K^T) * scale)` in one launch. Each program owns a `[BLOCK_M, S]` row strip and makes two passes over `K`: one for the row max, one for the normalized exp. This foreshadows Chapter 14, which removes the second pass.
+
+Solutions live in `solutions/ch13_solutions.py`.

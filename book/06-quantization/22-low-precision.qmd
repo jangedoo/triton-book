@@ -1,0 +1,142 @@
+---
+title: "Chapter 22: Low Precision Basics"
+---
+
+This chapter is a reference, not a kernel. Before the next chapter dequantizes int8 weights inside a matmul, you need a single mental model for what every floating-point and integer format actually stores, where the bits go, what the hardware can accelerate, and what the scale factor means. Keep this chapter open in another tab while reading Chapter 23.
+
+## The format tour
+
+Every numeric format in a modern accelerator is a compromise between **range** (how big a number can it represent), **precision** (how finely it can resolve values inside that range), and **memory cost** (how many bits per element). The layout of a floating-point number is always one sign bit, a few exponent bits, and the rest mantissa.
+
+### fp32 (1 + 8 + 23)
+
+The default. 8 bits of exponent give a range of roughly `±3.4e38`. 23 bits of mantissa give about 7 decimal digits of precision. Every CUDA core can do fp32. On a modern GPU it is the slow path for matmul — tensor cores were built for half precision.
+
+### tf32 (1 + 8 + 10)
+
+A truncated fp32 that NVIDIA's Ampere and newer tensor cores accept transparently when you ask for an fp32 matmul. Same 8-bit exponent as fp32 (so the range matches), 10-bit mantissa (so the precision drops to roughly fp16). You usually never type `tf32` — it is what `torch.matmul(a, b)` on Ampere uses when `torch.backends.cuda.matmul.allow_tf32 = True`. On the author's 2070 SUPER (sm_75) there are no tf32 tensor cores; fp32 matmul goes through CUDA cores.
+
+### fp16 (1 + 5 + 10)
+
+5-bit exponent. Maximum representable value is about `6.55e4`. This is small enough that intermediate values in a softmax, in a layernorm sum-of-squares, or in any reduction can overflow. The rule that keeps recurring in this book: **load fp16, accumulate in fp32, store fp16**. fp16 tensor cores have been around since Volta (sm_70) and are supported on the 2070 SUPER.
+
+### bf16 (1 + 8 + 7)
+
+The same 8-bit exponent as fp32, only 7 bits of mantissa. Range matches fp32 (so it does not overflow the way fp16 does); precision is worse than fp16. Preferred for training because activations and gradients have a wide dynamic range. bf16 tensor cores appear on Ampere (sm_80) and newer. **The 2070 SUPER does not have bf16 tensor cores.** If you write bf16 Triton on Turing, it works, but it executes on CUDA cores at fp32-ish speed.
+
+### fp8 — e4m3 and e5m2
+
+Two flavors. `e4m3` is 1 sign + 4 exponent + 3 mantissa, used for weights and activations where precision matters more than range. `e5m2` is 1 + 5 + 2, used for gradients where range matters. Both formats have aggressive scaling requirements: you cannot just take a tensor of activations, cast it to fp8, and expect anything reasonable. You need a **per-tensor**, **per-row**, or **per-block** scale that maps your real-valued distribution into the tiny fp8 range. Hopper (sm_90) was the first NVIDIA GPU with fp8 tensor cores. The 2070 SUPER cannot accelerate fp8.
+
+### int8
+
+Signed 8-bit integer, range `[-128, 127]`. Used two ways: as a **weight** format with a per-output-channel fp16 or fp32 scale (this is "W8" in W8A16), and as an **activation** format with a per-token or per-tensor scale (this is the "A8" in W8A8). The 2070 SUPER has int8 tensor cores: `tl.dot` with int8 inputs and an int32 accumulator is supported on sm_75 and later.
+
+### int4
+
+4-bit integer, range `[-8, 7]` signed or `[0, 15]` unsigned. There is no hardware int4 type — you pack two int4 values into one int8 byte and unpack them in the kernel. Common for weight-only quantization (GPTQ, AWQ) where the model is shipped with int4 weights, an fp16 scale per group of 32 or 128 elements, and sometimes a zero-point. Dequantization happens on the fly inside the matmul K-loop.
+
+## The bits-per-value table
+
+| Format | Bits | Exp | Mant | Max value     | Tensor-core hardware | 2070 SUPER? |
+|--------|------|-----|------|--------------|----------------------|-------------|
+| fp32   | 32   | 8   | 23   | 3.4e38        | (CUDA cores only)    | yes (no TC) |
+| tf32   | 19*  | 8   | 10   | 3.4e38        | Ampere+              | no          |
+| fp16   | 16   | 5   | 10   | 6.55e4        | Volta+               | yes         |
+| bf16   | 16   | 8   | 7    | 3.4e38        | Ampere+              | no          |
+| fp8 e4m3 | 8  | 4   | 3    | 448           | Hopper+              | no          |
+| fp8 e5m2 | 8  | 5   | 2    | 5.7e4         | Hopper+              | no          |
+| int8   | 8    | -   | -    | 127           | Turing+ (sm_75)      | yes         |
+| int4   | 4    | -   | -    | 7             | (software unpack)    | yes (no TC) |
+
+*`tf32` is stored as fp32 in memory; the 19 bits refers to the bits the multiplier actually uses.
+
+::: {.callout-warning}
+## Hardware caveat
+On the 2070 SUPER (sm_75), the only tensor-core formats are **fp16** and **int8**. Everything else either runs on CUDA cores at fp32 speed (bf16) or is unavailable (fp8). When you read papers and codebases that lean on fp8 or bf16 tensor cores, mentally substitute "fp16 on this machine" for the implementation work in this book, and trust that the same kernel will go faster on Ampere or Hopper.
+:::
+
+## Why accumulators are almost always fp32
+
+A `tl.dot(a, b)` on fp16 inputs produces an fp32 accumulator by default. The reason is precision: a dot product of length K accumulates K multiplications, each of which can lose a half-ulp of precision. By K=1024, summing partial products in fp16 produces visibly wrong results. The tensor-core hardware itself accumulates into fp32 registers and only down-casts at the end. The same rule applies to softmax normalizers, layernorm variance computations, and cross-entropy reductions: load low precision, accumulate high precision, store low precision.
+
+## Scale factors
+
+A quantized tensor is two tensors: a low-precision payload and a high-precision scale. The shape of the scale tensor is what distinguishes per-tensor from per-channel from per-token from per-block quantization.
+
+### Per-tensor
+
+One scalar scale for the entire tensor. Cheap (one number to store, one multiply in the dequant path) and inflexible (a single outlier element forces the scale large enough to waste range on every other element). Used in some FP8 layouts and in early int8 work.
+
+### Per-channel
+
+A 1-D vector of scales along one axis. For a linear weight `W : (out_features, in_features)`, the canonical layout is one scale per output channel — shape `(out_features,)`. This is the W8A16 default in modern inference libraries because the weight matrix has output channels with very different dynamic ranges, and a single scale would waste bits on the quiet channels.
+
+### Per-token
+
+A 1-D vector of scales along the batch or sequence axis. For an activation tensor `X : (batch, seq, hidden)`, the per-token scale has shape `(batch, seq)` — one number per row. Used for activations because activations vary in magnitude from token to token (start-of-sequence tokens often dominate).
+
+### Per-block (group-wise)
+
+A scale per K-block of size 32 or 128 along the reduction axis. The MXFP8 and MXFP4 formats use 32-element blocks with a shared exponent. Hopper's block-scaled tensor cores read both the data and the per-block scale in lockstep. On older hardware, you do the per-block multiply manually inside the K-loop. This format is the right answer when the dynamic range varies along the reduction axis — for example, large weight matrices where some rows have spikes.
+
+## Quantize and dequantize math
+
+The conversion in both directions is two lines of arithmetic. Symmetric quantization is the simpler case:
+
+```
+q     = round(x / scale)              # quantize
+x_hat = scale * q                     # dequantize
+```
+
+Asymmetric quantization adds a `zero_point` to shift the integer range so the quantization grid hugs the actual data distribution:
+
+```
+q     = round(x / scale + zero_point) # quantize
+x_hat = scale * (q - zero_point)      # dequantize
+```
+
+The `scale` and `zero_point` are chosen during a calibration pass: walk a sample of real input data, compute the min and max, and solve for the scale that maps `[min, max]` into the integer range `[qmin, qmax]`. For symmetric int8, `scale = max(|x|) / 127`. For asymmetric, `scale = (max(x) - min(x)) / (qmax - qmin)` and `zero_point = qmin - round(min(x) / scale)`.
+
+Symmetric is preferred when the data is roughly zero-centered (most neural net weights, after good initialization). Asymmetric is needed when the data has a clear bias (post-ReLU activations are non-negative).
+
+## A tiny PyTorch demo
+
+For grounding, here is per-channel symmetric int8 quantize and dequantize in plain PyTorch. The same shape juggling will appear in the next chapter's Triton kernel.
+
+```{python}
+#| eval: false
+import torch
+
+W = torch.randn(128, 64, dtype=torch.float16)        # (out, in)
+# per-output-channel scale
+scale = W.abs().amax(dim=1) / 127.0                   # (out,)
+# broadcast for the division
+W_q = torch.round(W / scale[:, None]).clamp(-128, 127).to(torch.int8)
+# dequantize back
+W_dq = scale[:, None].to(torch.float16) * W_q.to(torch.float16)
+# round-trip error
+err = (W - W_dq).abs().max().item()
+print(f"max abs error: {err:.4f}")
+```
+
+Two things to notice that the Triton chapter will reuse. First, the scale is shape `(out,)` and broadcasts along the in-features axis — this means each row of `W` is divided by its own scale. Second, the dequant cast to fp16 happens **after** the multiply, so the multiplication itself is fp16 × fp16 → fp16. In Triton you will do the same multiply inside the matmul K-loop, on every weight tile, every iteration.
+
+## When to use which format
+
+A practical decision tree for inference on consumer hardware like the 2070 SUPER:
+
+1. If memory is tight and the model is matmul-heavy, ship the weights in **int8** with per-channel scales. Activations stay fp16. This is W8A16.
+2. If memory is very tight and you can tolerate some quality loss, ship weights in **int4** with per-group scales (group size 128). Same activation story. This is W4A16.
+3. If you have an Ampere or newer GPU and the model is bandwidth-bound, **bf16** weights with tensor cores are the easy default.
+4. If you have a Hopper GPU and you have done the calibration, **fp8** activations and weights cut bandwidth roughly in half over fp16 with a small accuracy hit.
+
+The next chapter implements the W8A16 path in Triton, with a brief sketch of W8A8 using int8 tensor cores (which the 2070 SUPER actually supports).
+
+## Exercises
+
+These three exercises are optional. Worked solutions in `solutions/ch22_solutions.py`.
+
+1. **Beginner.** Write per-tensor symmetric int8 quantize/dequant in plain PyTorch for a random fp32 vector of length 1024. Report the maximum absolute round-trip error.
+2. **Beginner.** Repeat with per-channel quantize/dequant for a `(64, 1024)` matrix, choosing axis=1 as the channel axis (one scale per row). Report the max error and explain why it is smaller than per-tensor.
+3. **Intermediate.** Implement asymmetric int8 quantize/dequant with a learned `zero_point`. Quantize a non-negative tensor (output of ReLU) and compare the round-trip error to symmetric quantization.

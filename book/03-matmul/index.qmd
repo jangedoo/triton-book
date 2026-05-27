@@ -1,0 +1,5 @@
+---
+title: "Part 3: Matrix Multiplication"
+---
+
+Matmul is the heart of the transformer. We build it three times: a textbook tiled version, a batched + bias version that drops in for `nn.Linear`, and a persistent SM-resident version that mirrors the style modern libraries favor on Hopper and newer hardware.

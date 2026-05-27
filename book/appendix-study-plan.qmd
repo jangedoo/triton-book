@@ -1,0 +1,157 @@
+---
+title: "Appendix: Study Plan, Memory Kernels, and the Capstone Challenge"
+---
+
+This appendix is the back-of-the-book guide. It pulls the 31 chapters together into a 30-day study plan, lists the kernels you should be able to write from a blank file, gives you a self-assessment checklist, and ends with the capstone challenge you should attempt before you tell people you "know Triton".
+
+Treat the schedule as a frame, not a contract. If LayerNorm clicks in an hour, sprint ahead. If FlashAttention takes you a week, take the week — you are not behind, you are doing it right.
+
+## 30-Day Study Plan
+
+Each day lists: which chapter to read, one or two kernels to implement (from scratch, then check against the chapter source), and one exercise to do. Skip the exercise on a day you ran out of time, never skip the kernel.
+
+### Week 1 — Foundations (Days 1–6)
+
+| Day | Read | Kernels to implement | Exercise |
+|---:|---|---|---|
+| 1 | Ch 0 (Why Triton), Ch 1 (Setup) | `vector_add` (from Ch 1) | Run `sanity_check.py` end-to-end and read the output |
+| 2 | Ch 2 (Mental model) | `vector_add` again, this time without looking at the chapter | Ch 2 ex 1: walk the program-id math for `N=1_000_003` |
+| 3 | Ch 3 (Memory, pointers, strides) | `copy` (1-D), `row_add` (broadcast a length-N bias into an MxN tensor) | Ch 3 ex 2: pass a transposed view, fix the launcher |
+| 4 | Ch 4 (Reductions) | `row_sum`, `row_max` | Ch 4 ex 3: argmax along rows |
+| 5 | Ch 5 (Fused softmax) | `stable_softmax` (subtract max, exp, normalize) | Ch 5 ex 2: implement online softmax for `H > BLOCK_SIZE` |
+| 6 | Ch 6 (LayerNorm), Ch 7 (RMSNorm) | `layernorm_forward`, `rmsnorm_forward` | Ch 7 ex 6: sketch the fused residual+RMSNorm signature |
+
+### Week 2 — Matmul and Attention Math (Days 7–14)
+
+| Day | Read | Kernels to implement | Exercise |
+|---:|---|---|---|
+| 7 | Ch 8 (Activations + SwiGLU) | `gelu`, `silu` | Ch 8 ex 1: pick exact vs tanh-approx GELU and justify |
+| 8 | Ch 9 (Tiled matmul) | `naive_matmul` (square, contiguous, fp16-in / fp32-acc / fp16-out) | Ch 9 ex 2: super-grouping for L2 reuse |
+| 9 | Ch 9 again | `naive_matmul` from memory, no peeking | Ch 9 ex 4: benchmark and explain where you sit vs cuBLAS |
+| 10 | Ch 10 (Batched + Linear) | `batched_matmul`, `linear_bias_gelu` | Ch 10 ex 3: fuse bias into the matmul epilogue |
+| 11 | Ch 11 (Persistent matmul, concept) | Skim the persistent skeleton; do not implement | Ch 11 ex 2: explain what changes on Hopper |
+| 12 | Ch 12 (Attention math, concept) | Write the naive PyTorch attention reference | Derive the shape table from scratch on paper |
+| 13 | Ch 13 (Naive attention) | `qkt_matmul`, `pv_matmul`, glue into naive attention | Ch 13 ex 3: causal mask in-tile |
+| 14 | Ch 14 (FlashAttention forward) | `flash_attn_fwd` (causal, D=64, fp16) — read first, then implement | Ch 14 ex 4: explain `m`, `l`, `acc` to a rubber duck |
+
+### Week 3 — Attention Finishing and LLM Fusions (Days 15–21)
+
+| Day | Read | Kernels to implement | Exercise |
+|---:|---|---|---|
+| 15 | Ch 14 again | `flash_attn_fwd` from memory, no peeking, D=64, causal | Re-derive the rescaling factor `alpha = exp(m - m_new)` |
+| 16 | Ch 15 (Attention backward, concept) | Skim the educational backward; no impl required | Ch 15 ex 1: justify the recomputation strategy |
+| 17 | Ch 16 (RoPE + ALiBi) | `rope_forward` for the standard interleaved layout | Ch 16 ex 2: ALiBi as additive bias on scores |
+| 18 | Ch 17 (KV cache) | `append_kv_cache`, `decode_attention` | Ch 17 ex 2: paged-KV variant on paper |
+| 19 | Ch 18 (Residual + RMSNorm fusion) | `residual_rmsnorm` returning both outputs | Ch 18 ex 3: benchmark vs two separate kernels |
+| 20 | Ch 19 (Fused bias + activation + gate) | `swiglu_bias` (the MLP middle) | Ch 19 ex 2: GEGLU variant |
+| 21 | Ch 20 (Cross-entropy), Ch 21 (Sampling) | `cross_entropy_forward`, `top_k` | Ch 20 ex 3: handle ignore_index |
+
+### Week 4 — Quantization, Craft Skills, Capstone (Days 22–30)
+
+| Day | Read | Kernels to implement | Exercise |
+|---:|---|---|---|
+| 22 | Ch 22 (Low-precision concepts) | None (concept day) | Sketch int8 vs int4 vs FP8 layouts on paper |
+| 23 | Ch 23 (Dequant matmul) | `w8a16_matmul` (dequant in the inner loop) | Ch 23 ex 2: group-quant scale layout |
+| 24 | Ch 24 (Debugging) | Reproduce the `debug_demo.py` walkthrough | Plant a stride bug and find it with `tl.device_print` |
+| 25 | Ch 25 (Benchmarking) | Wrap your `rmsnorm` with `do_bench` + bandwidth math | Ch 25 ex 2: measure with and without warmup, explain the delta |
+| 26 | Ch 26 (Autotuning), Ch 27 (Perf tuning) | Autotune your `naive_matmul` over 6 configs | Ch 26 ex 3: prune the search space honestly |
+| 27 | Ch 28 (Mini library) — design + API | Wire `rmsnorm`, `softmax`, `rope`, `swiglu`, `flash_attn_fwd` into `mini_triton_llm` | Pick the public API: keyword args, dtype defaults, error messages |
+| 28 | Ch 29 (Swap into a real model) | Replace one PyTorch op in a tiny transformer with your Triton kernel | Validate against the PyTorch reference end-to-end |
+| 29 | Ch 30 (Design playbook) | Pick a kernel *not* in this book and design it via the playbook | Write the design doc before writing a line of Triton |
+| 30 | Capstone challenge (below) | Run the capstone, write up what won, what lost, why | Post your numbers somewhere with the GPU model named |
+
+## Kernels You Should Be Able to Write From Memory
+
+These are the kernels a Triton-fluent engineer should be able to write into a blank `.py` file without referring to the book. They cover the patterns; once you have these in your hands, the rest is variations.
+
+1. `vector_add` — the hello world.
+2. `copy` — one read, one write, mask the tail.
+3. `row_sum` — one program per row, axis-1 reduction.
+4. `row_max` — same, but with `other=-inf`.
+5. `stable_softmax` — row max, shift, exp, row sum, divide.
+6. `layernorm_forward` — two-pass (mean, var) with affine scale + shift.
+7. `rmsnorm_forward` — one-pass sum of squares, rsqrt, scale.
+8. `gelu` — element-wise, tanh-approx form.
+9. `silu` — element-wise, `x * sigmoid(x)`.
+10. `swiglu` — element-wise gated: `silu(gate) * up`.
+11. `naive_matmul` — square (M = N = K), contiguous, fp16 in / fp32 accumulate / fp16 out, with mask on the K tail.
+12. `batched_matmul` — same with a leading batch dimension and strides passed in.
+13. `rope_forward` — paired index addressing with cos/sin tables.
+14. `cross_entropy_forward` — fused log-softmax + NLL for a single batch row.
+15. `flash_attention_forward` — simplified, causal, head_dim = 64, one program per (batch, head, query tile), online softmax over K/V tiles.
+
+If you can sit at a blank file and produce all fifteen, you are no longer learning Triton — you are using it.
+
+## Self-Assessment Checklist
+
+Tick what you can do without looking it up. Group by stage. Promote yourself only when every box in a tier is checked.
+
+### Beginner
+
+- [ ] Explain the Triton program model: programs, grid, `tl.program_id`, `tl.arange`, block sizes.
+- [ ] Explain what a mask is and why you almost always need one on the tail.
+- [ ] Read a 2-D tensor's strides and translate `(i, j)` into a pointer offset by hand.
+- [ ] Pick the right `other=` value for a load that feeds a `sum` vs a `max`.
+- [ ] Write a launcher that allocates the output, computes the grid, and calls a kernel.
+- [ ] Pick an appropriate `BLOCK_SIZE` for a memory-bound elementwise kernel (rule of thumb: 1024–4096).
+
+### Intermediate
+
+- [ ] Explain why the accumulator should be fp32 even when inputs are fp16/bf16, and where exactly to up-cast.
+- [ ] State the shape constraints on `tl.dot` (multiples of 16, K dim alignment, supported dtype pairs).
+- [ ] Wrap a kernel with `triton.autotune` and pick a config space that is small, realistic, and pruned.
+- [ ] Derive the online-softmax accumulator state `(m, l)` and explain the rescaling factor `alpha = exp(m - m_new)`.
+- [ ] Use `triton.testing.do_bench` correctly: warmup, sync, percentile reporting, GPU named in the writeup.
+- [ ] Distinguish memory-bound from compute-bound for a kernel using rooflines, not vibes.
+- [ ] Walk a stride bug from "tests fail" to "fixed", using `tl.device_print` and a tiny-shape test.
+
+### Advanced
+
+- [ ] Reason about FlashAttention's memory-traffic argument vs naive attention from first principles.
+- [ ] Decide when to fuse two kernels into one and when not to (HBM round-trip math, register pressure).
+- [ ] Pick `num_warps` and `num_stages` for a matmul-style kernel with justification, not by random search.
+- [ ] Identify when a kernel is register-bound vs SRAM-bound vs occupancy-bound from the Triton compiler stats.
+- [ ] Build a kernel design plan in the kernel_checklist style without referring to the book.
+- [ ] Explain what changes when you move from sm_75 (Turing) to sm_80 (Ampere) to sm_90 (Hopper) for matmul (bf16, TMA, WGMMA), and why FP8 needs Hopper or newer.
+
+## Final Capstone Challenge
+
+The last bar between "I have read a Triton book" and "I write Triton kernels for transformer/LLM work" is a measurable, end-to-end task.
+
+### The task
+
+Implement a complete mini transformer block forward pass using your `mini_triton_llm` library (Chapter 28). Run it as a 4-layer, 256-hidden, 4-head, GPT-style stack with batch=4, seq=1024, fp16. Match a PyTorch reference numerically. Beat or tie PyTorch eager on a 2070 SUPER for end-to-end forward latency.
+
+### Success criteria
+
+- **Correctness.** End-to-end output matches a PyTorch reference with `rtol=1e-2, atol=1e-2` in fp16.
+- **Determinism.** Two runs on the same input give bitwise identical output.
+- **Performance.** Median wall-clock latency (over 100 runs, after 50 warmup, with `torch.cuda.synchronize` before/after) is within +/- 10% of PyTorch eager on a 2070 SUPER. Better is better; tied is acceptable; >20% slower means you have work to do.
+- **Reportage.** A short writeup (one page) listing: GPU, dtype, batch/seq/hidden, the three kernels you wrote, the three kernels you swapped from `torch.nn.functional`, where you tied, where you won, where you lost, and a one-sentence theory per loss.
+
+### Hints
+
+- Start with the `mini_triton_llm.attention.flash_attention_forward` kernel as the centerpiece. That is where the win is.
+- Fuse residual + RMSNorm (Chapter 18). That kernel pays for itself once you call it twice per layer.
+- Leave the two big matmuls (Q/K/V projection, output projection) to `torch.matmul` / cuBLAS. You will not beat them on a 2070 SUPER. The win is in the things between the matmuls.
+- For SwiGLU, fuse `silu(gate) * up` (Chapter 19) but leave the surrounding linears to cuBLAS.
+- Profile *both* implementations with `do_bench` and break latency down per layer. Do not write "Triton is faster" without per-kernel numbers.
+
+### What honest losses look like
+
+You will probably lose on:
+
+- Standalone Linear / matmul. cuBLAS is the result of many engineer-years.
+- Anything where `torch.compile` is on by default and the operation is purely elementwise. The compiler already does the fusion.
+
+You will probably win or tie on:
+
+- RMSNorm at typical hidden sizes once fused with the residual add.
+- FlashAttention forward at `seq >= 1024`, even on a Turing card.
+- SwiGLU when fused with its biases, vs PyTorch's three-kernel default path.
+
+### If you complete this
+
+You have earned the title "Triton kernel writer" for transformer/LLM work. Add your numbers to a README, name the GPU, name the version of PyTorch and Triton, and ship it. From here, the only thing left is to pick up Hopper-specific features (TMA, WGMMA, FP8), and that is a different book.
+
+If you cannot complete this yet — that is fine. The 30-day plan above is designed to get you here. Walk back the gap to the chapter you skimmed too fast and read it slower this time.

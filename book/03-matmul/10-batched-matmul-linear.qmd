@@ -1,0 +1,388 @@
+---
+title: "Chapter 10: Batched Matmul and Linear Layers"
+---
+
+The matmul from Chapter 9 takes you most of the way to writing your own
+linear layer, but transformer workloads do not look like
+`(M, K) @ (K, N) -> (M, N)`. They look like
+
+- `(B, M, K) @ (B, K, N) -> (B, M, N)` -- batched matmul for attention
+  scores and weighted values.
+- `(B, T, in) @ W^T + b -> (B, T, out)` -- the linear layer you call
+  thousands of times per forward pass.
+
+This chapter handles both. Then it does the thing that makes writing
+your own kernels worth the trouble in the first place: fuses bias, GELU,
+and the activation into the linear's epilogue so the intermediate never
+round-trips through DRAM.
+
+### PyTorch reference
+
+```python
+# eval: false
+import torch
+import torch.nn.functional as F
+
+# Batched matmul.
+def batched_matmul_ref(a, b):
+    # a: (B, M, K)   b: (B, K, N)   out: (B, M, N)
+    return torch.matmul(a, b)
+
+# Linear + bias + GELU. PyTorch convention: W is (out, in).
+def linear_bias_gelu_ref(x, w, b):
+    # x: (..., in)   w: (out, in)   b: (out,)
+    return F.gelu(F.linear(x, w, b), approximate="tanh")
+```
+
+### Triton implementation
+
+#### Batched matmul
+
+Two strategies:
+
+(a) **Host loop.** Loop over the batch on the CPU and launch one matmul
+kernel per batch element. Simple to write. Pays B kernel launches.
+
+(b) **3D-grid kernel.** One kernel launch with a grid of
+`(B, num_pid_m, num_pid_n)`. Each program is identified by `(pid_b,
+pid_m, pid_n)`. The kernel hoists a batch stride out of the K-loop --
+each program does `a_ptr += pid_b * stride_ab` once at the top, then
+behaves exactly like a single-batch matmul.
+
+Use (b). Launch overhead is per-launch, not per-program; one kernel with
+a 3D grid amortizes it across the whole batch.
+
+```python
+# eval: false
+@triton.jit
+def batched_matmul_kernel(
+    a_ptr, b_ptr, c_ptr,
+    M, N, K,
+    stride_ab, stride_am, stride_ak,
+    stride_bb, stride_bk, stride_bn,
+    stride_cb, stride_cm, stride_cn,
+    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,
+):
+    pid_b = tl.program_id(axis=0)
+    pid_m = tl.program_id(axis=1)
+    pid_n = tl.program_id(axis=2)
+
+    a_ptr += pid_b * stride_ab
+    b_ptr += pid_b * stride_bb
+    c_ptr += pid_b * stride_cb
+    # ... rest is identical to single-batch matmul ...
+```
+
+Full source at `src/ch10_batched_linear/batched_matmul.py`.
+
+#### Linear + bias + GELU
+
+PyTorch's `nn.Linear` stores `W` with shape `(out, in)`, not `(in, out)`.
+The forward is `Y = X W^T + b`. You have two options for the transpose:
+
+1. Materialize `W.T.contiguous()` and matmul. Wastes memory and time.
+2. Bake the transpose into the pointer math. The kernel treats `W` as
+   if it were `(in, out)` by walking `stride_w_in` down the rows and
+   `stride_w_out` across the columns of the loaded tile. No physical
+   transpose. This is what `F.linear` does internally.
+
+We also flatten the leading batch+token dims. `X: (B, T, in)` becomes
+`X: (B*T, in)` for the matmul. Reshape is a stride op when the input is
+contiguous, so it costs nothing.
+
+```python
+# eval: false
+@triton.jit
+def linear_bias_gelu_kernel(
+    x_ptr, w_ptr, b_ptr, y_ptr,
+    M, N, K,
+    stride_xm, stride_xk,
+    stride_wn, stride_wk,        # W is (out=N, in=K); stride_wn = in, stride_wk = 1
+    stride_ym, stride_yn,
+    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,
+):
+    pid = tl.program_id(0)
+    num_pid_n = tl.cdiv(N, BLOCK_N)
+    pid_m, pid_n = pid // num_pid_n, pid % num_pid_n
+
+    offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    offs_k = tl.arange(0, BLOCK_K)
+
+    x_ptrs = x_ptr + offs_m[:, None] * stride_xm + offs_k[None, :] * stride_xk
+    # W^T trick: address with offs_k on the row, offs_n on the column.
+    w_ptrs = w_ptr + offs_k[:, None] * stride_wk + offs_n[None, :] * stride_wn
+
+    acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
+    for k in range(tl.cdiv(K, BLOCK_K)):
+        # ... load, mask, dot, advance ...
+
+    bias = tl.load(b_ptr + offs_n, mask=offs_n < N, other=0.0).to(tl.float32)
+    acc += bias[None, :]
+
+    # GELU (tanh approximation), inside the kernel.
+    c0 = 0.7978845608028654   # sqrt(2/pi)
+    inner = c0 * (acc + 0.044715 * acc * acc * acc)
+    acc = 0.5 * acc * (1.0 + tl.math.tanh(inner))
+
+    y = acc.to(y_ptr.dtype.element_ty)
+    # ... store ...
+```
+
+The full kernel is at `src/ch10_batched_linear/linear_bias_gelu.py`. The
+walkthrough above leaves out the masks and pointer-advance bookkeeping;
+they are identical to Chapter 9.
+
+#### When to write your own linear
+
+- **Yes:** when you want epilogue fusion (bias, activation, residual,
+  dropout, dequantization). The fused kernel saves one read and one
+  write of the `(B*T, out)` intermediate per fused op.
+- **No:** for stock matmul where there is no epilogue. cuBLAS dominates
+  on square shapes, especially on Ampere and newer. Use `F.linear` for
+  the un-fused case and reserve your kernel for the fused variants.
+
+### Shape trace
+
+For `X: (4, 1024, 4096)`, `W: (4096, 4096)`, `b: (4096,)`:
+
+```
+Reshape X:                  X_2d : (B*T, in) = (4096, 4096)   fp16
+W:                                  (out, in) = (4096, 4096)   fp16
+b:                                  (out,)    = (4096,)         fp16
+Y_2d:                               (4096, 4096)                fp16, output
+Constants:                  BLOCK_M=128 BLOCK_N=128 BLOCK_K=32
+
+M = 4096, N = 4096, K = 4096
+
+Grid:                       ceil(M/BLOCK_M) * ceil(N/BLOCK_N) = 32 * 32 = 1024
+
+Per program:
+  pid                          scalar              int32
+  pid_m, pid_n                 scalar each         int32
+
+  offs_m                       (128,)              int32
+  offs_n                       (128,)              int32
+  offs_k                       (32,)               int32
+
+  x_ptrs                       (128, 32)           ptr<fp16>
+  w_ptrs                       (32, 128)           ptr<fp16>     # transpose via stride math
+  acc                          (128, 128)          fp32
+
+  K-loop:                      128 iterations
+    x = load(x_ptrs, mask)     (128, 32)           fp16
+    w = load(w_ptrs, mask)     (32, 128)           fp16
+    acc += tl.dot(x, w)        (128, 128)          fp32
+    x_ptrs += BLOCK_K * stride_xk
+    w_ptrs += BLOCK_K * stride_wk
+
+Epilogue (inside the kernel, no extra DRAM round-trip):
+  bias = load(b_ptr + offs_n)  (128,)              fp32
+  acc += bias[None, :]         (128, 128)          fp32
+  inner = c0 * (acc + 0.044715 * acc^3)   (128, 128)  fp32
+  acc = 0.5 * acc * (1 + tanh(inner))     (128, 128)  fp32
+  y   = acc.to(fp16)                       (128, 128)  fp16
+  store(y_ptrs, y, mask)
+
+Reshape Y_2d back to (B, T, out) = (4, 1024, 4096)         fp16
+```
+
+If you launched the unfused version (linear, then bias, then GELU), you
+would write the `(4096, 4096)` intermediate to DRAM, read it back, write
+the bias-added version, read it back, write the GELU output. Three
+extra round-trips of a 32 MB tensor. The fused kernel saves all of
+that.
+
+### Pointer arithmetic and masks
+
+Two new things compared to Chapter 9.
+
+**Batch stride.** In `batched_matmul_kernel`, the first thing each
+program does is `a_ptr += pid_b * stride_ab`. After that, every other
+pointer-math line is identical to single-batch matmul. The compiler
+hoists this addition outside the K-loop because `pid_b` is invariant.
+
+For a `(B, M, K)` contiguous tensor: `stride_ab = M*K`, `stride_am = K`,
+`stride_ak = 1`.
+
+**Transpose-by-stride.** In `linear_bias_gelu_kernel`, `W` is `(out, in)`
+but we want a `(BLOCK_K, BLOCK_N)` tile of `W^T`. We compute
+
+```
+w_ptrs = w_ptr + offs_k[:, None] * stride_wk + offs_n[None, :] * stride_wn
+```
+
+`stride_wn = in` (jump one row of W when `offs_n` increases),
+`stride_wk = 1` (jump one element within a row when `offs_k` increases).
+Loading at these pointers gives the transposed tile directly. No
+`W.T.contiguous()`, no temp allocation, no extra DRAM traffic. The cost
+is that the read pattern across W is column-major, which is slightly
+worse for L2 reuse than reading row-major -- but Triton's swizzling
+inside `tl.dot` covers that.
+
+Masks: same `(offs_m < M) & (offs_k < k_remaining)` pattern as Chapter
+9. The bias load gets `offs_n < N`. The residual-add variant (Exercise
+5) needs the full 2D `(offs_m < M) & (offs_n < N)` mask.
+
+### Correctness test
+
+```python
+# eval: false
+import torch
+import torch.nn.functional as F
+from src.ch10_batched_linear import linear_bias_gelu
+
+def test_linear_bias_gelu_3d_batch():
+    torch.manual_seed(0)
+    x = torch.randn((4, 128, 256), device="cuda", dtype=torch.float16)
+    w = torch.randn((512, 256),    device="cuda", dtype=torch.float16)
+    b = torch.randn((512,),        device="cuda", dtype=torch.float16)
+    out = linear_bias_gelu(x, w, b)
+    ref = F.gelu(F.linear(x.float(), w.float(), b.float()),
+                 approximate="tanh").to(torch.float16)
+    torch.testing.assert_close(out, ref, rtol=2e-2, atol=2e-2)
+```
+
+The full test module covers batched matmul (small, non-pow2, large
+batch) and the linear+bias+GELU kernel (small, 3D batch, non-pow2). The
+tolerance is loosened slightly to `2e-2` because the long K plus the
+GELU non-linearity amplify fp16 cast error.
+
+### Benchmark
+
+```python
+# eval: false
+import torch
+import torch.nn.functional as F
+import triton
+from src.ch10_batched_linear import linear_bias_gelu
+
+for n in [512, 1024, 2048, 4096]:
+    x = torch.randn((4, 1024, n), device="cuda", dtype=torch.float16)
+    w = torch.randn((n, n),       device="cuda", dtype=torch.float16)
+    b = torch.randn((n,),         device="cuda", dtype=torch.float16)
+    unfused = lambda: F.gelu(F.linear(x, w, b), approximate="tanh")
+    fused   = lambda: linear_bias_gelu(x, w, b)
+    print(n,
+          triton.testing.do_bench(unfused),
+          triton.testing.do_bench(fused))
+```
+
+::: {.callout-warning appearance="simple"}
+**Placeholder data.** The numbers below are hardcoded illustrative values, not measurements. Replace with output from your own `triton.testing.do_bench` run before drawing conclusions.
+:::
+
+```{ojs}
+//| echo: false
+//| label: fig-linear-bias-gelu-bench
+//| fig-cap: "Linear + bias + GELU forward median latency vs square hidden size N (= in = out). Lower is better. Unfused PyTorch baseline vs the fused Triton kernel."
+{
+  const data = [
+    {N: 512,  unfused_ms: 0.6, fused_ms: 0.5},
+    {N: 1024, unfused_ms: 1.8, fused_ms: 1.3},
+    {N: 2048, unfused_ms: 6.2, fused_ms: 4.5},
+    {N: 4096, unfused_ms: 22.0, fused_ms: 16.0},
+  ];
+  const long = data.flatMap(d => [
+    {N: d.N, impl: "torch unfused", ms: d.unfused_ms},
+    {N: d.N, impl: "triton fused",  ms: d.fused_ms}
+  ]);
+  return Plot.plot({
+    width: 720,
+    color: {legend: true, domain: ["torch unfused", "triton fused"], range: ["orange", "steelblue"]},
+    y: {label: "median latency (ms) — lower is better", grid: true},
+    x: {label: "N (= in = out, hidden size)"},
+    marks: [
+      Plot.line(long, {x: "N", y: "ms", stroke: "impl"}),
+      Plot.dot(long,  {x: "N", y: "ms", fill: "impl"})
+    ]
+  });
+}
+```
+
+The fused kernel saves the cost of writing and re-reading the bias-added
+intermediate. The expected speedup is modest -- 1.2x-1.5x in the
+compute-bound regime, more when the intermediate is large and the GPU is
+memory-bound on the bias and GELU passes.
+
+### Optimization discussion
+
+The batched matmul kernel is essentially the Chapter 9 kernel with a
+batch-stride preamble; the same block-size and `GROUP_SIZE_M` knobs
+apply. Add `@triton.autotune` over the same configs and you are done.
+
+For the fused linear, two extra considerations:
+
+- **Bias broadcast cost.** The bias load is one `BLOCK_N` vector per
+  program, cached in registers. Free in the limit. Do not load it
+  inside the K-loop by accident.
+- **Epilogue arithmetic.** The GELU adds a handful of FMA + tanh ops
+  per output element. Tanh is the expensive one; if you need maximum
+  throughput, the polynomial approximation
+  `0.5 * x * (1 + tanh(...))` is already the standard fast form.
+  Skipping straight to `F.gelu(x)` (the erf form) inside Triton needs
+  `tl.math.erf`, which is slower.
+
+What this is bound by: same as Chapter 9 -- compute-bound on tensor
+cores in the K-loop, with a trivial epilogue tax. If you are far from
+peak, suspect block sizes first.
+
+### Common bugs
+
+1. **Forgetting that `nn.Linear` uses `W^T`.** Calling the kernel with
+   `W` strides as if it were `(in, out)` gives you `Y = X @ W`, not
+   `Y = X @ W^T`. Output has the wrong shape, or worse, the right shape
+   with garbage values when `in == out`. The fix is the transpose-by-
+   stride pointer math; the test against `F.linear` catches it
+   immediately.
+2. **Wrong batch stride.** For `(B, M, K)` contiguous, `stride_ab` is
+   `M * K`, not `M` or `K` alone. Passing the wrong one means every
+   batch program reads from the same address and you get either NaNs
+   or silently duplicated output. Pass `a.stride(0)` explicitly and
+   forget about it.
+3. **Bias broadcast over the wrong axis.** Bias is `(N,)` and you want
+   to add it as `bias[None, :]` (broadcast over rows). Doing
+   `bias[:, None]` adds the wrong elements to the wrong outputs and
+   the test mismatches by a lot rather than a little.
+4. **Reshape that materializes.** If `X: (B, T, in)` is non-contiguous
+   (because of a `.transpose()` earlier), `x.reshape(-1, in)` will
+   silently allocate and copy. Either `.contiguous()` first
+   (explicit) or change the kernel to take a 3D `X` and walk the
+   `(B, T)` axes with two stride args.
+
+### Exercises
+
+#### Beginner
+
+1. **Plain batched matmul.** Strip the masks from
+   `batched_matmul_kernel` (assume divisibility). Verify against
+   `torch.matmul` for `(8, 256, 256) @ (8, 256, 256)`.
+
+2. **Linear without bias.** Adapt the fused kernel to compute
+   `Y = X @ W^T` only. Should be a one-line deletion plus removing the
+   bias argument from the launcher.
+
+3. **Linear with bias, no activation.** Same as the fused kernel but
+   stop after the bias add. This is the kernel `F.linear` represents.
+
+#### Intermediate
+
+4. **Reimplement fused linear + bias + GELU from scratch.** Walk
+   through the kernel by hand, then write it without looking. Confirm
+   against `F.gelu(F.linear(x, w, b), approximate="tanh")`.
+
+5. **Fused linear + bias + residual.** `Y = X @ W^T + b + R` where R
+   has the same shape as Y. Load R alongside the bias in the
+   epilogue, add it in fp32, cast, store. This is the FFN-output
+   fusion in a typical transformer block.
+
+#### Advanced
+
+6. **Discuss fused linear + LayerNorm.** Write a short paragraph
+   explaining what goes wrong. Hint: LayerNorm needs the mean and
+   variance of the full hidden-dim vector for each row. A matmul tile
+   only produces `BLOCK_N` columns at a time. Sketch what cooperative
+   reduction across tiles would cost and why most implementations
+   leave LayerNorm as a separate kernel.
+
+Solutions in `solutions/ch10_solutions.py`.

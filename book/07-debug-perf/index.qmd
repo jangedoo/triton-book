@@ -1,0 +1,5 @@
+---
+title: "Part 7: Debugging, Testing, Profiling, Optimization"
+---
+
+The craft skills. How to debug a kernel when the numbers go wrong, how to benchmark in a way that you can defend, how to drive `triton.autotune`, and how to read a profile to find the next optimization. Short Part, but the one you will return to most often.

@@ -1,0 +1,44 @@
+---
+title: "LLM Component → Triton Kernel Map"
+---
+
+A map from the building blocks of a modern decoder-only transformer to the Triton concepts and chapters that cover them. Use this as a navigation aid: pick a layer you want to understand, follow the chapters in the right column.
+
+| LLM component | Required Triton concepts | Chapter(s) | Source path |
+|---|---|---|---|
+| Residual add | Element-wise kernel, broadcasting, masks | Ch 1, Ch 3 | `src/ch03_memory/row_add.py` |
+| RMSNorm | Row-wise reduction, rsqrt, affine scale | Ch 4, Ch 7 | `src/ch07_rmsnorm/rmsnorm.py` |
+| LayerNorm | Two-pass row reduction (mean, variance), affine scale + shift | Ch 4, Ch 6 | `src/ch06_layernorm/layernorm.py` |
+| Q / K / V projection (linear) | Tiled matmul, bias add, contiguous strides | Ch 9, Ch 10 | `src/ch09_matmul/naive_matmul.py`, `src/ch10_batched_linear/linear_bias_gelu.py` |
+| MLP up / down projection (linear) | Tiled matmul, bias add | Ch 9, Ch 10 | `src/ch10_batched_linear/linear_bias_gelu.py` |
+| Batched matmul (multi-head, grouped) | Batch-dim stride, leading axis grid | Ch 10 | `src/ch10_batched_linear/batched_matmul.py` |
+| SwiGLU gate | Element-wise SiLU, element-wise multiply, fused-bias pattern | Ch 8, Ch 19 | `src/ch08_activations/swiglu.py`, `src/ch19_fused_swiglu/swiglu_bias.py` |
+| GEGLU gate | Element-wise GELU, element-wise multiply, fused-bias pattern | Ch 8, Ch 19 | `src/ch08_activations/gelu.py`, `src/ch19_fused_swiglu/geglu_bias.py` |
+| RoPE (rotary position embedding) | Element-wise transform on Q and K, paired index addressing, cos/sin tables | Ch 16 | `src/ch16_rope/rope.py` |
+| ALiBi (linear bias) | Per-head additive bias on attention scores | Ch 16 | `src/ch16_rope/alibi.py` |
+| Attention scores (Q @ K^T) | Tiled matmul, transposed B operand | Ch 9, Ch 13 | `src/ch13_naive_attention/qkt_matmul.py` |
+| Softmax | Row reduction, subtract max, exp, normalize | Ch 4, Ch 5 | `src/ch05_softmax/stable_softmax.py`, `src/ch05_softmax/online_softmax.py` |
+| Attention output (P @ V) | Tiled matmul, accumulator | Ch 9, Ch 13 | `src/ch13_naive_attention/pv_matmul.py` |
+| Causal mask | Per-tile index comparison, mask in load or in-kernel mask of S | Ch 13, Ch 14 | `src/ch13_naive_attention/causal_mask.py`, `src/ch14_flashattention/flash_attn_fwd.py` |
+| Naive attention (materialized) | Q@K^T + softmax + P@V as three steps | Ch 13 | `src/ch13_naive_attention/naive_attention.py` |
+| FlashAttention (forward) | Online softmax, tile streaming over K/V, never materialize S | Ch 14 | `src/ch14_flashattention/flash_attn_fwd.py` |
+| Attention backward (educational) | Recompute strategy, dQ / dK / dV tiling, atomic-free accumulation | Ch 15 | `src/ch15_attention_backward/educational_backward.py` |
+| KV cache append | Strided write into preallocated buffer, position offset | Ch 17 | `src/ch17_kv_cache/append_kv_cache.py` |
+| KV cache read (decode attention) | Strided load along the cached sequence dimension | Ch 17 | `src/ch17_kv_cache/decode_attention.py` |
+| Cross-entropy loss | Fused log-softmax + NLL, large vocab tiling | Ch 5, Ch 20 | `src/ch20_cross_entropy/cross_entropy.py` |
+| Logits → logprobs (logsumexp) | Row softmax + log, or log-softmax direct | Ch 5, Ch 20 | `src/ch20_cross_entropy/logsumexp.py` |
+| Sampling (argmax / greedy) | Row argmax | Ch 21 | `src/ch21_sampling/argmax.py` |
+| Sampling (temperature) | Element-wise scale | Ch 21 | `src/ch21_sampling/temperature.py` |
+| Sampling (top-k) | Row partial sort / top-k reduction | Ch 21 | `src/ch21_sampling/top_k.py` |
+| Sampling (top-p / nucleus) | Row softmax + cumulative sum + threshold | Ch 21 | *not implemented — see Ch 21 exercise 3* |
+| Quantized matmul (W8A16) | Low-precision storage, scale + zero point, dequant math in inner loop | Ch 22, Ch 23 | `src/ch23_quant/w8a16_matmul.py`, `src/ch23_quant/dequant.py` |
+| Dequant + bias + GELU fusion | Quant inner loop fused with epilogue activation | Ch 23 | `src/ch23_quant/dequant_bias_gelu.py` |
+| Fused residual + RMSNorm | Fusion pattern: write residual, reduce, scale | Ch 18 | `src/ch18_residual_rmsnorm/residual_rmsnorm.py` |
+| Fused bias + activation (SwiGLU / GEGLU) | Element-wise fusion at MLP boundary | Ch 19 | `src/ch19_fused_swiglu/swiglu_bias.py`, `src/ch19_fused_swiglu/geglu_bias.py` |
+| Persistent matmul (skeleton) | SM-resident loop over tile assignments | Ch 11 | `src/ch11_persistent_matmul/persistent_matmul_skeleton.py` |
+| Autotuned matmul / softmax | `triton.autotune`, pruned config space | Ch 26 | `src/ch26_autotune/autotuned_matmul.py`, `src/ch26_autotune/autotuned_softmax.py` |
+| Mini transformer library | Public API wrapping the kernels above | Ch 28 | `src/ch28_mini_lib/mini_triton_llm/` |
+| Drop-in transformer block (Triton) | End-to-end PyTorch swap | Ch 29 | `src/ch29_transformer_swap/triton_block.py`, `src/ch29_transformer_swap/pytorch_block.py` |
+| Fused residual + LN + dropout (playbook) | New-kernel design exercise | Ch 30 | `src/ch30_playbook/fused_residual_ln_dropout.py` |
+
+All source paths above resolve to real files in this repo. Anything marked *not implemented* is intentional and called out as an exercise in the corresponding chapter.

@@ -1,0 +1,5 @@
+---
+title: "Part 8: Capstone Projects"
+---
+
+Three projects that turn the book's kernels into something you can actually ship: package them into a clean mini library, drop them into a real PyTorch transformer in place of `nn.Linear` and `F.scaled_dot_product_attention`, and codify the repeatable design playbook you will use on the next kernel.

@@ -1,0 +1,5 @@
+---
+title: "Part 5: Modern LLM Layer Fusion"
+---
+
+Fusion is where memory-bound kernels go to die. We fuse residual + RMSNorm (the most common pair in modern decoders), fuse bias + activation + gate in the SwiGLU MLP, fuse log-softmax + NLL for cross-entropy, and turn temperature / top-k / top-p sampling into Triton kernels.

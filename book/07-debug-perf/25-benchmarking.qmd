@@ -1,0 +1,195 @@
+---
+title: "Chapter 25: Benchmarking Correctly"
+---
+
+A wrong benchmark is worse than no benchmark. It will guide you to optimize the part of the code that does not matter, or convince you a slow kernel is fast because you measured the kernel's launch overhead instead of its execution. This chapter is the short list of rules that produce numbers you can trust, plus a small set of helpers (`src/ch25_benchmarking/benchmark_utils.py`) that wrap the rules into one-liners.
+
+## The four rules
+
+1. **Warm up before timing.** The first call to a Triton kernel JIT-compiles it (sometimes seconds), the first call to a PyTorch op may page in DRAM, and the first launch after a GPU goes idle pays a clock-ramp cost. Run the function 25 times before you start the clock.
+2. **Synchronize CUDA around the timed region.** GPU work is asynchronous. If you call `time.perf_counter()` immediately after a kernel launch, you measure the launch overhead, not the kernel. Call `torch.cuda.synchronize()` both before starting the timer and before stopping it.
+3. **Average over many iterations.** A single launch is noisy. Run 100 iterations and take the median, not the mean — the mean is dragged by occasional slow runs (page faults, OS interrupts, GPU clock ramps).
+4. **Use the right baseline.** `torch.compile(fn)` is the realistic competition for elementwise and reduction kernels, not eager mode. Compare against both, but if you only beat eager, say so explicitly.
+
+`triton.testing.do_bench` does rules 1–3 for you. Use it.
+
+## The one helper you need: `do_bench`
+
+```python
+import triton.testing as tt
+
+ms = tt.do_bench(lambda: my_kernel(x, y), warmup=25, rep=100, return_mode="median")
+```
+
+`warmup` is the number of warmup iterations; `rep` is the number of timed iterations. The default `return_mode` is `"mean"`, but **`"median"` is the right default for performance work** — it is robust against outliers. The other modes (`"min"`, `"max"`) are useful for reporting spread.
+
+`do_bench` calls `torch.cuda.synchronize()` for you and uses CUDA events for the actual timing, which are more accurate than CPU-side clocks. You can stop reading here and use `do_bench` everywhere. The rest of this chapter is the math you need around it.
+
+## Computing bandwidth
+
+A memory-bound kernel is measured in GB/s. The formula is:
+
+```
+GB/s = (bytes_read + bytes_written) / (time_seconds * 1e9)
+```
+
+Element count times element size, in both directions:
+
+```python
+M, N = 4096, 4096
+bytes_read    = M * N * 2          # fp16 input
+bytes_written = M * N * 2          # fp16 output
+ms = tt.do_bench(lambda: my_kernel(x))
+gbs = (bytes_read + bytes_written) / (ms * 1e-3) / 1e9
+```
+
+Compare to your GPU's peak DRAM bandwidth. On the 2070 SUPER that is 448 GB/s. A kernel hitting 350 GB/s is doing very well; one hitting 50 GB/s has a problem (uncoalesced loads, register spill, or the kernel is doing more work than the bandwidth math accounts for).
+
+The helper in this chapter:
+
+```python
+from src.ch25_benchmarking import bandwidth_gbs
+gbs = bandwidth_gbs(bytes_read + bytes_written, ms)
+```
+
+## Computing TFLOP/s
+
+A compute-bound kernel is measured in TFLOP/s. Count the **useful** floating-point operations only — for a matmul of `(M, K) @ (K, N)`, that is `2 * M * N * K` (each output element is a dot of K multiplies and K-1 adds, rounded to 2K).
+
+```python
+M, N, K = 4096, 4096, 4096
+flops = 2 * M * N * K
+ms = tt.do_bench(lambda: matmul(x, w))
+tflops_val = flops / (ms * 1e-3) / 1e12
+```
+
+Compare to peak tensor-core throughput. On the 2070 SUPER fp16 tensor cores top out around 57 TFLOP/s; a hand-tuned `tl.dot` matmul should land in the 30–45 TFLOP/s range for square shapes.
+
+The helper:
+
+```python
+from src.ch25_benchmarking import tflops
+t = tflops(2 * M * N * K, ms)
+```
+
+## Comparing implementations
+
+When you want a chart of "Triton vs eager PyTorch vs torch.compile", the `compare` helper takes a dict and returns a list sorted fastest first:
+
+```python
+from src.ch25_benchmarking import compare
+
+torch_fn          = lambda: torch.softmax(x, dim=-1)
+compiled          = torch.compile(lambda x: torch.softmax(x, dim=-1))
+compiled_fn       = lambda: compiled(x)
+triton_fn         = lambda: my_triton_softmax(x)
+
+results = compare({
+    "torch_eager":    torch_fn,
+    "torch_compile":  compiled_fn,
+    "triton":         triton_fn,
+})
+# [('triton', 0.10), ('torch_compile', 0.12), ('torch_eager', 0.30)]
+```
+
+Feed the list straight to a Plotly bar chart.
+
+::: {.callout-warning appearance="simple"}
+**Placeholder data.** The numbers below are hardcoded illustrative values, not measurements. Replace with output from your own `triton.testing.do_bench` run before drawing conclusions.
+:::
+
+```{ojs}
+//| echo: false
+//| label: fig-compare-bench
+//| fig-cap: "Median latency of three softmax implementations sorted by speed. Lower is better. Triton kernel vs torch.compile vs torch.eager."
+{
+  const data = [
+    {impl: "triton",        ms: 0.10},
+    {impl: "torch_compile", ms: 0.12},
+    {impl: "torch_eager",   ms: 0.30},
+  ];
+  return Plot.plot({
+    color: {legend: true,
+            domain: ["triton", "torch_compile", "torch_eager"],
+            range: ["steelblue", "seagreen", "orange"]},
+    y: {label: "median latency (ms) — lower is better"},
+    x: {label: "implementation"},
+    marks: [
+      Plot.barY(data, {x: "impl", y: "ms", fill: "impl"})
+    ]
+  });
+}
+```
+
+## Misleading benchmarks: a field guide
+
+Here is what to avoid.
+
+**Allocating inside the timed region.**
+```python
+# BAD
+ms = tt.do_bench(lambda: my_kernel(torch.empty(N, device="cuda")))
+```
+You are measuring `torch.empty` cost on every iteration. Allocate outside.
+
+**Timing a single small launch.**
+```python
+# BAD
+t0 = time.perf_counter()
+my_kernel(x)            # 2 microseconds of work
+t1 = time.perf_counter()
+print((t1 - t0) * 1000) # measures ~10 microseconds of launch overhead
+```
+The launch overhead on a modern GPU is 5–15 microseconds. If your kernel runs in less time than that, you cannot measure it individually — benchmark a batch of launches.
+
+**Skipping the warmup.**
+```python
+# BAD
+ms = tt.do_bench(fn, warmup=0, rep=100)
+```
+The first iterations pay JIT compilation, page-in, and clock-ramp costs that have nothing to do with steady-state performance.
+
+**Comparing eager PyTorch and ignoring `torch.compile`.**
+PyTorch's compiler is the realistic baseline for elementwise, reduction, and small kernel work. Beating eager and losing to compile is not a win; it is a draw.
+
+**Averaging across very different shapes.**
+A single "Triton is 2x faster" number that averages over `N=128` and `N=4096` is meaningless. Report a table.
+
+**Running with other GPU work in the background.**
+The browser using the GPU for video decode, another Python process holding context, a Jupyter kernel from a previous experiment — all add noise. `nvidia-smi` to confirm you are alone before publishing numbers.
+
+**Failing to pin clocks.**
+If you have permission (`nvidia-smi -lgc <freq>`), pinning the GPU clock removes variance from clock ramping. On consumer hardware you usually do not, and you accept the variance.
+
+## Latency, throughput, and the difference
+
+Latency is "how long does one call take". Throughput is "how many calls per second can I sustain". For a kernel that is large enough to saturate the GPU, latency × calls = throughput and you can compute either from the other. For a kernel that is too small to saturate (the `M=1` decode case), latency is dominated by launch overhead and is independent of work size. In that regime, throughput rises with batch size until you fill the SMs.
+
+Report **latency** for inference workloads (you care about the response time of one request). Report **throughput** for training workloads (you care about samples per second). Report **both** if you are comparing to a paper.
+
+## A reusable helper module
+
+The chapter ships `src/ch25_benchmarking/benchmark_utils.py` with:
+
+```python
+def bench(fn, warmup=25, rep=100, return_mode="median") -> float:
+    """Returns ms (median by default)."""
+
+def bench_stats(fn, warmup=25, rep=100) -> dict:
+    """Returns {'min', 'median', 'mean', 'max'} in ms."""
+
+def bandwidth_gbs(bytes_total, ms) -> float:
+def tflops(flops_total, ms) -> float:
+
+def compare(fns: dict, warmup=25, rep=100) -> list:
+    """Returns [(name, ms), ...] sorted fastest first."""
+
+def manual_bench(fn, warmup=5, iters=50) -> float:
+    """Hand-rolled timing loop using torch.cuda.synchronize. Reference impl."""
+```
+
+Use `bench` and `compare` for everyday work. Use `bench_stats` when you want the spread for a report. The `manual_bench` exists as a teaching example — read it once to see the synchronize-then-time-then-synchronize pattern, then go back to `do_bench`.
+
+## Exercises
+
+See `exercises/ch25_exercises.md`. Solutions in `solutions/ch25_solutions.py`.

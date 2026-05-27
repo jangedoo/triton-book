@@ -1,0 +1,171 @@
+---
+title: "Chapter 01: Environment Setup"
+---
+
+This chapter is the boring necessary one. You install `uv`, install Python, install PyTorch with the right CUDA build, install Triton, verify the GPU is visible, and run a 15-line `vector_add` kernel. If all five steps succeed, the rest of the book will run on your machine.
+
+## The dependency graph
+
+Before we start, look at what depends on what. Every step below is one of these arrows.
+
+```{mermaid}
+flowchart LR
+    UV[uv] --> PY[Python 3.10+]
+    PY --> TORCH[PyTorch CUDA build]
+    TORCH --> TRITON[Triton]
+    TRITON --> KERNELS[Your kernels]
+    CUDA[CUDA driver and runtime] --> TORCH
+```
+
+`uv` manages Python. PyTorch needs a Python interpreter and the matching CUDA libraries. Triton is either bundled with PyTorch or installed separately; either way, it links against the same CUDA runtime PyTorch uses. Your kernels sit on top.
+
+## Step 1: install `uv` and the project environment
+
+This book's scaffold has already run `uv init`, so `pyproject.toml` exists at the repo root. You do not need to run `uv init` again.
+
+If you do not have `uv` yet, install it following the upstream instructions at [astral.sh/uv](https://docs.astral.sh/uv/). On Linux and macOS the official installer script is the path of least resistance.
+
+Two commands will dominate your workflow:
+
+- `uv sync` — read `pyproject.toml` and `uv.lock`, create or update the project's virtual environment, install everything declared. Run this after cloning the repo and after any pull that touches dependencies.
+- `uv add <package>` — add a new dependency, update `pyproject.toml` and `uv.lock`, install it. Use this when you want to pull in something new (e.g., `uv add matplotlib`).
+
+To run a Python file inside the project environment without activating the venv by hand:
+
+```bash
+uv run python src/ch01_setup/sanity_check.py
+```
+
+`uv run` resolves the environment and runs the command. You can prepend it to `python`, `pytest`, `pip`, or anything else you would normally run inside an activated venv.
+
+## Step 2: install PyTorch with CUDA
+
+PyTorch ships several wheels per release: a CPU-only build, builds for several CUDA versions, and a ROCm build. You want the CUDA build whose major version matches your installed driver. Check what you have:
+
+```bash
+nvidia-smi
+```
+
+The top-right of the output shows the CUDA version your driver supports. That is the *maximum* CUDA runtime you can use; you may install a PyTorch wheel built against an equal or lower CUDA version.
+
+Pick the right install command from the official selector at [pytorch.org/get-started/locally](https://pytorch.org/get-started/locally/). The page generates a copy-pasteable command for your OS, package manager, and CUDA version. Do not hardcode a wheel URL from this book — the URLs rotate with each release and the canonical selector always knows the current set.
+
+If you are using `uv`, install via `uv pip install` or `uv add` with the index URL that the PyTorch selector gives you. For example, an Ampere/Turing/Ada machine on Linux with a recent driver typically wants something like (do not copy this literally — check the selector):
+
+```bash
+uv pip install torch --index-url https://download.pytorch.org/whl/cu124
+```
+
+The selector will tell you the exact URL fragment (`cu121`, `cu124`, etc.) for your situation.
+
+## Step 3: install Triton
+
+Recent PyTorch CUDA builds ship Triton as a transitive dependency. After step 2 you can usually do:
+
+```python
+import triton
+print(triton.__version__)
+```
+
+If that prints a version, you are done. If you get `ModuleNotFoundError`, install it explicitly:
+
+```bash
+uv add triton
+```
+
+Pin a specific version only if you have a reason to — Triton tracks PyTorch fairly closely and the version that came bundled is usually the right one.
+
+## Step 4: verify the GPU is visible
+
+The minimum sanity check is below. Save it; we are going to put it in a source file in the next section so you can run it any time.
+
+```python
+import torch
+import triton
+import triton.language as tl
+
+print(torch.__version__)
+print(triton.__version__)
+print(torch.cuda.get_device_name())
+print(torch.cuda.get_device_capability())
+```
+
+Run it with `uv run python <path>`. You should see:
+
+- A non-zero PyTorch version (e.g., `2.5.1+cu124`). The `+cu124` suffix confirms you got a CUDA build, not the CPU wheel.
+- A Triton version (e.g., `3.1.0`).
+- Your GPU's name (e.g., `NVIDIA GeForce RTX 2070 SUPER`).
+- A compute capability tuple (e.g., `(7, 5)` for the 2070 SUPER's `sm_75`).
+
+If `torch.cuda.get_device_name()` raises an `AssertionError` saying "Torch not compiled with CUDA enabled", you installed the CPU wheel. Uninstall it (`uv pip uninstall torch`) and reinstall with the right index URL.
+
+## Step 5: run the first kernel
+
+The rest of the book treats every kernel as a teaching object: shapes, masks, pointer math. Right now we just want to confirm the toolchain end-to-end. The kernel below adds two vectors. It is intentionally minimal — every line will be dissected in Chapter 2.
+
+```python
+import torch
+import triton
+import triton.language as tl
+
+@triton.jit
+def add_kernel(x_ptr, y_ptr, out_ptr, n, BLOCK_SIZE: tl.constexpr):
+    pid = tl.program_id(axis=0)
+    offs = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    mask = offs < n
+    x = tl.load(x_ptr + offs, mask=mask)
+    y = tl.load(y_ptr + offs, mask=mask)
+    tl.store(out_ptr + offs, x + y, mask=mask)
+
+
+def vector_add(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    out = torch.empty_like(x)
+    n = x.numel()
+    grid = (triton.cdiv(n, 1024),)
+    add_kernel[grid](x, y, out, n, BLOCK_SIZE=1024)
+    return out
+```
+
+Smoke test:
+
+```python
+x = torch.randn(1_000_003, device="cuda", dtype=torch.float32)
+y = torch.randn_like(x)
+out = vector_add(x, y)
+assert torch.allclose(out, x + y)
+print("ok")
+```
+
+The shape `1_000_003` is deliberately not a multiple of `BLOCK_SIZE`. The `mask` is what keeps the last program from reading or writing past the end of the buffer. We will spend half of Chapter 03 on why that mask matters.
+
+The full file lives at `src/ch01_setup/sanity_check.py`. Run it:
+
+```bash
+uv run python src/ch01_setup/sanity_check.py
+```
+
+If the script prints versions, the device name, and `ok`, your stack is wired up. You can stop reading this chapter and start on [Chapter 02](../01-fundamentals/02-mental-model.qmd).
+
+## Platform notes
+
+The book targets Linux + NVIDIA CUDA as the primary path. Other platforms range from fine to painful.
+
+- **Linux (primary).** Works. Any modern NVIDIA driver with CUDA 12.x support and a Turing-generation or newer GPU (`sm_75+`) will run every kernel in this book. The reference machine is an RTX 2070 SUPER (`sm_75`); a few chapters in Parts 6 and 7 will flag features that need Ampere/Hopper.
+- **WSL2 (works).** Install the NVIDIA WSL driver on the Windows host, then install PyTorch CUDA inside the WSL2 Ubuntu environment exactly as you would on bare Linux. `nvidia-smi` should work inside WSL once the host driver is set up.
+- **Windows native (don't).** Triton's Windows support is incomplete and lags upstream. Use WSL2.
+- **macOS (cloud only).** There is no CUDA on macOS, so Triton's CUDA backend cannot run. Use a remote Linux box, a cloud GPU instance, or Google Colab. Edit locally, run remotely.
+- **AMD ROCm (experimental, out of scope).** Triton has an upstream ROCm backend under active development. If you have an MI-series GPU and want to experiment, see the Triton GitHub repository for the current status. The kernels in this book assume the CUDA backend; some will work on ROCm with minor changes, others will not.
+
+## Common installation problems
+
+A short, painful list. If any of these match what you are seeing, the fix is usually quick.
+
+- **`AssertionError: Torch not compiled with CUDA enabled`.** You installed the CPU wheel. Reinstall PyTorch from the CUDA index URL given by the official selector.
+- **`No module named 'triton'`.** Either you installed a PyTorch build that does not bundle Triton, or your environment got out of sync. Run `uv add triton`.
+- **CUDA major-version mismatch.** Your driver supports CUDA 11.8 but you installed a `cu124` wheel. The wheel will load but kernel launches will fail with cryptic errors. Reinstall against the right CUDA major version, or update the driver.
+- **`triton` and `torch` versions disagree.** Triton's ABI changes across major releases. If `import triton` works but `triton.jit` crashes with an internal error, your `torch` and `triton` versions are out of sync. Pin them via `uv sync` after letting `pyproject.toml` settle.
+- **Windows native attempts.** If you are on Windows and Triton is throwing platform-specific compile errors, stop. Switch to WSL2.
+- **macOS attempts.** `torch.cuda.is_available()` is `False` on any Mac. Use a remote GPU.
+- **Stale virtual environment.** When in doubt, `rm -rf .venv && uv sync`. `uv` will rebuild from `uv.lock` in seconds.
+
+Once `sanity_check.py` runs end-to-end, you are ready for [Chapter 02: the Triton mental model](../01-fundamentals/02-mental-model.qmd), which dissects the `vector_add` kernel above line by line.

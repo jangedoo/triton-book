@@ -1,0 +1,83 @@
+---
+title: "Triton Kernel Design Checklist"
+---
+
+A reusable, print-and-pin-to-the-wall checklist for designing a new Triton kernel. Work the phases in order. Do not skip ahead — every shortcut you take here you will pay for in debugging time later.
+
+---
+
+## Phase 1: Design
+
+- [ ] Write the operation out in plain math. Name every tensor, list every shape, and pin down every dtype.
+- [ ] Write a PyTorch reference implementation first. Make it as obvious and unoptimized as possible. This is your oracle.
+- [ ] Enumerate the input/output shapes and dtypes you intend to support.
+- [ ] Identify which dimensions are reduced, which are mapped over, and which are independent.
+- [ ] Decide what work one program instance is responsible for (one row, one tile, one head, etc.).
+- [ ] Decide the grid shape — usually `ceil(N / BLOCK_SIZE)` along whichever axes the kernel maps over.
+- [ ] Decide the block size constants. Start with powers of two; you can autotune later.
+- [ ] Decide the accumulator dtype. For matmul and reductions on FP16/BF16 inputs, accumulate in FP32.
+- [ ] Decide what gets loaded into SRAM (tiles) and what stays in registers (small vectors, scalars).
+- [ ] If the kernel does multi-stage software pipelining (matmul-style), plan `num_stages` up front.
+- [ ] Sketch the numerical hazards: overflow, underflow, catastrophic cancellation, division by tiny numbers. Note the mitigations (e.g., subtract the row max before `exp` in softmax).
+
+## Phase 2: Implement
+
+- [ ] Write the kernel signature: input pointers, output pointer, sizes, strides, `BLOCK_SIZE` as `tl.constexpr`.
+- [ ] Compute `pid = tl.program_id(axis=...)` for each grid axis.
+- [ ] Compute base offsets from `pid` and strides. Pass strides in as kernel arguments — do not hardcode `row_stride = N`.
+- [ ] Build per-element offset vectors with `tl.arange(0, BLOCK_SIZE)`.
+- [ ] Build masks for any dimension whose extent is not a multiple of the block size.
+- [ ] Use `tl.load(ptr, mask=mask, other=safe_default)` — pick `other` so a masked-off lane cannot poison a reduction (`0.0` for sums, `-inf` for maxes).
+- [ ] Do the actual compute. Keep it readable; cleverness comes after correctness.
+- [ ] `tl.store(ptr, value, mask=mask)`.
+- [ ] Write the Python launcher: allocate output, compute grid, call kernel. Validate input contiguity / dtype where assumed.
+
+## Phase 3: Test
+
+- [ ] Write a tiny-shape test (e.g., N=7, M=3) that you can reason about by hand. This catches stride and mask bugs before anything else.
+- [ ] Add a power-of-two shape test that should hit happy paths.
+- [ ] Add a non-power-of-two shape test that forces the mask to be exercised.
+- [ ] Add a boundary test: extent equal to `BLOCK_SIZE`, extent equal to `BLOCK_SIZE + 1`, extent equal to `BLOCK_SIZE - 1`.
+- [ ] Test each dtype variant the kernel claims to support (fp16, bf16, fp32, etc.) with the right tolerance for each.
+- [ ] If you claim to support non-contiguous inputs, test with a transposed or sliced tensor.
+- [ ] Compare against the PyTorch reference with `torch.testing.assert_close` and dtype-appropriate `rtol` / `atol`.
+- [ ] If the op has a backward, test it via `torch.autograd.gradcheck` (small fp64 inputs) or against the PyTorch backward.
+- [ ] Add a determinism check if relevant: run the kernel twice on the same input and assert bitwise equality.
+
+## Phase 4: Optimize
+
+- [ ] Establish a baseline: how long does the unoptimized kernel take, and what fraction of memory bandwidth or peak FLOPs is that?
+- [ ] Define the bound: is the kernel memory-bound, compute-bound, or latency-bound? Roofline-style math beats guessing.
+- [ ] Try larger `BLOCK_SIZE` values. Bigger tiles reduce overhead but cost registers and shared memory.
+- [ ] Try `num_warps` variations (1, 2, 4, 8). More warps help latency hiding; fewer help register pressure.
+- [ ] For matmul-style kernels, try `num_stages` variations (2–5).
+- [ ] Wrap the kernel with `triton.autotune` over a small set of configs that span the realistic shape space.
+- [ ] Re-measure with `triton.testing.do_bench` — warmup, sync, percentile reporting.
+- [ ] If memory-bound, look for fusion opportunities (combine with the surrounding op).
+- [ ] If compute-bound, check that you are using tensor cores (matmul) and that the accumulator dtype is right.
+
+## Phase 5: Document
+
+- [ ] Document the kernel's signature, supported shapes, supported dtypes, and the layout assumptions.
+- [ ] Document the hardware assumptions (e.g., "requires Hopper for FP8").
+- [ ] Document the numerical contract: tolerance versus the PyTorch reference, and why.
+- [ ] Record the benchmark numbers you actually measured, the GPU you measured on, and the shape you measured at. Do not extrapolate.
+- [ ] Note any known limitations or future work in a `# TODO` comment so the next reader is not surprised.
+
+---
+
+## Common-bug audit (read this before declaring the kernel "done")
+
+- [ ] Did you forget a mask on the last partial tile?
+- [ ] Did you load with `other=0.0` into a `max` reduction (should be `-inf`)?
+- [ ] Did you load with `other=-inf` into a `sum` reduction (should be `0.0`)?
+- [ ] Did you hardcode a stride that should have come from `tensor.stride(...)`?
+- [ ] Did you accumulate FP16 inputs in FP16 (should usually be FP32)?
+- [ ] Did you use `tl.exp` on a value that wasn't first shifted by the max (overflow risk)?
+- [ ] Did you assume contiguity but the caller passed a transposed tensor?
+- [ ] Did you assume the input is on the GPU but the test runs on CPU?
+- [ ] Did you forget `torch.cuda.synchronize()` before timing?
+- [ ] Did you forget warmup runs before benchmarking?
+- [ ] Did you treat `BLOCK_SIZE` as a runtime variable instead of `tl.constexpr`?
+- [ ] Did you off-by-one the grid dimension (`(N + BS - 1) // BS` vs `N // BS`)?
+- [ ] Did you write to the output without a mask, scribbling past the last valid element?

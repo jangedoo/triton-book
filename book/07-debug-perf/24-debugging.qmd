@@ -1,0 +1,172 @@
+---
+title: "Chapter 24: Debugging Triton Kernels"
+---
+
+By this point you have written many kernels and at least one of them has produced garbage and you did not immediately know why. This chapter is the field guide. It is dense on purpose — you will return to it. Read once linearly, then keep it open the next time a kernel goes wrong.
+
+Triton is harder to debug than PyTorch because the kernel runs on the device, you cannot step through it, and the symptoms (wrong numbers, NaNs, OOB writes, silent corruption of neighboring tensors) often look the same from the outside. The fix is to bring the kernel back to ground where you **can** see what it does: small shapes, deterministic inputs, the interpreter, and `tl.device_print`.
+
+## The two tools that matter
+
+### `TRITON_INTERPRET=1`
+
+Set this environment variable before importing `triton`, and Triton runs your kernel in pure Python. `tl.load` becomes a numpy slice. `tl.dot` becomes `numpy.matmul`. `print()` works. You can put a `breakpoint()` inside the kernel and the debugger will stop there. It is far slower than the compiled version — call it on shapes of 32 or 64, never 4096 — but it is ground truth for shape, mask, and stride bugs.
+
+```python
+import os
+os.environ["TRITON_INTERPRET"] = "1"
+import triton, triton.language as tl
+import torch
+
+@triton.jit
+def my_kernel(x_ptr, out_ptr, N, BLOCK: tl.constexpr):
+    pid = tl.program_id(0)
+    offs = pid * BLOCK + tl.arange(0, BLOCK)
+    mask = offs < N
+    print(f"pid={pid} offs={offs} mask={mask}")   # works under TRITON_INTERPRET
+    x = tl.load(x_ptr + offs, mask=mask, other=0.0)
+    tl.store(out_ptr + offs, x * 2.0, mask=mask)
+```
+
+The kernel runs serially, one program at a time, on the CPU. Race conditions vanish. The price is speed: factors of 100 to 10000 slowdown, depending on the kernel.
+
+### `tl.device_print`
+
+This is the in-kernel print that works in **compiled** mode. It buffers prints on the device and flushes them to stdout when the launch completes. Inside the kernel:
+
+```python
+tl.device_print("offs", offs)
+tl.device_print("acc_norm", tl.sum(acc * acc))
+```
+
+Limitations: every program prints its own line, so for a grid of 10000 programs you will be drowning in output. Restrict the print with a guard: `if pid == 0: tl.device_print(...)`. The output appears after the kernel finishes — if your kernel hangs, you see nothing.
+
+## The debugging workflow
+
+For every new kernel:
+
+1. **Start tiny.** N=8 or N=BLOCK. Make the shape exactly representable in your head.
+2. **Use deterministic inputs.** `torch.arange(N, dtype=torch.float32)` instead of `torch.randn`. When the output is wrong, you can read off which input element ended up where.
+3. **Compare against a PyTorch reference** with strict tolerances. Even on a fp16 kernel, run the reference in fp32 and let the kernel pick its dtype; the difference exposes real bugs and not just precision noise.
+4. **If wrong, switch to `TRITON_INTERPRET=1`.** Add `print` statements on `offs`, `mask`, and any intermediate tile. Run with a single program (`grid=(1,)`) until that one program is right.
+5. **Stay deterministic.** Do not bring back `randn` until correctness is established on `arange`.
+6. **Test boundary cases.** N=1, N=BLOCK, N=BLOCK+1, N=BLOCK-1, non-power-of-two. These are the inputs that exercise the mask.
+7. **Test dtype variants.** Every dtype the kernel claims to support, including the ones you "definitely already handled".
+8. **Test non-contiguous inputs** if the kernel claims to support them. `x = torch.randn(N, M).t()` is the test that catches stride bugs.
+9. **Only then benchmark.** A fast wrong kernel is worthless.
+
+## Bug class catalog
+
+The bugs in Triton kernels fall into seven recurring buckets. Knowing the bucket from the symptom shortens the fix from hours to minutes.
+
+### Shape bugs
+
+`tl.dot` requires specific shapes (multiples of 16 for the inner dim, typically). Broadcast mismatches between `(BLOCK_M,)` and `(BLOCK_M, BLOCK_N)` produce confusing compile errors or silently wrong arithmetic.
+
+- **Symptom:** compile error mentioning unexpected shape; or a tile that should be `(M, N)` is `(N, M)`.
+- **Fix:** print `tensor.shape` under `TRITON_INTERPRET`. Add `[:, None]` and `[None, :]` until the broadcast is what you intended.
+
+### Mask bugs
+
+The mask is the most common bug source. You forgot it. You used `other=0` where you needed `other=-inf`. You masked on the wrong axis.
+
+- **Symptom:** output is correct except on the last block, OR output is correct only when N is a multiple of BLOCK, OR neighboring tensors get corrupted between runs.
+- **Fix:** check every `tl.load` and `tl.store` has a `mask=`. For reductions where `other` matters, use `-inf` for max and `0` for sum. For `tl.store`, no `other` argument exists — `mask=` alone is enough.
+
+The OOB-store bug deserves its own warning. A masked `tl.load` with no mask reads garbage but at least lives in the kernel's allocated buffers (usually). A `tl.store` with no mask **writes** garbage to memory that belongs to other tensors. The symptom is that some unrelated tensor changes value between runs. The fix is `mask=` on every store.
+
+### Stride bugs
+
+You assumed a tensor is contiguous, but the caller passes a view (`.t()`, `.transpose(0, 1)`, a slice). Or you computed strides in bytes when Triton expects elements (or vice versa). Or your multi-dimensional offset arithmetic forgot a `* stride_m` somewhere.
+
+- **Symptom:** kernel is correct for `x.contiguous()`, wrong for `x.t()`.
+- **Fix:** pass strides explicitly from the launcher (`x.stride(0)`, `x.stride(1)`) and use them in the offset math. Never write `pid * N + offs`; always write `pid * stride_m + offs * stride_n`. Triton strides are in **elements**, not bytes.
+
+### Dtype bugs
+
+The accumulator is fp16 instead of fp32. You cast back to fp16 before you should. You compared fp16 outputs against fp32 references with fp32 tolerances.
+
+- **Symptom:** correct in fp32, wrong in fp16 (large absolute error). Or the kernel works for K=64 and is wrong for K=2048.
+- **Fix:** accumulator dtype is **always** fp32 unless you have a specific reason otherwise. Loosen test tolerances per the chapter conventions: fp16 gets `rtol=atol=1e-2`. Cast to output dtype only at the `tl.store`.
+
+### NaN bugs
+
+Almost always one of: forgot max-subtract in a softmax, divided by zero in a normalize, took `sqrt` of a small negative due to fp16 noise, accumulated in fp16 and overflowed.
+
+- **Symptom:** output is all NaN, or NaN appears only for large N, or NaN appears only in fp16.
+- **Fix:** for softmax, subtract the row max before `exp`. For variance, clamp `var = max(var, 0)` before `sqrt`. For divisions, add a small epsilon and verify the epsilon is in the right dtype (don't add `1e-12` to an fp16 tensor — it underflows). For accumulator overflow, cast to fp32.
+
+### OOB bugs
+
+Reading or writing past the end of the buffer. Often a stride bug in disguise.
+
+- **Symptom:** `CUDA error: an illegal memory access was encountered`. Sometimes silent — the OOB write happens to land in a buffer you don't read.
+- **Fix:** drop to `TRITON_INTERPRET=1` and print every offset and mask. If `offs` ever exceeds the tensor extent without a corresponding `mask`, that is the bug. Triton's interpreter is strict about OOB access and will raise immediately.
+
+### Race bugs
+
+You wrote to overlapping memory locations from multiple programs. Triton does not provide atomic adds by default; if two programs accumulate into the same output element, you lose one of the updates.
+
+- **Symptom:** output is non-deterministic across runs even for the same input.
+- **Fix:** redesign the grid so each output element is owned by exactly one program. If you really need atomic adds, use `tl.atomic_add` (slow but correct).
+
+## Symptom-to-bug-class table
+
+| Symptom                                                         | Likely bug class    |
+|----------------------------------------------------------------|---------------------|
+| Wrong only on last block                                       | Mask                |
+| Wrong only when N is not a multiple of BLOCK                   | Mask                |
+| All NaN in softmax-like reduction                              | Missing max-subtract|
+| All NaN only in fp16                                           | fp16 overflow → fp32 accumulator |
+| Correct for contiguous, wrong for `.t()`                       | Stride              |
+| Correct in fp32, wrong in fp16 with large error                | Dtype (accumulator) |
+| Neighboring tensor changes between runs                        | OOB write (mask on store) |
+| `illegal memory access`                                        | OOB load or store   |
+| Non-deterministic output                                       | Race / atomic       |
+| Compile error mentioning shape                                 | Shape / broadcast   |
+
+## A worked find-and-fix
+
+The repository ships a deliberately buggy `add_with_mask_bug` kernel in `src/ch24_debugging/debug_demo.py`. Here is the kernel:
+
+```python
+@triton.jit
+def _add_buggy_kernel(x_ptr, y_ptr, out_ptr, n_elements, BLOCK: tl.constexpr):
+    pid = tl.program_id(0)
+    offs = pid * BLOCK + tl.arange(0, BLOCK)
+    mask = offs < n_elements
+    x = tl.load(x_ptr + offs, mask=mask, other=0.0)
+    y = tl.load(y_ptr + offs, mask=mask, other=0.0)
+    out = x + y
+    tl.store(out_ptr + offs, out)              # BUG: missing mask
+```
+
+Run it with `n=1000, BLOCK=128`. The output looks fine because the trailing 24 elements of the last program write past the end of `out`, but `out` is the last allocation so the writes land in unused heap. Now allocate a second tensor right after:
+
+```python
+z = torch.zeros(2048, device="cuda")
+result = add_with_mask_bug(x, y)   # n=1000
+print(z.sum())   # not zero — z got corrupted
+```
+
+The corruption of `z` is the smoking gun. Switch to `TRITON_INTERPRET=1`, add `tl.device_print("offs", offs)` and run with `n=1000, BLOCK=128, grid=(8,)`. The last program prints `offs = [896, 897, ..., 1023]`, all of which are `>= n_elements=1000` for the last 24 entries. The store writes those 24 entries unmasked. Fix: add `mask=mask` to the store. The fixed version is `add_fixed` in the same file.
+
+## Reducing problem size
+
+When a kernel fails on `(2048, 2048)` and works on `(64, 64)`, the bug is almost always a mask or a tail-handling problem. Shrink the failing case until you can write the expected output by hand. For matmul, `M=N=K=BLOCK_K` produces a single program with a single K iteration — read it in the interpreter, print every tile, compare to a `torch.arange` reference. This shrinks bugs from "wrong somewhere in a 4M-element tensor" to "wrong in this 64-element row".
+
+## Testing one program at a time
+
+Set `grid=(1,)` (or `(1, 1)` for 2-D grids) and skip the rest. The single program runs on a single tile; everything you print is from that one program. Combined with `TRITON_INTERPRET=1`, this is your microscope.
+
+## Common gotchas
+
+- **`tl.device_print` in compiled mode buffers and may not flush** if the kernel crashes. If you see no output and you suspect a hang, switch to `TRITON_INTERPRET=1`.
+- **`print()` inside a `@triton.jit` function only works under `TRITON_INTERPRET`.** In compiled mode it is a no-op (or raises). Use `tl.device_print` for compiled-mode prints.
+- **`if pid == 0` guards a print, but the condition must be a scalar.** Compare `tl.program_id(0)` directly, not after arithmetic that produces a tensor.
+- **Strides are in elements, not bytes.** A common bug for people coming from CUDA, where strides are bytes.
+- **The `other` argument is not optional for masked loads in reductions.** `tl.load(..., mask=m)` defaults `other` to 0, which is wrong for a max reduction. Use `other=-float("inf")` for max, `other=0.0` for sum.
+
+## Exercises
+
+The chapter exercises are a set of debugging puzzles — small broken kernels you fix and explain. See `exercises/ch24_exercises.md`. Worked fixes in `solutions/ch24_solutions.py`. There is no benchmark or correctness suite for this chapter; the exercises are the practice.

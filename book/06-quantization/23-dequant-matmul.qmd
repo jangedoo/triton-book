@@ -1,0 +1,495 @@
+---
+title: "Chapter 23: Int8 / FP8 Style Dequant + Matmul Concepts"
+---
+
+Three kernels in this chapter, in order of increasing ambition. First, a standalone int8 dequant. Second, a fused dequant + bias + GELU — the same epilogue-fusion pattern from Chapter 8, just with an int8 load on the front. Third, a W8A16 matmul that dequantizes the weight tile inside the K-loop and feeds the fp16 result straight into `tl.dot`. This last one is the kernel that powers a meaningful share of consumer-GPU LLM inference today.
+
+::: {.callout-warning}
+## Hardware caveat
+The dequant and W8A16 kernels run on any GPU Triton supports (Volta and newer). The W8A8 exercise at the end of the chapter uses int8 tensor cores, which Turing (sm_75) and newer support — the author's 2070 SUPER runs it. FP8 paths (e4m3 / e5m2) need Hopper (sm_90+); this chapter discusses them but does not implement them. MXFP4/MXFP8 block-scaled matmul lives in the official Triton tutorial; we link to it rather than reproduce it.
+:::
+
+## Kernel 1: dequant_int8_per_channel
+
+### PyTorch reference
+
+```{python}
+#| eval: false
+import torch
+
+def dequant_ref(q: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
+    # q:     int8, (M, N)
+    # scale: fp16, (M,) — one scale per row
+    return (scale[:, None].to(torch.float32) * q.to(torch.float32)).to(torch.float16)
+```
+
+That is the entire spec. The Triton version exists because dequant followed by a real op is two trips to memory; fusing dequant into the next op saves the round trip. But before we fuse, we write the standalone kernel to anchor the math.
+
+### Triton implementation
+
+The kernel tiles the output into `(BLOCK_M, BLOCK_N)` blocks, one per program. Each program loads a `(BLOCK_M, BLOCK_N)` int8 tile, the `(BLOCK_M,)` scale slice for its row range, casts the int8 tile to fp32, broadcasts the scale along the column axis, multiplies, and stores fp16.
+
+```{python}
+#| eval: false
+import torch, triton, triton.language as tl
+
+@triton.jit
+def _dequant_int8_per_channel_kernel(
+    q_ptr, scale_ptr, out_ptr,
+    M, N,
+    stride_qm, stride_qn,
+    stride_om, stride_on,
+    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
+):
+    pid_m = tl.program_id(0)
+    pid_n = tl.program_id(1)
+    offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    mask_m = offs_m < M
+    mask_n = offs_n < N
+
+    q_ptrs = q_ptr + offs_m[:, None] * stride_qm + offs_n[None, :] * stride_qn
+    q = tl.load(q_ptrs, mask=mask_m[:, None] & mask_n[None, :], other=0)
+    s = tl.load(scale_ptr + offs_m, mask=mask_m, other=0.0).to(tl.float32)
+    out = (s[:, None] * q.to(tl.float32)).to(tl.float16)
+
+    out_ptrs = out_ptr + offs_m[:, None] * stride_om + offs_n[None, :] * stride_on
+    tl.store(out_ptrs, out, mask=mask_m[:, None] & mask_n[None, :])
+```
+
+Two design points worth naming. First, we cast the int8 tile to fp32 before the multiply, not fp16. The product `int8 * fp16` would round to fp16 once for the multiply and again for the store, costing precision. Doing the multiply in fp32 and rounding once at the store costs a few extra registers and gains a clean half-ulp. Second, the scale tensor is loaded once per program and broadcast — there is no per-element scale load.
+
+### Shape trace
+
+```
+Input:     q     : (M, N)     int8     (per-program tile (BLOCK_M, BLOCK_N))
+           scale : (M,)        fp16
+Output:    out   : (M, N)      fp16
+
+pid_m, pid_n                                       scalars                   int32
+offs_m = pid_m * BLOCK_M + arange(0, BLOCK_M)      (BLOCK_M,)                int32
+offs_n = pid_n * BLOCK_N + arange(0, BLOCK_N)      (BLOCK_N,)                int32
+mask_m = offs_m < M                                (BLOCK_M,)                bool
+mask_n = offs_n < N                                (BLOCK_N,)                bool
+
+q     = tl.load(q_ptrs, mask=mask_m & mask_n)      (BLOCK_M, BLOCK_N)        int8
+q_f   = q.to(fp32)                                 (BLOCK_M, BLOCK_N)        fp32
+s     = tl.load(scale_ptr + offs_m, mask=mask_m)   (BLOCK_M,)                fp32
+out   = s[:, None] * q_f                           (BLOCK_M, BLOCK_N)        fp32
+tl.store(out_ptrs, out.to(fp16), mask=...)         (BLOCK_M, BLOCK_N)        fp16
+```
+
+### Pointer arithmetic and masks
+
+The 2-D pointer pattern is the same as the matmul chapter: `q_ptr + offs_m[:, None] * stride_qm + offs_n[None, :] * stride_qn` produces a `(BLOCK_M, BLOCK_N)` pointer tile. The mask is `mask_m[:, None] & mask_n[None, :]` — both axes need to be in range, and the broadcasting matches the pointer tile's shape exactly.
+
+The scale load uses a 1-D pointer with the row offsets only: `scale_ptr + offs_m`. The mask `mask_m` covers the row dimension. We use `other=0.0` for both the q load (int8 zero is harmless under multiply) and the scale load (zero scale produces zero output, which the mask discards anyway).
+
+### Correctness test
+
+```{python}
+#| eval: false
+import pytest, torch
+
+@pytest.mark.parametrize("M,N", [(7, 11), (64, 128), (130, 257)])
+def test_dequant_int8_per_channel(M, N):
+    from src.ch23_quant import dequant_int8_per_channel
+    q = torch.randint(-128, 128, (M, N), dtype=torch.int8, device="cuda")
+    scale = torch.rand(M, device="cuda", dtype=torch.float16) * 0.05 + 0.01
+
+    out = dequant_int8_per_channel(q, scale)
+    ref = (scale[:, None].to(torch.float32) * q.to(torch.float32)).to(torch.float16)
+    torch.testing.assert_close(out, ref, rtol=1e-2, atol=1e-2)
+```
+
+Three shapes: hand-traceable (7, 11), a multi-block clean shape (64, 128), and a non-multiple (130, 257) that exercises both masks.
+
+### Benchmark
+
+```{python}
+#| eval: false
+import torch, triton
+from src.ch23_quant import dequant_int8_per_channel
+
+q = torch.randint(-128, 128, (4096, 4096), dtype=torch.int8, device="cuda")
+scale = torch.rand(4096, device="cuda", dtype=torch.float16) * 0.02 + 0.005
+
+triton_ms = triton.testing.do_bench(
+    lambda: dequant_int8_per_channel(q, scale),
+    warmup=25, rep=100, return_mode="median",
+)
+# bytes: M*N int8 in + M fp16 scale in + M*N fp16 out
+bytes_total = 4096 * 4096 + 4096 * 2 + 4096 * 4096 * 2
+gbs = bytes_total / (triton_ms * 1e-3) / 1e9
+print(f"dequant: {triton_ms:.3f} ms, {gbs:.1f} GB/s")
+```
+
+::: {.callout-warning appearance="simple"}
+**Placeholder data.** The numbers below are hardcoded illustrative values, not measurements. Replace with output from your own `triton.testing.do_bench` run before drawing conclusions.
+:::
+
+```{ojs}
+//| echo: false
+//| label: fig-dequant-int8-bench
+//| fig-cap: "Per-row int8 dequant median latency vs square side length N (M=N, fp16 output). Lower is better. Triton dequant kernel vs eager PyTorch broadcast."
+{
+  const data = [
+    {N: 1024, triton_ms: 0.08, torch_ms: 0.20},
+    {N: 2048, triton_ms: 0.30, torch_ms: 0.80},
+    {N: 4096, triton_ms: 1.20, torch_ms: 3.20},
+    {N: 8192, triton_ms: 4.80, torch_ms: 12.50},
+  ];
+  const long = data.flatMap(d => [
+    {N: d.N, impl: "triton", ms: d.triton_ms},
+    {N: d.N, impl: "torch",  ms: d.torch_ms}
+  ]);
+  return Plot.plot({
+    color: {legend: true, domain: ["triton", "torch"], range: ["steelblue", "orange"]},
+    x: {label: "N (square-side length, elements)"},
+    y: {label: "median latency (ms) — lower is better"},
+    marks: [
+      Plot.line(long, {x: "N", y: "ms", stroke: "impl"}),
+      Plot.dot(long,  {x: "N", y: "ms", fill: "impl"})
+    ]
+  });
+}
+```
+
+This kernel is memory-bound. Useful bandwidth is `(M*N + M*N*2) / time` (ignoring the tiny scale load). Compare to your GPU's peak DRAM bandwidth — on the 2070 SUPER (~448 GB/s), expect to land in the 300–400 GB/s range for clean shapes.
+
+### Optimization discussion
+
+This kernel does almost no compute, so the only knob that matters is **how well you saturate memory**. Block sizes `(64, 128)` work well on the 2070 SUPER — `BLOCK_M=64` keeps the row-scale broadcast cheap, `BLOCK_N=128` gives a contiguous 128-element store that the L2 likes. Bigger BLOCKs trade occupancy for fewer launches; smaller ones risk leaving the SMs under-fed. The kernel is the wrong unit of work for a standalone op — in practice you fuse the dequant into whatever comes next, which is what the next two kernels do.
+
+### Common bugs
+
+- **Scale broadcast on the wrong axis.** Confusing `s[:, None]` (per-row) with `s[None, :]` (per-column). The output looks roughly right but every column is off by a constant ratio.
+- **Casting int8 to fp16 before the multiply.** Costs precision and, for small scales, can flush small values to zero before the multiply. Cast through fp32.
+- **Loading int8 with `other=0.0`.** The dtype mismatch will either fail to compile or silently coerce. Use `other=0` (integer) for int8 loads.
+
+### Exercises
+
+See `exercises/ch23_exercises.md`. Three beginner, two intermediate, one advanced. Solutions in `solutions/ch23_solutions.py`.
+
+---
+
+## Kernel 2: dequant_bias_gelu_fused
+
+### PyTorch reference
+
+```{python}
+#| eval: false
+def fused_ref(q, scale, bias):
+    x = scale[:, None].to(torch.float32) * q.to(torch.float32) + bias.to(torch.float32)[None, :]
+    return torch_gelu(x).to(torch.float16)
+```
+
+In a non-fused pipeline you would: dequantize → materialize fp16 in DRAM → load fp16 → bias add → store → load → GELU → store. Four global memory passes. The Triton version does all four steps in registers, with one load of `q`, one of `scale`, one of `bias`, and one store of the final activation.
+
+### Triton implementation
+
+The kernel structure is identical to Kernel 1 with three extra lines: load the bias, add it, apply tanh-approx GELU.
+
+```{python}
+#| eval: false
+# ... offs/masks same as before ...
+q = tl.load(q_ptrs, mask=mask_m[:, None] & mask_n[None, :], other=0)
+s = tl.load(scale_ptr + offs_m, mask=mask_m, other=0.0).to(tl.float32)
+b = tl.load(bias_ptr  + offs_n, mask=mask_n, other=0.0).to(tl.float32)
+
+x = s[:, None] * q.to(tl.float32) + b[None, :]
+
+# tanh-approx GELU
+k0 = 0.7978845608028654    # sqrt(2/pi)
+k1 = 0.044715
+inner = k0 * (x + k1 * x * x * x)
+y = 0.5 * x * (1.0 + tl.math.tanh(inner))
+
+tl.store(out_ptrs, y.to(tl.float16), mask=mask_m[:, None] & mask_n[None, :])
+```
+
+The bias is per-column, so it broadcasts along the M axis: `b[None, :]`. The scale is per-row, broadcasting along N: `s[:, None]`. The two broadcasts produce a `(BLOCK_M, BLOCK_N)` tile entirely in fp32 registers.
+
+### Shape trace
+
+```
+q     : (BLOCK_M, BLOCK_N)        int8
+s     : (BLOCK_M,)                 fp32
+b     : (BLOCK_N,)                 fp32
+
+x     = s[:, None] * q.fp32 + b[None, :]    (BLOCK_M, BLOCK_N)   fp32
+inner = k0 * (x + k1 * x^3)                 (BLOCK_M, BLOCK_N)   fp32
+y     = 0.5 * x * (1 + tanh(inner))         (BLOCK_M, BLOCK_N)   fp32
+store y.to(fp16)
+```
+
+### Pointer arithmetic and masks
+
+Same `(BLOCK_M, BLOCK_N)` pointer tile as Kernel 1. The bias load uses the column offsets: `bias_ptr + offs_n` with `mask_n`. The scale load uses row offsets. The 2-D mask `mask_m[:, None] & mask_n[None, :]` covers the store, exactly as before.
+
+`other=0` for `q`, `other=0.0` for `s` and `b`. The zero bias contributes nothing under the masked store; the zero scale produces zero output, which is also discarded.
+
+### Correctness test
+
+```{python}
+#| eval: false
+def test_dequant_bias_gelu_fused():
+    from src.ch23_quant import dequant_bias_gelu_fused
+    M, N = 130, 257
+    q = torch.randint(-128, 128, (M, N), dtype=torch.int8, device="cuda")
+    scale = torch.rand(M, device="cuda", dtype=torch.float16) * 0.02 + 0.005
+    bias  = torch.randn(N, device="cuda", dtype=torch.float16) * 0.1
+    out = dequant_bias_gelu_fused(q, scale, bias)
+
+    x32 = scale.to(torch.float32)[:, None] * q.to(torch.float32) + bias.to(torch.float32)[None, :]
+    ref = (0.5 * x32 * (1 + torch.tanh(0.7978845608 * (x32 + 0.044715 * x32 ** 3)))).to(torch.float16)
+    torch.testing.assert_close(out, ref, rtol=2e-2, atol=2e-2)
+```
+
+GELU's nonlinearity amplifies fp16 rounding; we allow `2e-2` tolerance, which is still tight enough to catch a real bug.
+
+### Benchmark
+
+The fused kernel makes one pass over `q`, `scale`, and `bias`, and writes one output. The non-fused PyTorch baseline makes the same number of trips on paper but actually launches three separate kernels (`* + tanh + *`) and materializes two intermediate fp16 tensors. Expect a 1.5x to 3x win on memory-bound shapes.
+
+::: {.callout-warning appearance="simple"}
+**Placeholder data.** The numbers below are hardcoded illustrative values, not measurements. Replace with output from your own `triton.testing.do_bench` run before drawing conclusions.
+:::
+
+```{ojs}
+//| echo: false
+//| label: fig-dequant-bias-gelu-bench
+//| fig-cap: "Fused int8-dequant + bias + tanh-approx GELU median latency vs square side length N (M=N, fp16 output). Lower is better. Triton fused kernel vs unfused PyTorch baseline."
+{
+  const data = [
+    {N: 1024, triton_ms: 0.10, torch_ms: 0.35},
+    {N: 2048, triton_ms: 0.40, torch_ms: 1.20},
+    {N: 4096, triton_ms: 1.60, torch_ms: 5.00},
+  ];
+  const long = data.flatMap(d => [
+    {N: d.N, impl: "triton fused",   ms: d.triton_ms},
+    {N: d.N, impl: "torch unfused",  ms: d.torch_ms}
+  ]);
+  return Plot.plot({
+    color: {legend: true, domain: ["triton fused", "torch unfused"], range: ["steelblue", "orange"]},
+    x: {label: "N (square-side length, elements)"},
+    y: {label: "median latency (ms) — lower is better"},
+    marks: [
+      Plot.line(long, {x: "N", y: "ms", stroke: "impl"}),
+      Plot.dot(long,  {x: "N", y: "ms", fill: "impl"})
+    ]
+  });
+}
+```
+
+### Optimization discussion
+
+Same story as Kernel 1: memory-bound. The fused version's value comes from eliminating intermediate writes, not from arithmetic intensity. If the activation gets more expensive (e.g. exact GELU with `erf`), the kernel starts shifting toward compute-bound; that is when you would care about `num_warps`.
+
+### Common bugs
+
+- **GELU constants miscopied.** `sqrt(2/pi) ≈ 0.79788456`, `0.044715` for the cubic coefficient. A wrong digit produces a kernel that compiles, passes a smoke test, and is silently wrong by a few percent.
+- **Bias dtype mismatch.** Loading bias as fp16 and adding to an fp32 `x` works because Triton promotes; loading bias as fp32 and adding to an fp16 `x` may compile but produces fp16 arithmetic on the bias addition.
+- **Forgetting the mask on `bias` load.** `offs_n` can exceed N for the last column tile; `other=0.0` is what saves you.
+
+### Exercises
+
+See chapter exercises file.
+
+---
+
+## Kernel 3: w8a16_matmul
+
+### PyTorch reference
+
+```{python}
+#| eval: false
+def w8a16_ref(x, w_int8, scale):
+    # x:      (M, K) fp16
+    # w_int8: (K, N) int8
+    # scale:  (N,)   fp16  — per output channel
+    w_fp = (scale[None, :].to(torch.float32) * w_int8.to(torch.float32)).to(torch.float16)
+    return x @ w_fp
+```
+
+The reference materializes the dequantized fp16 weight matrix and then matmuls. This works but doubles the weight footprint at runtime and forces a DRAM round trip. The Triton kernel does the dequant inside the K-loop, so the int8 tile travels through registers to the fp16 dot — the weight only lives at full precision in registers.
+
+### Triton implementation
+
+Structure is the standard 2-D tiled matmul from Chapter 9, with two changes. First, the W tile is loaded as int8. Second, after the load, we cast to fp16 and multiply by the per-column scale before calling `tl.dot`.
+
+```{python}
+#| eval: false
+@triton.jit
+def _w8a16_matmul_kernel(
+    x_ptr, w_ptr, scale_ptr, y_ptr,
+    M, N, K,
+    stride_xm, stride_xk,
+    stride_wk, stride_wn,
+    stride_ym, stride_yn,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+):
+    pid_m = tl.program_id(0)
+    pid_n = tl.program_id(1)
+    offs_m = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    offs_k = tl.arange(0, BLOCK_K)
+
+    x_ptrs = x_ptr + offs_m[:, None] * stride_xm + offs_k[None, :] * stride_xk
+    w_ptrs = w_ptr + offs_k[:, None] * stride_wk + offs_n[None, :] * stride_wn
+
+    mask_n = offs_n < N
+    s = tl.load(scale_ptr + offs_n, mask=mask_n, other=0.0).to(tl.float16)
+
+    acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
+    for k_start in range(0, K, BLOCK_K):
+        k_mask = (k_start + offs_k) < K
+        x = tl.load(x_ptrs, mask=(offs_m[:, None] < M) & k_mask[None, :], other=0.0)
+        w_q = tl.load(w_ptrs, mask=k_mask[:, None] & (offs_n[None, :] < N), other=0)
+        # Dequant inside the loop. Multiply happens in fp16; broadcast s across K.
+        w_fp = w_q.to(tl.float16) * s[None, :]
+        acc += tl.dot(x, w_fp)
+        x_ptrs += BLOCK_K * stride_xk
+        w_ptrs += BLOCK_K * stride_wk
+
+    y_ptrs = y_ptr + offs_m[:, None] * stride_ym + offs_n[None, :] * stride_yn
+    tl.store(y_ptrs, acc.to(tl.float16),
+             mask=(offs_m[:, None] < M) & (offs_n[None, :] < N))
+```
+
+The scale is loaded **once**, outside the K-loop. This is the key trick. A naive implementation that re-loaded the scale every iteration would do K/BLOCK_K extra global loads per program; here the scale lives in registers across the entire K-traversal. With `BLOCK_N=128` and fp16 scale, that is 256 bytes per program — trivial register cost for a real win.
+
+The dequant multiply `w_q.to(fp16) * s[None, :]` happens **before** `tl.dot`, not after. The reason: `tl.dot` on fp16 inputs uses fp16 tensor cores. If we did the scale multiply on the fp32 accumulator after the dot, we would be doing fp32 elementwise math on a `(BLOCK_M, BLOCK_N)` tile every iteration, which defeats the purpose. Folding the scale into the weight tile keeps the tensor-core path clean.
+
+### Shape trace
+
+```
+Inputs:
+  x_ptr     : (M, K)        fp16
+  w_ptr     : (K, N)        int8
+  scale_ptr : (N,)          fp16
+Per-program tile output: y[offs_m, offs_n] : (BLOCK_M, BLOCK_N) fp16
+
+pid_m, pid_n                                  scalars                  int32
+offs_m = pid_m*BLOCK_M + arange(0,BLOCK_M)    (BLOCK_M,)               int32
+offs_n = pid_n*BLOCK_N + arange(0,BLOCK_N)    (BLOCK_N,)               int32
+offs_k = arange(0, BLOCK_K)                   (BLOCK_K,)               int32
+
+s = tl.load(scale_ptr + offs_n)               (BLOCK_N,)               fp16
+
+acc = tl.zeros((BLOCK_M, BLOCK_N), fp32)      (BLOCK_M, BLOCK_N)       fp32
+
+for k_start in range(0, K, BLOCK_K):
+    x   = tl.load(x_ptrs, mask, other=0)      (BLOCK_M, BLOCK_K)       fp16
+    w_q = tl.load(w_ptrs, mask, other=0)      (BLOCK_K, BLOCK_N)       int8
+    w_f = w_q.to(fp16) * s[None, :]           (BLOCK_K, BLOCK_N)       fp16
+    acc += tl.dot(x, w_f)                     (BLOCK_M, BLOCK_N)       fp32
+
+store acc.to(fp16) at y_ptrs                  (BLOCK_M, BLOCK_N)       fp16
+```
+
+### Pointer arithmetic and masks
+
+The X tile is `(BLOCK_M, BLOCK_K)` and advances along K each iteration: `x_ptrs += BLOCK_K * stride_xk`. The W tile is `(BLOCK_K, BLOCK_N)`, advancing similarly: `w_ptrs += BLOCK_K * stride_wk`.
+
+Masks have to cover three independent boundaries: M (rows of X and output), N (columns of W and output), and K (the reduction tail when K is not a multiple of BLOCK_K). Inside the loop, `k_mask = (k_start + offs_k) < K` handles the K boundary. We use `other=0.0` and `other=0` because zero contributions to the accumulator are exactly what we want for out-of-range elements.
+
+### Correctness test
+
+```{python}
+#| eval: false
+@pytest.mark.parametrize("M,N,K", [(32, 64, 32), (65, 130, 33), (128, 256, 128)])
+def test_w8a16_matmul(M, N, K):
+    from src.ch23_quant import w8a16_matmul
+    x = torch.randn(M, K, device="cuda", dtype=torch.float16) * 0.5
+    w = torch.randint(-127, 128, (K, N), dtype=torch.int8, device="cuda")
+    scale = torch.rand(N, device="cuda", dtype=torch.float16) * 0.02 + 0.005
+
+    y = w8a16_matmul(x, w, scale)
+    w_fp = (scale[None, :].to(torch.float32) * w.to(torch.float32)).to(torch.float16)
+    ref = (x.to(torch.float32) @ w_fp.to(torch.float32)).to(torch.float16)
+    torch.testing.assert_close(y, ref, rtol=3e-2, atol=3e-2)
+```
+
+Tolerances are looser than a pure fp16 matmul because the dequant multiply adds another rounding step.
+
+### Benchmark
+
+W8A16 wins when the matmul is memory-bound on the weight, which is the typical LLM decode case: `M=1` (one token), `K=N=4096+`. In that regime, the int8 weight is half the size of fp16 and the kernel runs roughly twice as fast as the fp16 reference. At square shapes like `M=N=K=1024`, the work is compute-bound and W8A16 has no inherent advantage — `tl.dot` runs at the same fp16-tensor-core rate as in the reference.
+
+```{python}
+#| eval: false
+for M, N, K in [(1, 4096, 4096), (4, 4096, 4096), (16, 4096, 4096), (1024, 1024, 1024)]:
+    # build x, w_int8, scale, w_fp16 ...
+    t_ms = triton.testing.do_bench(lambda: w8a16_matmul(x, w_int8, scale),
+                                   warmup=25, rep=100, return_mode="median")
+    p_ms = triton.testing.do_bench(lambda: x @ w_fp16,
+                                   warmup=25, rep=100, return_mode="median")
+    print(M, N, K, t_ms, p_ms, p_ms / t_ms)
+```
+
+::: {.callout-warning appearance="simple"}
+**Placeholder data.** The numbers below are hardcoded illustrative values, not measurements. Replace with output from your own `triton.testing.do_bench` run before drawing conclusions.
+:::
+
+```{ojs}
+//| echo: false
+//| label: fig-w8a16-matmul-bench
+//| fig-cap: "W8A16 matmul median latency at K=N=4096 vs batch size M (fp16 inputs). Lower is better. Compares the Triton W8A16 kernel against materialized fp16 weight matmul."
+{
+  const data = [
+    {label: "M=1",    w8a16_ms: 0.18, fp16_ms: 0.35},
+    {label: "M=4",    w8a16_ms: 0.21, fp16_ms: 0.40},
+    {label: "M=16",   w8a16_ms: 0.30, fp16_ms: 0.55},
+    {label: "M=1024", w8a16_ms: 4.20, fp16_ms: 4.10},
+  ];
+  const long = data.flatMap(d => [
+    {label: d.label, impl: "triton W8A16",  ms: d.w8a16_ms},
+    {label: d.label, impl: "torch fp16 matmul", ms: d.fp16_ms}
+  ]);
+  return Plot.plot({
+    marginLeft: 80,
+    color: {legend: true, domain: ["triton W8A16", "torch fp16 matmul"], range: ["steelblue", "orange"]},
+    y: {label: "median latency (ms) — lower is better"},
+    x: {label: "implementation"},
+    fx: {label: "batch size (K=N=4096)"},
+    marks: [Plot.barY(long, {fx: "label", x: "impl", y: "ms", fill: "impl"})]
+  });
+}
+```
+
+### Optimization discussion
+
+The biggest knob is **`BLOCK_K`**. Larger `BLOCK_K` amortizes the per-iteration overhead of the dequant multiply and the pointer increments, but eats registers. `BLOCK_K=32` is a safe default; on Ampere+ with software pipelining you can push to 64 or 128.
+
+The next chapter covers `triton.autotune`; the natural extension is to autotune `(BLOCK_M, BLOCK_N, BLOCK_K, num_warps)` and watch the picker land on different configs for `M=1` decode vs `M=2048` prefill.
+
+A practical caveat: the scale is loaded once per program in fp16. If you scale the scale into the weight tile naively, large weight magnitudes can overflow fp16 (max `±6.5e4`). For W8A16 with reasonable LLM weights this is not an issue — the absolute weight values after dequant stay within fp16 range — but if you ever see NaNs from this kernel on a non-LLM workload, suspect overflow and do the scale multiply in fp32.
+
+### Common bugs
+
+- **Loading int8 with `other=0.0`.** Triton expects an integer `other` for an int8 load. Use `other=0`.
+- **Multiplying the scale into the accumulator after `tl.dot`.** Costs fp32 elementwise math every iteration; either move it to before the dot (and pay fp16 cost on the weight tile), or pull it out of the K-loop entirely and apply once at the end (correct because the scale is constant across K).
+- **Confusing per-column vs per-row scale layout.** This kernel uses `(K, N)` weights with a `(N,)` per-column scale. If your model ships weights as `(N, K)` with per-row scale, swap the strides and the broadcast axis on `s`.
+- **Forgetting the K-tail mask.** When K is not a multiple of `BLOCK_K`, the last iteration reads OOB and accumulates garbage unless `k_mask` is applied with `other=0`.
+
+### Exercises
+
+See `exercises/ch23_exercises.md`.
+
+---
+
+## FP8 and block-scaled matmul (concepts)
+
+The official Triton repository ships a **block-scaled matmul** tutorial that implements MXFP8 (and MXFP4) — formats where every group of 32 elements along the K axis shares a small power-of-two exponent. On Hopper the hardware reads data and per-block scale in lockstep through dedicated tensor-core instructions; on older GPUs you do the same trick in software, loading the per-block scale alongside the data and multiplying inside the K-loop.
+
+The kernel structure is W8A16 with two changes. First, the scale tensor is 2-D — shape `(K // 32, N)` for K-axis grouping. Second, the K-loop has an inner step over the 32-element blocks, and the per-block scale is loaded once per outer iteration. Everything else is the same: int/fp8 weight tile, fp16/fp32 accumulator, low-precision output store.
+
+::: {.callout-warning}
+## Hardware caveat
+FP8 (e4m3, e5m2) is accelerated only on Hopper (sm_90) and newer. On the 2070 SUPER, FP8 weight tiles compile but fall back to fp16 arithmetic with no tensor-core advantage over W8A16. Read the official tutorial for the Hopper path; treat it as aspirational on Turing.
+:::
+
+The advanced exercise (W8A8 with int8 tensor cores) is the right experiment to run on a 2070 SUPER, because int8 tensor cores **are** present on sm_75. `tl.dot(x_int8, w_int8, out_dtype=tl.int32)` is the call; the structure is identical to W8A16 except the dequant happens at the **end** (one multiply by `x_scale * w_scale`) rather than inside the K-loop. The solutions file walks through it in detail.

@@ -1,0 +1,926 @@
+---
+title: "Chapter 3: Memory, Pointers, Strides, and Masks"
+---
+
+Every Triton kernel you will write is, at its core, a small program that turns *indices* into *addresses*. The kernel from Chapter 2 hid this because the tensors were contiguous and 1-D: `x_ptr + offsets` was enough. The moment you touch 2-D tensors, transposed views, slices, or anything else PyTorch built with strides, you need to think about layout in detail. This chapter is that detail.
+
+## Storage = buffer + shape + strides
+
+A PyTorch tensor is a triple. There is a 1-D contiguous **buffer** of bytes in some allocator's pool, a **shape** that tells you how many elements there are along each dim, and a **stride** that tells you how far to move in the buffer when you increment each index by one.
+
+For a 2-D fp32 tensor `x` of shape `(M, N)` allocated normally:
+
+- buffer length: `M * N * 4` bytes
+- `x.shape == (M, N)`
+- `x.stride() == (N, 1)` — element units, not bytes
+
+The element at `x[i, j]` lives at byte offset `(i * N + j) * 4` in the buffer. `x.stride(0)` is `N` and `x.stride(1)` is `1`. Triton inherits this convention: pointer arithmetic is in **element units**, not bytes, just like PyTorch's `.stride()`.
+
+This matters when you do `x = x.t()`. Transpose does **not** copy the data — it swaps the strides. `x.t().shape == (N, M)` and `x.t().stride() == (1, N)`. The buffer is still in the original row-major layout; reading `x.t()` row-by-row therefore reads `M` non-contiguous addresses per row. If your kernel was written assuming contiguous storage, transposed input will give wrong answers, not just slower answers.
+
+## Pointer arithmetic in Triton
+
+A pointer in Triton is *typed* by the dtype of the tensor it came from. Adding integer offsets advances the pointer in those elements:
+
+```
+x_ptr        : ptr<fp32>
+x_ptr + 1    : ptr<fp32>, one float later, i.e. four bytes
+x_ptr + tl.arange(0, 16)  : (16,) ptr<fp32>, sixteen consecutive floats
+```
+
+For 2-D access, broadcast two 1-D ranges:
+
+```
+rows = tl.arange(0, BM)              # (BM,)
+cols = tl.arange(0, BN)              # (BN,)
+ptrs = x_ptr + rows[:, None] * stride_m + cols[None, :] * stride_n
+# ptrs : (BM, BN) ptr<fp32>
+```
+
+If `stride_m == N` and `stride_n == 1`, the load is fully contiguous and the GPU can coalesce it into the minimum number of memory transactions. If `stride_m == 1` and `stride_n == M` (a transposed view), every adjacent lane on the same row reads from a different cache line. Same number of *elements* moved, but multiple times the number of *transactions*. Bandwidth drops accordingly.
+
+## Masks and `other=`
+
+Every `tl.load` you write should have a mask. The mask is a boolean tile of the same shape as the offset tile. Lanes where the mask is false **do not** access memory and return the value of `other` (default `0`). The mask is your safety net against the tail tile and against any conditional access pattern.
+
+The choice of `other=` matters for downstream code:
+
+- For **sums**, `other=0` is the additive identity — masked lanes contribute nothing.
+- For **maxes**, `other=-inf` is the right identity — masked lanes never win.
+- For **products**, `other=1`.
+- For **copies / elementwise**, the masked lanes are not used downstream, so the default `other=0` is fine.
+
+If you use the wrong `other`, you can get a kernel that passes the contiguous test (no masked lanes) and silently corrupts the tail tile. The regression test in `tests/test_ch04_reductions.py` includes a specific case for this.
+
+## Three kernels
+
+This chapter walks through three kernels of increasing structural complexity: 1-D copy, 2-D row add, and 2-D transpose. Each is a small change from the one before; each introduces exactly one new idea.
+
+## Kernel 1: 1-D copy
+
+The structural template for everything in the chapter. One program, one tile, load, store.
+
+### PyTorch reference
+
+```{python}
+#| eval: false
+def copy_ref(x):
+    return x.clone()
+```
+
+### Triton implementation
+
+```{python}
+#| eval: false
+@triton.jit
+def copy_kernel(x_ptr, out_ptr, n_elements, BLOCK_SIZE: tl.constexpr):
+    pid = tl.program_id(axis=0)
+    offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+    mask = offsets < n_elements
+    x = tl.load(x_ptr + offsets, mask=mask)
+    tl.store(out_ptr + offsets, x, mask=mask)
+```
+
+Identical in structure to `vector_add` minus the addition. Use it as a peak-bandwidth probe for your GPU.
+
+### Shape trace
+
+```
+Input:                       x : (N,)             fp32
+Grid:                        (cdiv(N, BS),)
+pid = tl.program_id(0)       scalar               int32
+offsets                      (BS,)                int32
+mask = offsets < N           (BS,)                bool
+tile = tl.load(x_ptr+offsets, mask)   (BS,)       fp32
+tl.store(out_ptr+offsets, tile, mask)
+```
+
+### Pointer arithmetic and masks
+
+Pointers advance in element units; `x_ptr + offsets` is a `(BS,)` tile of `ptr<fp32>`. Mask is the tail-tile guard. `other=` defaults to `0`, which is harmless because we never read the masked lanes of the output.
+
+### Correctness test
+
+```{python}
+#| eval: false
+@pytest.mark.parametrize("n", [7, 1024, 1023, 1025, 1_048_576])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
+def test_copy_exact(n, dtype):
+    x = torch.randn(n, device="cuda", dtype=dtype)
+    out = copy(x)
+    assert torch.equal(out, x)  # bit-exact: no arithmetic happens
+```
+
+Pure copies use `torch.equal`, not `assert_close`. There is no rounding to allow for.
+
+### Benchmark
+
+```{python}
+#| eval: false
+ms = triton.testing.do_bench(lambda: copy(x))
+gbps = 2 * x.numel() * x.element_size() / (ms * 1e-3) / 1e9  # 1 load + 1 store
+```
+
+::: {.callout-warning appearance="simple"}
+**Placeholder data.** The numbers below are hardcoded illustrative values, not measurements. Replace with output from your own `triton.testing.do_bench` run before drawing conclusions.
+:::
+
+```{ojs}
+//| echo: false
+//| label: fig-copy-bench
+//| fig-cap: "1-D copy median latency vs tensor length N (log x-axis). Lower is better. Triton copy kernel vs eager torch clone."
+{
+  const data = [
+    {N: 4096,     triton_ms: 0.010, torch_ms: 0.012},
+    {N: 65536,    triton_ms: 0.015, torch_ms: 0.017},
+    {N: 1048576,  triton_ms: 0.070, torch_ms: 0.075},
+    {N: 16777216, triton_ms: 1.05,  torch_ms: 1.10},
+  ];
+  const long = data.flatMap(d => [
+    {N: d.N, impl: "triton", ms: d.triton_ms},
+    {N: d.N, impl: "torch",  ms: d.torch_ms}
+  ]);
+  return Plot.plot({
+    color: {legend: true, domain: ["triton", "torch"], range: ["steelblue", "orange"]},
+    x: {type: "log", label: "N (elements)"},
+    y: {label: "median latency (ms) — lower is better"},
+    marks: [
+      Plot.line(long, {x: "N", y: "ms", stroke: "impl"}),
+      Plot.dot(long,  {x: "N", y: "ms", fill: "impl"})
+    ]
+  });
+}
+```
+
+### Optimization discussion
+
+Bandwidth-bound. `BLOCK_SIZE=1024` is fine. Larger `BLOCK_SIZE` does not help much on a pure copy because each lane already streams from HBM at full bandwidth.
+
+### Common bugs
+
+1. **No mask.** Tail tile reads past the buffer. Fault or garbage.
+2. **`BLOCK_SIZE` not `constexpr`.** Compile error on `tl.arange`.
+3. **Forgot `is_contiguous` check in the launcher.** The kernel assumes a contiguous buffer; passing `x.t()` is undetected and gives wrong output.
+
+### Exercises
+
+(See `exercises/ch03_exercises.md` for the kernel-2 / kernel-3 exercises grouped together.)
+
+## Kernel 2: row-wise bias add
+
+`out[i, j] = x[i, j] + bias[j]` for `x : (M, N)`, `bias : (N,)`. One program per row.
+
+**Where this shows up.** This is the `+ b` half of every `nn.Linear(in, out)` layer: after the matmul `x @ W.T` produces an `(M, N)` activation, you broadcast a length-`N` bias vector across all `M` rows. The same pattern appears in attention QKV projections, the two MLP projections in each transformer block, and the final LM-head projection that turns hidden states into vocab logits. It also shows up outside `nn.Linear` — for example adding a positional-bias vector to attention scores, or adding a per-channel offset before an activation. The kernel matters as a teaching example because it forces you to load a 1-D tensor (`bias`) and a 2-D tensor (`x`) with *different* stride patterns in the same program: `bias` strides only along `N`, while `x` strides along both `M` (between rows, big jump) and `N` (within a row, contiguous). Understanding how those two pointer expressions coexist is the warm-up for every fused-bias kernel later in the book — Chapter 10 fuses exactly this op into matmul so the bias add costs zero extra memory traffic.
+
+### PyTorch reference
+
+```{python}
+#| eval: false
+def row_add_ref(x, bias):
+    return x + bias  # broadcast over rows
+```
+
+### Triton implementation
+
+```{python}
+#| eval: false
+@triton.jit
+def row_add_kernel(
+    x_ptr, bias_ptr, out_ptr,
+    M, N,
+    stride_xm, stride_xn,
+    stride_om, stride_on,
+    BLOCK_SIZE_N: tl.constexpr,
+):
+    pid_m = tl.program_id(axis=0)
+    x_row = x_ptr + pid_m * stride_xm
+    o_row = out_ptr + pid_m * stride_om
+
+    for col_start in range(0, N, BLOCK_SIZE_N):
+        cols = col_start + tl.arange(0, BLOCK_SIZE_N)
+        mask = cols < N
+        x = tl.load(x_row + cols * stride_xn, mask=mask, other=0.0)
+        b = tl.load(bias_ptr + cols, mask=mask, other=0.0)
+        tl.store(o_row + cols * stride_on, x + b, mask=mask)
+```
+
+Two new ideas: (1) the kernel takes strides as runtime args, so it works on any 2-D layout the caller hands it; (2) there is an inner Python `for` loop over column tiles, because rows can be longer than `BLOCK_SIZE_N`. Triton unrolls that loop at compile time when `N // BLOCK_SIZE_N` is small; for large rows it stays as a runtime loop.
+
+### Shape trace
+
+For `M=32, N=4097, BLOCK_SIZE_N=1024`:
+
+```
+Input:                       x    : (32, 4097)      fp32
+Input:                       bias : (4097,)         fp32
+Grid:                        (32,)
+pid_m                        scalar                 int32   # 0..31
+x_row = x_ptr + pid_m*N      ptr<fp32>              scalar
+Inner loop iterations:       5  (cdiv(4097, 1024))
+  iter 0: cols  = [0..1023]
+          mask  = all True
+          x     = (1024,)    fp32
+          b     = (1024,)    fp32
+          out   = (1024,)    fp32   stored to row pid_m, cols 0..1023
+  iter 1..3: same shapes, no masking
+  iter 4: cols  = [4096..5119]
+          mask  = first 1 lane True, rest False
+          x     = (1024,)    fp32   (only x[pid_m, 4096] is the real value)
+          b     = (1024,)    fp32   (only bias[4096] is real)
+          out   stored to row pid_m, col 4096 only
+```
+
+### Pointer arithmetic and masks
+
+`x_row` is a per-program scalar pointer at the start of this program's row. The `cols * stride_xn` term is the within-row offset vector. For a contiguous input `stride_xn == 1` and this is just `cols`; for a column-strided input it scales by whatever the column stride happens to be.
+
+`other=0` on both loads is fine because masked lanes are never stored. We could use any constant.
+
+### Interactive: row-wise bias add memory access
+
+Pick a row (`pid_m`) and an inner-loop iteration (`iter`). The widget shows exactly which elements of `x`, `bias`, and `out` that program touches in that iteration, and which lanes the mask drops on the tail tile. Steelblue cells are loaded/stored this iteration; the lighter tinted row marks the entire row this program owns; gray cells are untouched. Crosshatched cells are masked off (out-of-bounds lanes).
+
+```{ojs}
+//| echo: false
+//| label: fig-row-add-memory-access
+//| fig-cap: "Row-wise bias-add: which elements of x, bias, and out a single program touches on iteration `iter`. Steelblue = active lane this iteration; light tint = the whole row owned by program `pid_m`; gray = untouched; crosshatched gray = masked-off tail lane."
+
+viewof rowadd_M = Inputs.range([4, 16], {value: 6, step: 1, label: "M (rows of x)"})
+viewof rowadd_N = Inputs.range([4, 40], {value: 17, step: 1, label: "N (cols of x, length of bias)"})
+viewof rowadd_BLOCK_SIZE_N = Inputs.range([2, 16], {value: 8, step: 1, label: "BLOCK_SIZE_N"})
+viewof rowadd_pid_m = Inputs.range([0, 15], {value: 2, step: 1, label: "pid_m (program / row)"})
+viewof rowadd_iter = Inputs.range([0, 20], {value: 0, step: 1, label: "iter (inner-loop iteration)"})
+
+{
+  const M = rowadd_M;
+  const N = rowadd_N;
+  const BS = rowadd_BLOCK_SIZE_N;
+  const pid_m = Math.min(rowadd_pid_m, M - 1);
+  const n_iters = Math.ceil(N / BS);
+  const iter = Math.min(rowadd_iter, n_iters - 1);
+
+  const col_start = iter * BS;
+  const stride_xm = N;
+  const stride_xn = 1;
+  const stride_om = N;
+  const stride_on = 1;
+
+  // Build x matrix data
+  const xData = [];
+  for (let i = 0; i < M; i++) {
+    for (let j = 0; j < N; j++) {
+      xData.push({
+        i, j,
+        addr: i * stride_xm + j * stride_xn,
+        owned: i === pid_m,
+        touched: false,
+        masked: false
+      });
+    }
+  }
+  // Mark touched lanes for x and out
+  const outData = xData.map(d => ({...d, addr: d.i * stride_om + d.j * stride_on, touched: false, masked: false}));
+  for (let lane = 0; lane < BS; lane++) {
+    const j = col_start + lane;
+    const inBounds = j < N;
+    // For x: only mark touched within the matrix; if j >= N it's masked (we still highlight cells that exist)
+    if (inBounds) {
+      const idx = pid_m * N + j;
+      xData[idx].touched = true;
+      outData[idx].touched = true;
+    }
+  }
+  // Count masked-off lanes this iteration
+  let masked_lanes = 0;
+  for (let lane = 0; lane < BS; lane++) {
+    const j = col_start + lane;
+    if (j >= N) masked_lanes++;
+  }
+
+  // Build bias data
+  const biasData = [];
+  for (let j = 0; j < N; j++) {
+    biasData.push({ j, addr: j, touched: false, masked: false });
+  }
+  for (let lane = 0; lane < BS; lane++) {
+    const j = col_start + lane;
+    if (j < N) biasData[j].touched = true;
+  }
+
+  // Build "phantom" masked cells for tail visualisation (drawn beyond the matrix edge)
+  const xMasked = [];
+  const biasMasked = [];
+  const outMasked = [];
+  for (let lane = 0; lane < BS; lane++) {
+    const j = col_start + lane;
+    if (j >= N) {
+      xMasked.push({ i: pid_m, j, addr: pid_m * stride_xm + j * stride_xn });
+      biasMasked.push({ j, addr: j });
+      outMasked.push({ i: pid_m, j, addr: pid_m * stride_om + j * stride_on });
+    }
+  }
+
+  // Maximum visible j for axes
+  const jMax = Math.max(N, col_start + BS);
+
+  const cellW = 28;
+  const cellH = 22;
+  const plotW = Math.max(360, jMax * cellW + 80);
+
+  const colorFor = d => d.touched ? "steelblue" : (d.owned ? "#dbe7f3" : "#eeeeee");
+  const colorForOut = d => d.touched ? "#3fa15a" : (d.owned ? "#e0eee4" : "#eeeeee");
+  const textColor = d => d.touched ? "white" : "#444";
+
+  const xPlot = Plot.plot({
+    width: plotW,
+    height: M * cellH + 60,
+    marginLeft: 60,
+    marginTop: 30,
+    x: {label: "j (col)", domain: [0, jMax], axis: "top", ticks: d3.range(0, jMax + 1)},
+    y: {label: "i (row)", domain: [M, 0], ticks: d3.range(0, M + 1)},
+    marks: [
+      Plot.rect(xData, {
+        x1: d => d.j, x2: d => d.j + 1,
+        y1: d => d.i, y2: d => d.i + 1,
+        fill: colorFor,
+        stroke: "white",
+        strokeWidth: 1,
+        title: d => `x[${d.i},${d.j}] addr = base + ${d.i}*${stride_xm} + ${d.j}*${stride_xn} = ${d.addr}`
+      }),
+      Plot.rect(xMasked, {
+        x1: d => d.j, x2: d => d.j + 1,
+        y1: d => d.i, y2: d => d.i + 1,
+        fill: "lightgray",
+        stroke: "gray",
+        strokeDasharray: "2,2",
+        strokeWidth: 1,
+        title: d => `MASKED lane: would-be x[${d.i},${d.j}] addr=${d.addr} — not loaded (mask=False)`
+      }),
+      Plot.text(xData, {
+        x: d => d.j + 0.5, y: d => d.i + 0.5,
+        text: d => `${d.addr}`,
+        fill: textColor, fontSize: 9
+      }),
+      Plot.text(xMasked, {
+        x: d => d.j + 0.5, y: d => d.i + 0.5,
+        text: "M", fill: "gray", fontSize: 9
+      })
+    ]
+  });
+
+  const biasPlot = Plot.plot({
+    width: plotW,
+    height: cellH + 60,
+    marginLeft: 60,
+    marginTop: 30,
+    x: {label: "j (col of bias)", domain: [0, jMax], axis: "top", ticks: d3.range(0, jMax + 1)},
+    y: {axis: null, domain: [1, 0]},
+    marks: [
+      Plot.rect(biasData, {
+        x1: d => d.j, x2: d => d.j + 1,
+        y1: 0, y2: 1,
+        fill: d => d.touched ? "steelblue" : "#eeeeee",
+        stroke: "white", strokeWidth: 1,
+        title: d => `bias[${d.j}] addr = ${d.addr}`
+      }),
+      Plot.rect(biasMasked, {
+        x1: d => d.j, x2: d => d.j + 1,
+        y1: 0, y2: 1,
+        fill: "lightgray",
+        stroke: "gray",
+        strokeDasharray: "2,2",
+        strokeWidth: 1,
+        title: d => `MASKED lane: would-be bias[${d.j}] — not loaded`
+      }),
+      Plot.text(biasData, {
+        x: d => d.j + 0.5, y: 0.5,
+        text: d => `${d.addr}`,
+        fill: d => d.touched ? "white" : "#444",
+        fontSize: 9
+      }),
+      Plot.text(biasMasked, {
+        x: d => d.j + 0.5, y: 0.5,
+        text: "M", fill: "gray", fontSize: 9
+      })
+    ]
+  });
+
+  const outPlot = Plot.plot({
+    width: plotW,
+    height: M * cellH + 60,
+    marginLeft: 60,
+    marginTop: 30,
+    x: {label: "j (col)", domain: [0, jMax], axis: "top", ticks: d3.range(0, jMax + 1)},
+    y: {label: "i (row)", domain: [M, 0], ticks: d3.range(0, M + 1)},
+    marks: [
+      Plot.rect(outData, {
+        x1: d => d.j, x2: d => d.j + 1,
+        y1: d => d.i, y2: d => d.i + 1,
+        fill: colorForOut,
+        stroke: "white",
+        strokeWidth: 1,
+        title: d => `out[${d.i},${d.j}] addr = base + ${d.i}*${stride_om} + ${d.j}*${stride_on} = ${d.addr}`
+      }),
+      Plot.rect(outMasked, {
+        x1: d => d.j, x2: d => d.j + 1,
+        y1: d => d.i, y2: d => d.i + 1,
+        fill: "lightgray",
+        stroke: "gray",
+        strokeDasharray: "2,2",
+        strokeWidth: 1,
+        title: d => `MASKED lane: would-be out[${d.i},${d.j}] addr=${d.addr} — not stored`
+      }),
+      Plot.text(outData, {
+        x: d => d.j + 0.5, y: d => d.i + 0.5,
+        text: d => `${d.addr}`,
+        fill: d => d.touched ? "white" : "#444",
+        fontSize: 9
+      }),
+      Plot.text(outMasked, {
+        x: d => d.j + 0.5, y: d => d.i + 0.5,
+        text: "M", fill: "gray", fontSize: 9
+      })
+    ]
+  });
+
+  const summary = md`
+**Iteration ${iter} of ${n_iters}** (pid_m = ${pid_m}, BLOCK_SIZE_N = ${BS}):
+- \`col_start = iter * BLOCK_SIZE_N = ${col_start}\`
+- \`cols = col_start + tl.arange(0, BLOCK_SIZE_N) = [${col_start}..${col_start + BS - 1}]\`
+- \`mask = cols < N\` drops **${masked_lanes} lane(s)** off the tail (N = ${N})
+- Pointer math: \`x_row = x_ptr + pid_m * stride_xm = x_ptr + ${pid_m} * ${stride_xm} = x_ptr + ${pid_m * stride_xm}\`
+- Load addresses: \`x_row + cols * stride_xn\` = base + [${Array.from({length: BS}, (_, k) => pid_m * stride_xm + (col_start + k) * stride_xn).join(", ")}]
+- Bias addresses: \`bias_ptr + cols\` = bias + [${Array.from({length: BS}, (_, k) => col_start + k).join(", ")}]
+`;
+
+  return html`
+    <div style="display:flex; flex-direction:column; gap:0.6em;">
+      <div><strong>x : (M, N)</strong> &nbsp; — the input matrix; light tint = row this program owns; steelblue = lanes loaded this iteration; crosshatched = masked tail lanes</div>
+      ${xPlot}
+      <div><strong>bias : (N,)</strong> &nbsp; — every program in the grid reads the same bias vector</div>
+      ${biasPlot}
+      <div><strong>out : (M, N)</strong> &nbsp; — green = lanes stored this iteration</div>
+      ${outPlot}
+      ${summary}
+    </div>
+  `;
+}
+```
+
+### Correctness test
+
+```{python}
+#| eval: false
+@pytest.mark.parametrize("shape", [(1, 7), (4, 1024), (8, 1025), (32, 1023), (512, 4096)])
+def test_row_add_fp32(shape):
+    M, N = shape
+    x = torch.randn(M, N, device="cuda", dtype=torch.float32)
+    bias = torch.randn(N, device="cuda", dtype=torch.float32)
+    out = row_add(x, bias)
+    torch.testing.assert_close(out, x + bias, rtol=1e-5, atol=1e-5)
+```
+
+The `(1, 7)` case forces a single program with a heavily masked single iteration. The `(8, 1025)` case forces a tail tile of exactly one in-bounds lane.
+
+### Benchmark
+
+```{python}
+#| eval: false
+ms = triton.testing.do_bench(lambda: row_add(x, bias))
+# 2 loads + 1 store per element, modulo bias re-reads which the cache absorbs.
+gbps = 3 * M * N * 4 / (ms * 1e-3) / 1e9
+```
+
+::: {.callout-warning appearance="simple"}
+**Placeholder data.** The numbers below are hardcoded illustrative values, not measurements. Replace with output from your own `triton.testing.do_bench` run before drawing conclusions.
+:::
+
+```{ojs}
+//| echo: false
+//| label: fig-row-add-bench
+//| fig-cap: "Row-wise bias-add median latency vs row width N (M held fixed). Lower is better. Triton row_add kernel vs eager PyTorch broadcast."
+{
+  const data = [
+    {N: 1024, triton_ms: 0.04, torch_ms: 0.05},
+    {N: 2048, triton_ms: 0.07, torch_ms: 0.09},
+    {N: 4096, triton_ms: 0.14, torch_ms: 0.17},
+    {N: 8192, triton_ms: 0.28, torch_ms: 0.32},
+  ];
+  const long = data.flatMap(d => [
+    {N: d.N, impl: "triton", ms: d.triton_ms},
+    {N: d.N, impl: "torch",  ms: d.torch_ms}
+  ]);
+  return Plot.plot({
+    color: {legend: true, domain: ["triton", "torch"], range: ["steelblue", "orange"]},
+    x: {label: "N (row width, elements)"},
+    y: {label: "median latency (ms) — lower is better"},
+    marks: [
+      Plot.line(long, {x: "N", y: "ms", stroke: "impl"}),
+      Plot.dot(long,  {x: "N", y: "ms", fill: "impl"})
+    ]
+  });
+}
+```
+
+### Optimization discussion
+
+Memory bound. `BLOCK_SIZE_N=1024` is a good default; for very wide rows you can try larger. The PyTorch reference already uses a vectorized broadcast, so the headroom is small — this kernel is mostly an exercise in 2-D plumbing.
+
+### Common bugs
+
+1. **Wrong stride on the bias.** Bias is 1-D and (by the launcher's assertion) contiguous, so the offset is just `cols`. If you forget this and write `cols * stride_xn`, you read the wrong addresses.
+2. **Tail tile mask omitted in the inner loop.** Easy to write the outer loop and forget the `mask = cols < N` line.
+3. **Calling on a transposed `x`.** The strides cover this — but only if you actually pass `x.stride(0)` and `x.stride(1)` and not constants `N, 1`.
+
+## Kernel 3: 2-D transpose
+
+Read a `(BM, BN)` tile from `x`, write it to `out` at the swapped location. The interesting bit is that the write addresses are strided even when the input is contiguous, because writing the transpose to a contiguous output means consecutive lanes in the tile go to widely separated rows of `out`.
+
+### PyTorch reference
+
+```{python}
+#| eval: false
+def transpose_ref(x):
+    return x.t().contiguous()
+```
+
+### Triton implementation
+
+```{python}
+#| eval: false
+@triton.jit
+def transpose_kernel(
+    x_ptr, out_ptr,
+    M, N,
+    stride_xm, stride_xn,
+    stride_om, stride_on,
+    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr,
+):
+    pid_m = tl.program_id(axis=0)
+    pid_n = tl.program_id(axis=1)
+    rows = pid_m * BLOCK_M + tl.arange(0, BLOCK_M)
+    cols = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+    mask = (rows[:, None] < M) & (cols[None, :] < N)
+    x_ptrs = x_ptr + rows[:, None] * stride_xm + cols[None, :] * stride_xn
+    tile   = tl.load(x_ptrs, mask=mask, other=0.0)
+    out_ptrs = out_ptr + cols[None, :] * stride_om + rows[:, None] * stride_on
+    tl.store(out_ptrs, tile, mask=mask)
+```
+
+`out` has shape `(N, M)`, so `stride_om = M` and `stride_on = 1` for contiguous output. The store address for tile element `(r, c)` is `out_ptr + c * M + r * 1`. That is the transposed slot, exactly.
+
+### Shape trace
+
+For `M=128, N=256, BLOCK_M=32, BLOCK_N=32`:
+
+```
+Input:                       x       : (128, 256)    fp32
+Output:                      out     : (256, 128)    fp32
+Grid:                        (4, 8)
+pid_m, pid_n                 scalars
+rows                         (32,)                   int32
+cols                         (32,)                   int32
+mask                         (32, 32)                bool   # all True interior
+x_ptrs                       (32, 32) ptr<fp32>
+tile = tl.load(x_ptrs, mask) (32, 32)                fp32
+out_ptrs (transposed indexing)
+                             (32, 32) ptr<fp32>
+tl.store(out_ptrs, tile, mask)
+```
+
+### Pointer arithmetic and masks
+
+The load addresses are coalesced along the inner dim (`stride_xn == 1`). The store addresses are *strided* along the inner dim of the tile (`stride_on == 1` but the lane that varies fastest in the tile is `cols`, which now goes with `stride_om == M`). So the store is the un-coalesced side. The whole bank-conflict / shared-memory swizzling literature exists to fix this; we ignore it here. The kernel works, it is just not state of the art.
+
+The 2-D mask is built by `&`-ing the broadcasts of two 1-D masks. Anything else (e.g. computing offsets that could be negative) needs the `&` to short-circuit; Triton is happy to evaluate both sides because there is no true short-circuit in SIMD.
+
+### Interactive: 2-D transpose memory access
+
+Pick a program `(pid_m, pid_n)`. The left grid is the input `x : (M, N)`; the right grid is the output `out : (N, M)`. Steelblue cells on the left are the tile this program loads; green cells on the right are where that same tile is stored. The numbers inside each cell are the *flat address* (assuming row-major contiguous: `stride_xm = N, stride_xn = 1` for x and `stride_om = M, stride_on = 1` for out). Watch the load addresses on the left march along consecutively while the store addresses on the right jump by `M` between adjacent lanes — that is the read/write asymmetry that makes naive transpose stores uncoalesced.
+
+```{ojs}
+//| echo: false
+//| label: fig-transpose-memory-access
+//| fig-cap: "2-D transpose: a single program reads a (BLOCK_M, BLOCK_N) tile from x and writes it transposed into out. Steelblue = loaded; green = stored; crosshatched = masked lane (out of bounds). Cell labels are flat byte/element addresses."
+
+viewof transp_M = Inputs.range([4, 16], {value: 7, step: 1, label: "M (rows of x, cols of out)"})
+viewof transp_N = Inputs.range([4, 16], {value: 9, step: 1, label: "N (cols of x, rows of out)"})
+viewof transp_BLOCK_M = Inputs.range([2, 8], {value: 4, step: 1, label: "BLOCK_M"})
+viewof transp_BLOCK_N = Inputs.range([2, 8], {value: 4, step: 1, label: "BLOCK_N"})
+viewof transp_pid_m = Inputs.range([0, 7], {value: 0, step: 1, label: "pid_m"})
+viewof transp_pid_n = Inputs.range([0, 7], {value: 0, step: 1, label: "pid_n"})
+
+{
+  const M = transp_M;
+  const N = transp_N;
+  const BM = transp_BLOCK_M;
+  const BN = transp_BLOCK_N;
+  const n_pid_m = Math.ceil(M / BM);
+  const n_pid_n = Math.ceil(N / BN);
+  const pid_m = Math.min(transp_pid_m, n_pid_m - 1);
+  const pid_n = Math.min(transp_pid_n, n_pid_n - 1);
+
+  const stride_xm = N;
+  const stride_xn = 1;
+  const stride_om = M;
+  const stride_on = 1;
+
+  const row_start = pid_m * BM;
+  const col_start = pid_n * BN;
+
+  // Build sets of (r,c) lanes the tile covers, both in-bounds and out-of-bounds
+  const tileLanes = []; // {r, c, inBounds}
+  for (let dr = 0; dr < BM; dr++) {
+    for (let dc = 0; dc < BN; dc++) {
+      const r = row_start + dr;
+      const c = col_start + dc;
+      tileLanes.push({ r, c, inBounds: r < M && c < N });
+    }
+  }
+  const masked_lanes = tileLanes.filter(l => !l.inBounds).length;
+
+  // x grid data: every (r,c) in (M, N)
+  const xData = [];
+  for (let r = 0; r < M; r++) {
+    for (let c = 0; c < N; c++) {
+      xData.push({
+        r, c,
+        addr: r * stride_xm + c * stride_xn,
+        touched: r >= row_start && r < row_start + BM && c >= col_start && c < col_start + BN
+      });
+    }
+  }
+  // out grid data: every (oR, oC) in (N, M)
+  const outData = [];
+  for (let oR = 0; oR < N; oR++) {
+    for (let oC = 0; oC < M; oC++) {
+      outData.push({
+        r: oR, c: oC,
+        addr: oR * stride_om + oC * stride_on,
+        touched: oC >= row_start && oC < row_start + BM && oR >= col_start && oR < col_start + BN
+      });
+    }
+  }
+
+  // Masked phantom cells (only inside their grid's extent? out-of-bounds lanes by definition are OUTSIDE the matrix,
+  // so draw them as phantom rects at their logical r/c position past the matrix edge)
+  const xMasked = tileLanes.filter(l => !l.inBounds).map(l => ({
+    r: l.r, c: l.c, addr: l.r * stride_xm + l.c * stride_xn
+  }));
+  const outMasked = tileLanes.filter(l => !l.inBounds).map(l => ({
+    r: l.c, c: l.r, addr: l.c * stride_om + l.r * stride_on  // transposed location
+  }));
+
+  const xRmax = Math.max(M, row_start + BM);
+  const xCmax = Math.max(N, col_start + BN);
+  const outRmax = Math.max(N, col_start + BN);
+  const outCmax = Math.max(M, row_start + BM);
+
+  const cellPx = 36;
+  const xPlotW = xCmax * cellPx + 80;
+  const xPlotH = xRmax * cellPx + 60;
+  const outPlotW = outCmax * cellPx + 80;
+  const outPlotH = outRmax * cellPx + 60;
+
+  const xPlot = Plot.plot({
+    width: xPlotW,
+    height: xPlotH,
+    marginLeft: 50,
+    marginTop: 40,
+    x: {label: "c (col of x)", domain: [0, xCmax], axis: "top", ticks: d3.range(0, xCmax + 1)},
+    y: {label: "r (row of x)", domain: [xRmax, 0], ticks: d3.range(0, xRmax + 1)},
+    marks: [
+      Plot.rect(xData, {
+        x1: d => d.c, x2: d => d.c + 1,
+        y1: d => d.r, y2: d => d.r + 1,
+        fill: d => d.touched ? "steelblue" : "#eeeeee",
+        stroke: "white", strokeWidth: 1,
+        title: d => `x[${d.r},${d.c}] addr = ${d.r}*${stride_xm} + ${d.c}*${stride_xn} = ${d.addr}`
+      }),
+      Plot.rect(xMasked, {
+        x1: d => d.c, x2: d => d.c + 1,
+        y1: d => d.r, y2: d => d.r + 1,
+        fill: "lightgray",
+        stroke: "gray",
+        strokeDasharray: "2,2",
+        strokeWidth: 1,
+        title: d => `MASKED lane: would-be x[${d.r},${d.c}] addr=${d.addr} — not loaded`
+      }),
+      Plot.text(xData, {
+        x: d => d.c + 0.5, y: d => d.r + 0.5,
+        text: d => `${d.addr}`,
+        fill: d => d.touched ? "white" : "#666",
+        fontSize: 10
+      }),
+      Plot.text(xMasked, {
+        x: d => d.c + 0.5, y: d => d.r + 0.5,
+        text: "M", fill: "gray", fontSize: 10
+      })
+    ]
+  });
+
+  const outPlot = Plot.plot({
+    width: outPlotW,
+    height: outPlotH,
+    marginLeft: 50,
+    marginTop: 40,
+    x: {label: "c (col of out)", domain: [0, outCmax], axis: "top", ticks: d3.range(0, outCmax + 1)},
+    y: {label: "r (row of out)", domain: [outRmax, 0], ticks: d3.range(0, outRmax + 1)},
+    marks: [
+      Plot.rect(outData, {
+        x1: d => d.c, x2: d => d.c + 1,
+        y1: d => d.r, y2: d => d.r + 1,
+        fill: d => d.touched ? "#3fa15a" : "#eeeeee",
+        stroke: "white", strokeWidth: 1,
+        title: d => `out[${d.r},${d.c}] addr = ${d.r}*${stride_om} + ${d.c}*${stride_on} = ${d.addr}`
+      }),
+      Plot.rect(outMasked, {
+        x1: d => d.c, x2: d => d.c + 1,
+        y1: d => d.r, y2: d => d.r + 1,
+        fill: "lightgray",
+        stroke: "gray",
+        strokeDasharray: "2,2",
+        strokeWidth: 1,
+        title: d => `MASKED lane: would-be out[${d.r},${d.c}] addr=${d.addr} — not stored`
+      }),
+      Plot.text(outData, {
+        x: d => d.c + 0.5, y: d => d.r + 0.5,
+        text: d => `${d.addr}`,
+        fill: d => d.touched ? "white" : "#666",
+        fontSize: 10
+      }),
+      Plot.text(outMasked, {
+        x: d => d.c + 0.5, y: d => d.r + 0.5,
+        text: "M", fill: "gray", fontSize: 10
+      })
+    ]
+  });
+
+  // For the insight: enumerate load and store addresses for the first row of the tile (dr = 0)
+  const firstRowLoadAddrs = [];
+  const firstRowStoreAddrs = [];
+  for (let dc = 0; dc < BN; dc++) {
+    const r = row_start;
+    const c = col_start + dc;
+    firstRowLoadAddrs.push(r * stride_xm + c * stride_xn);
+    firstRowStoreAddrs.push(c * stride_om + r * stride_on);
+  }
+
+  const summary = md`
+**Program (pid_m=${pid_m}, pid_n=${pid_n})** of grid (${n_pid_m} × ${n_pid_n}):
+- row range: \`[pid_m*BLOCK_M, pid_m*BLOCK_M + BLOCK_M) = [${row_start}, ${row_start + BM})\`
+- col range: \`[pid_n*BLOCK_N, pid_n*BLOCK_N + BLOCK_N) = [${col_start}, ${col_start + BN})\`
+- The 2-D mask \`(rows[:, None] < M) & (cols[None, :] < N)\` drops **${masked_lanes} of ${BM * BN} lane(s)** for this tile.
+- **Insight (coalescing).** Along the inner \`cols\` axis (one row of the tile), the load addresses are *consecutive* — [${firstRowLoadAddrs.join(", ")}] — so the GPU collapses them into one cache-line transaction. The store addresses for the *same* lanes are [${firstRowStoreAddrs.join(", ")}] — they jump by \`stride_om = M = ${M}\` each, hitting ${BN} different cache lines. That is the read/write asymmetry: loads are coalesced, stores are not.
+`;
+
+  return html`
+    <div style="display:flex; flex-direction:column; gap:0.6em;">
+      <div style="display:flex; flex-direction:row; gap:1.5em; flex-wrap:wrap; align-items:flex-start;">
+        <div>
+          <div><strong>x : (${M}, ${N})</strong> — loaded tile in steelblue</div>
+          ${xPlot}
+        </div>
+        <div>
+          <div><strong>out : (${N}, ${M})</strong> — stored tile in green (transposed)</div>
+          ${outPlot}
+        </div>
+      </div>
+      ${summary}
+    </div>
+  `;
+}
+```
+
+### Correctness test
+
+```{python}
+#| eval: false
+@pytest.mark.parametrize("shape", [(7, 5), (32, 32), (33, 31), (128, 256), (1024, 1024)])
+def test_transpose_fp32(shape):
+    M, N = shape
+    x = torch.randn(M, N, device="cuda", dtype=torch.float32)
+    out = transpose(x)
+    assert torch.equal(out, x.t().contiguous())
+```
+
+`(33, 31)` exercises the 2-D tail tile in both dims.
+
+### Benchmark
+
+```{python}
+#| eval: false
+ms = triton.testing.do_bench(lambda: transpose(x))
+gbps = 2 * M * N * 4 / (ms * 1e-3) / 1e9  # 1 load + 1 store per element
+```
+
+::: {.callout-warning appearance="simple"}
+**Placeholder data.** The numbers below are hardcoded illustrative values, not measurements. Replace with output from your own `triton.testing.do_bench` run before drawing conclusions.
+:::
+
+```{ojs}
+//| echo: false
+//| label: fig-transpose-bench
+//| fig-cap: "2-D transpose median latency vs square side length N (M=N). Lower is better. Triton transpose kernel vs eager torch.t().contiguous()."
+{
+  const data = [
+    {N: 512,  triton_ms: 0.05, torch_ms: 0.06},
+    {N: 1024, triton_ms: 0.18, torch_ms: 0.20},
+    {N: 2048, triton_ms: 0.70, torch_ms: 0.78},
+    {N: 4096, triton_ms: 2.80, torch_ms: 3.10},
+  ];
+  const long = data.flatMap(d => [
+    {N: d.N, impl: "triton", ms: d.triton_ms},
+    {N: d.N, impl: "torch",  ms: d.torch_ms}
+  ]);
+  return Plot.plot({
+    color: {legend: true, domain: ["triton", "torch"], range: ["steelblue", "orange"]},
+    x: {label: "N (square-side length, elements)"},
+    y: {label: "median latency (ms) — lower is better"},
+    marks: [
+      Plot.line(long, {x: "N", y: "ms", stroke: "impl"}),
+      Plot.dot(long,  {x: "N", y: "ms", fill: "impl"})
+    ]
+  });
+}
+```
+
+## Interactive: coalesced vs strided access
+
+Toggle between contiguous and transposed (strided) access. Each cell shows the address one program touches in one load; the colored runs visualize cache-line groupings (one color per cache line of 32 fp32 elements).
+
+```{ojs}
+//| echo: false
+//| label: fig-coalesced-vs-strided
+//| fig-cap: "Address map for one program's load tile. Each cell is one lane within the tile; the cell color identifies which cache line (32 fp32 elements per line) that lane's address falls into. Fewer distinct colors means better coalescing; the contiguous case shares colors across lanes, the strided case scatters one color per cell."
+
+// --- Inputs -------------------------------------------------------------
+viewof N_cells = Inputs.range([4, 64], {value: 16, step: 1, label: "tile width (cells)"})
+viewof layout = Inputs.radio(["contiguous", "strided (transposed)"], {value: "contiguous", label: "access pattern"})
+viewof stride = Inputs.range([1, 64], {value: 32, step: 1, label: "stride (only used when strided)"})
+
+// --- Derived ------------------------------------------------------------
+CACHE_LINE = 32  // fp32 elements per cache line (assumed for the viz)
+
+addresses = {
+  const out = [];
+  for (let lane = 0; lane < N_cells; lane++) {
+    const addr = layout === "contiguous" ? lane : lane * stride;
+    out.push({lane: lane, addr: addr, line: Math.floor(addr / CACHE_LINE)});
+  }
+  return out;
+}
+
+distinct_lines = new Set(addresses.map(d => d.line)).size
+
+Plot.plot({
+  width: 720,
+  height: 120,
+  x: {label: "lane (within tile)", domain: [0, N_cells], ticks: d3.range(0, N_cells + 1, Math.max(1, Math.floor(N_cells / 16)))},
+  y: {axis: null, domain: [0, 1]},
+  color: {legend: true, label: "cache line id (32 fp32 elements per line)", type: "categorical"},
+  marks: [
+    Plot.rect(addresses, {
+      x1: d => d.lane,
+      x2: d => d.lane + 1,
+      y1: 0,
+      y2: 1,
+      fill: d => d.line,
+      stroke: "white",
+      strokeWidth: 1,
+      title: d => `lane=${d.lane}  addr=${d.addr}  line=${d.line}`
+    }),
+    Plot.text(addresses, {
+      x: d => d.lane + 0.5,
+      y: 0.5,
+      text: d => d.addr,
+      fill: "white",
+      fontSize: 10
+    })
+  ]
+})
+
+md`**Distinct cache lines touched:** ${distinct_lines} (out of ${N_cells} lanes). Fewer lines = better coalescing. The contiguous case touches ${Math.ceil(N_cells / CACHE_LINE)} line(s); the strided case touches up to ${N_cells} line(s) when stride ≥ cache-line width.`
+```
+
+### Optimization discussion
+
+The kernel is bandwidth bound, but a naive implementation hits maybe 30–60 % of peak because the store side is uncoalesced. To recover the rest you would (a) stage the tile in shared memory with a swizzled layout, (b) write with `tl.store` of a transposed register tile that aligns to the output's cache lines. Both are out of scope for this chapter — they belong with matmul. The point of this kernel is to make the read/write asymmetry concrete; the optimization is a later story.
+
+### Common bugs
+
+1. **Forgot to swap strides on the output.** Writing `rows[:, None] * stride_om + cols[None, :] * stride_on` instead of the swapped version gives you a copy, not a transpose. The test catches it; the failure mode is "looks like nothing was transposed at all."
+2. **2-D mask built with `+` or `|` instead of `&`.** `|` lets either lane index escape its bound. You write out of range and either fault or corrupt.
+3. **BLOCK_M / BLOCK_N too large.** A `64x64` tile is `4096` fp32 lanes, which spills registers on smaller GPUs. Start at `32x32`.
+
+## Exercises (chapter-wide)
+
+Six exercises spanning all three kernels in `exercises/ch03_exercises.md`:
+
+**Beginner:** (B1) Strided 1-D copy. (B2) `row_scale` with a per-row scalar. (B3) Column-wise add — bias of length `M`.
+
+**Intermediate:** (I1) `vector_add_strided` for arbitrary 1-D strides. (I2) In-place `row_add` (no separate output buffer).
+
+**Advanced:** (A1) `copy2d` that converts any 2-D layout (including transposed and column-strided) into a contiguous output. Measure how much your bandwidth varies with layout.
+
+Solutions in `solutions/ch03_solutions.py`.

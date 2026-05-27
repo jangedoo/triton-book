@@ -1,0 +1,326 @@
+---
+title: "Chapter 16: Rotary Positional Embeddings, ALiBi, and Position Kernels"
+---
+
+Attention is permutation-equivariant. Without something telling the model where each token sits, "the cat sat on the mat" and "mat the on sat cat the" produce identical attention patterns. Modern LLMs solve this with one of two cheap, post-projection tricks: **RoPE** (rotary positional embeddings) on `Q` and `K`, or **ALiBi** (attention with linear biases) on the score matrix.
+
+Both fit in a few hundred lines of Triton. Both are memory-bound, so the real production win is *fusing* them — RoPE into the Q/K projection (Chapter 18/19 preview), ALiBi into the FlashAttention kernel itself. This chapter writes the standalone kernels first; fusion comes later.
+
+## RoPE in one paragraph
+
+Pair up adjacent dimensions of each head and rotate the pair by an angle that depends on the token position. For dimension pair `(2i, 2i+1)`, the rotation angle at position `p` is `theta_{p, i} = p * base^(-2i/D)` (LLaMA uses `base = 10000`). The rotation is `(x, y) -> (x cos - y sin, x sin + y cos)`. Apply the same rotation to `Q` and `K` before the dot product, and the score `q · k` becomes a function of the *relative* position `(p_q - p_k)`.
+
+Two layouts circulate. Pick one and document it.
+
+- **Non-interleaved (LLaMA, the most common today)**: the first half of the head dimension pairs with the second half. Pair `i` is `(x[i], x[D/2 + i])` for `i in [0, D/2)`.
+- **Interleaved (early GPT-J)**: adjacent dims pair up. Pair `i` is `(x[2i], x[2i+1])`.
+
+These produce different numbers from the same weights. Mixing them up is the canonical RoPE bug.
+
+## ALiBi in one paragraph
+
+Add `-m_h * |i - j|` to each score in the attention matrix, where `m_h` is a per-head slope (typically a geometric sequence `2^(-8/H), 2^(-16/H), ...`). No `sin`/`cos`, no rotation, no extra storage at inference time beyond the slope vector. Trained-with-ALiBi models like BLOOM use it; you cannot retrofit it onto a RoPE-trained model.
+
+### PyTorch reference
+
+```{python}
+#| eval: false
+import torch
+
+
+def rope_reference(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+    """Non-interleaved RoPE (LLaMA layout).
+
+    x:   [B, H, S, D]
+    cos: [S, D/2]
+    sin: [S, D/2]
+    """
+    D = x.shape[-1]
+    x1 = x[..., : D // 2]
+    x2 = x[...,   D // 2 :]
+    # broadcast cos/sin from [S, D/2] to [1, 1, S, D/2]
+    cos = cos[None, None, :, :]
+    sin = sin[None, None, :, :]
+    rot1 = x1 * cos - x2 * sin
+    rot2 = x1 * sin + x2 * cos
+    return torch.cat([rot1, rot2], dim=-1)
+
+
+def rope_interleaved_reference(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+    """Interleaved RoPE (GPT-J layout).
+
+    x:   [B, H, S, D]
+    cos: [S, D/2]  (same cache as non-interleaved)
+    sin: [S, D/2]
+    """
+    x_even = x[..., 0::2]
+    x_odd  = x[..., 1::2]
+    cos = cos[None, None, :, :]
+    sin = sin[None, None, :, :]
+    rot_even = x_even * cos - x_odd * sin
+    rot_odd  = x_even * sin + x_odd * cos
+    out = torch.empty_like(x)
+    out[..., 0::2] = rot_even
+    out[..., 1::2] = rot_odd
+    return out
+
+
+def alibi_bias_reference(num_heads: int, S: int, device, dtype) -> torch.Tensor:
+    """Standard ALiBi bias of shape [H, S, S]."""
+    # Slopes: geometric sequence, head h has slope 2^(-8h/H) for h in 1..H.
+    powers = torch.arange(1, num_heads + 1, device=device, dtype=torch.float32)
+    slopes = torch.pow(2.0, -8.0 * powers / num_heads)
+    i = torch.arange(S, device=device)
+    rel = (i[:, None] - i[None, :]).abs().to(torch.float32)
+    return (-slopes[:, None, None] * rel[None, :, :]).to(dtype)
+```
+
+### Triton implementation
+
+One program owns `(b, h, m_tile)` — a chunk of sequence positions for a single `(batch, head)`. It loads the corresponding rows of `cos`/`sin`, applies the rotation, and writes back. The kernel below is the non-interleaved variant with an optional position offset for decoding.
+
+```{python}
+#| eval: false
+import triton
+import triton.language as tl
+
+
+@triton.jit
+def _rope_noninterleaved_kernel(
+    x_ptr, cos_ptr, sin_ptr, out_ptr,
+    B, H, S, D,
+    stride_xb, stride_xh, stride_xs, stride_xd,
+    stride_ob, stride_oh, stride_os, stride_od,
+    stride_cs, stride_cd,
+    POS_OFFSET, HALF: tl.constexpr,
+    BLOCK_S: tl.constexpr,
+):
+    pid_bh = tl.program_id(0)
+    pid_s  = tl.program_id(1)
+    b = pid_bh // H
+    h = pid_bh %  H
+
+    offs_s = pid_s * BLOCK_S + tl.arange(0, BLOCK_S)   # token positions inside [0, S)
+    offs_h = tl.arange(0, HALF)                        # half-dim indices [0, D/2)
+    s_mask = offs_s < S
+
+    # Pointers for x[..., :D/2] and x[..., D/2:]
+    base_x = x_ptr + b * stride_xb + h * stride_xh
+    x1_ptrs = base_x + offs_s[:, None] * stride_xs + offs_h[None, :] * stride_xd
+    x2_ptrs = base_x + offs_s[:, None] * stride_xs + (HALF + offs_h)[None, :] * stride_xd
+
+    # cos/sin indexed by absolute position (offs_s + POS_OFFSET)
+    pos = offs_s + POS_OFFSET
+    cos_ptrs = cos_ptr + pos[:, None] * stride_cs + offs_h[None, :] * stride_cd
+    sin_ptrs = sin_ptr + pos[:, None] * stride_cs + offs_h[None, :] * stride_cd
+
+    x1  = tl.load(x1_ptrs,  mask=s_mask[:, None], other=0.0).to(tl.float32)
+    x2  = tl.load(x2_ptrs,  mask=s_mask[:, None], other=0.0).to(tl.float32)
+    cos = tl.load(cos_ptrs, mask=s_mask[:, None], other=0.0)
+    sin = tl.load(sin_ptrs, mask=s_mask[:, None], other=0.0)
+
+    rot1 = x1 * cos - x2 * sin
+    rot2 = x1 * sin + x2 * cos
+
+    base_o = out_ptr + b * stride_ob + h * stride_oh
+    o1_ptrs = base_o + offs_s[:, None] * stride_os + offs_h[None, :] * stride_od
+    o2_ptrs = base_o + offs_s[:, None] * stride_os + (HALF + offs_h)[None, :] * stride_od
+    tl.store(o1_ptrs, rot1.to(x1.dtype), mask=s_mask[:, None])
+    tl.store(o2_ptrs, rot2.to(x2.dtype), mask=s_mask[:, None])
+```
+
+The full source — interleaved variant, ALiBi bias kernel, sin/cos cache builder — is in `src/ch16_rope/`.
+
+### Shape trace
+
+For the non-interleaved RoPE kernel above, one program owns one `(b, h, BLOCK_S)` tile of `x`:
+
+```
+x:              (B, H, S, D)     fp16   # input
+cos, sin:       (S_max, D/2)     fp32   # cache, precomputed at model init
+out:            (B, H, S, D)     fp16   # rotated output
+
+Program owns:   one (b, h) and one BLOCK_S slice of x
+pid_bh, pid_s   scalars          int32
+b, h            scalars          int32
+HALF            constexpr        = D / 2
+offs_s          (BLOCK_S,)       int32
+offs_h          (HALF,)          int32
+s_mask          (BLOCK_S,)       bool
+pos             (BLOCK_S,)       int32  = offs_s + POS_OFFSET
+
+x1 = tl.load    (BLOCK_S, HALF)  fp16 -> fp32
+x2 = tl.load    (BLOCK_S, HALF)  fp16 -> fp32
+cos = tl.load   (BLOCK_S, HALF)  fp32
+sin = tl.load   (BLOCK_S, HALF)  fp32
+
+rot1 = x1*cos - x2*sin           (BLOCK_S, HALF)  fp32
+rot2 = x1*sin + x2*cos           (BLOCK_S, HALF)  fp32
+
+tl.store(o1)    (BLOCK_S, HALF)  fp16   # writes x[..., :D/2]
+tl.store(o2)    (BLOCK_S, HALF)  fp16   # writes x[..., D/2:]
+```
+
+### Pointer arithmetic and masks
+
+Two stride games matter.
+
+- **`x` and `out` use the same `(stride_b, stride_h, stride_s, stride_d)`.** Letting `D` be unit-stride means the two halves of the head dim live `HALF * stride_d` bytes apart. We construct `x1_ptrs` and `x2_ptrs` separately rather than loading the full `D`-wide tile and slicing, because Triton has no clean "slice the last dim in half" primitive.
+- **`cos`/`sin` are indexed by absolute position** (`offs_s + POS_OFFSET`). During prefill `POS_OFFSET = 0`. During decoding, where the program processes one new token at absolute position `current_len`, you pass `POS_OFFSET = current_len` and `BLOCK_S = 1`. This is the one place where the kernel sees "where am I in the cache".
+
+Masks: `s_mask = offs_s < S` is the only mask we need. We deliberately make `HALF` a `constexpr` and require `D` to be even, so the half-dim never needs masking.
+
+`other=0.0` is safe everywhere: a zeroed `x1, x2` rotates to `(0, 0)`, which then gets stored under a `False` mask anyway.
+
+### Correctness test
+
+```{python}
+#| eval: false
+import pytest
+import torch
+from src.ch16_rope.rope import rope_noninterleaved, build_cos_sin_cache
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda only")
+def test_rope_matches_reference():
+    torch.manual_seed(0)
+    B, H, S, D = 2, 4, 128, 64
+    x = torch.randn(B, H, S, D, device="cuda", dtype=torch.float16)
+    cos, sin = build_cos_sin_cache(max_seq=S, dim=D, base=10000.0, device="cuda")
+
+    out = rope_noninterleaved(x, cos, sin)
+
+    # Reference
+    x1, x2 = x[..., : D // 2].float(), x[..., D // 2 :].float()
+    c = cos[None, None, :, :]; s = sin[None, None, :, :]
+    ref = torch.cat([x1 * c - x2 * s, x1 * s + x2 * c], dim=-1).to(x.dtype)
+
+    torch.testing.assert_close(out, ref, rtol=1e-2, atol=1e-2)
+```
+
+### Benchmark
+
+```{python}
+#| eval: false
+import torch, triton
+from src.ch16_rope.rope import rope_noninterleaved, build_cos_sin_cache
+
+
+def bench(B=2, H=32, S=4096, D=128, dtype=torch.float16):
+    x = torch.randn(B, H, S, D, device="cuda", dtype=dtype)
+    cos, sin = build_cos_sin_cache(max_seq=S, dim=D, base=10000.0, device="cuda")
+
+    triton_ms = triton.testing.do_bench(lambda: rope_noninterleaved(x, cos, sin))
+
+    def torch_ref():
+        x1, x2 = x[..., : D // 2].float(), x[..., D // 2 :].float()
+        c = cos[None, None, :, :]; s = sin[None, None, :, :]
+        return torch.cat([x1 * c - x2 * s, x1 * s + x2 * c], dim=-1).to(dtype)
+
+    torch_ms = triton.testing.do_bench(torch_ref)
+    bytes_moved = 2 * x.numel() * x.element_size()  # read + write
+    print(f"triton: {triton_ms:.3f} ms  ({bytes_moved/triton_ms/1e6:.1f} GB/s)")
+    print(f"torch : {torch_ms:.3f} ms")
+```
+
+::: {.callout-warning appearance="simple"}
+**Placeholder data.** The numbers below are hardcoded illustrative values, not measurements. Replace with output from your own `triton.testing.do_bench` run before drawing conclusions.
+:::
+
+```{ojs}
+//| echo: false
+//| label: fig-rope-bench
+//| fig-cap: "Non-interleaved RoPE forward median latency vs sequence length S (B=2, H=32, D=128, fp16). Lower is better. Triton kernel vs eager PyTorch reference."
+{
+  const data = [
+    {S: 512,  triton_ms: 0.05, torch_ms: 0.18},
+    {S: 1024, triton_ms: 0.09, torch_ms: 0.35},
+    {S: 2048, triton_ms: 0.18, torch_ms: 0.70},
+    {S: 4096, triton_ms: 0.35, torch_ms: 1.40},
+  ];
+  const long = data.flatMap(d => [
+    {S: d.S, impl: "triton", ms: d.triton_ms},
+    {S: d.S, impl: "torch",  ms: d.torch_ms}
+  ]);
+  return Plot.plot({
+    color: {legend: true, domain: ["triton", "torch"], range: ["steelblue", "orange"]},
+    x: {label: "S (sequence length, tokens)"},
+    y: {label: "median latency (ms) — lower is better"},
+    marks: [
+      Plot.line(long, {x: "S", y: "ms", stroke: "impl"}),
+      Plot.dot(long,  {x: "S", y: "ms", fill: "impl"})
+    ]
+  });
+}
+```
+
+### Interactive: RoPE as a coupled rotation
+
+A RoPE pair `(x_i, x_{i+D/2})` rotates together like the two coordinates of a single 2D point. Move the position slider to see the rotation angle scale with `p * base^(-2i/D)`. Pairs deeper in the head dim rotate slower.
+
+```{ojs}
+//| echo: false
+//| label: fig-rope-rotation
+//| fig-cap: "RoPE pair rotation viewer. Black arrow shows where the unit vector (1, 0) ends up after rotating by the RoPE angle theta = position * base^(-2i/D) with base=10000, D=64. Pairs deeper in the head dim (higher pair index i) rotate slower at the same position."
+viewof position = Inputs.range([0, 64], {value: 0, step: 1, label: "position"})
+viewof pairIdx  = Inputs.range([0, 31], {value: 0, step: 1, label: "pair index i"})
+{
+  const base = 10000;
+  const D = 64;
+  const theta = position * Math.pow(base, -2 * pairIdx / D);
+  const x = 1.0, y = 0.0;
+  const xr = x * Math.cos(theta) - y * Math.sin(theta);
+  const yr = x * Math.sin(theta) + y * Math.cos(theta);
+  return Plot.plot({
+    aspectRatio: 1,
+    x: {domain: [-1.2, 1.2]},
+    y: {domain: [-1.2, 1.2]},
+    marks: [
+      Plot.dot([{x: 0, y: 0}], {x: "x", y: "y", fill: "gray"}),
+      Plot.arrow([{x1: 0, y1: 0, x2: xr, y2: yr}], {x1: "x1", y1: "y1", x2: "x2", y2: "y2"}),
+      Plot.text([{x: xr, y: yr, label: `theta=${theta.toFixed(2)} rad`}], {x: "x", y: "y", text: "label", dy: -10})
+    ]
+  });
+}
+```
+
+### Optimization discussion
+
+RoPE is memory-bound: each element is read once, written once, with one multiply-add of arithmetic in between. On an A100 you hit DRAM ceiling at `BLOCK_S = 64` to `128` for `D = 64` to `128`. Beyond that, autotune knobs do nothing.
+
+The real lever is **fusion**. Chapter 18 and 19 fold RoPE into the Q/K projection: the matmul writes its output tile, rotates it in registers, then stores. You save one full read and one full write of `Q` and `K` per token per layer. For a 70B-class model at long context, that is several percent of decode latency.
+
+ALiBi is even cheaper because it has no cache: the slope vector is `[H]` floats. Inside FlashAttention you compute `-slope_h * |i - j|` on the fly per tile and add it to the score before the softmax. Materializing `[H, S, S]` is wasteful — it only makes sense as a debugging step.
+
+### Common bugs
+
+- **Confusing interleaved vs non-interleaved layouts.** Both use the same `cos`/`sin` cache. Both produce different numbers. If your model's loss explodes on the first forward pass, this is almost always the cause. Always check the upstream library's `apply_rotary_pos_emb` to see which layout it assumes.
+- **Wrong sign on the rotation.** The pair is `(x cos - y sin, x sin + y cos)`. Flipping a sign rotates the *other* direction, which still preserves `|q . k|` rotational invariance for *zero* relative position but breaks it elsewhere. Tests on `position = 0` will pass; tests on `position > 0` will fail.
+- **Wrong position offset for KV-cache decoding.** During decode you process one token at absolute position `current_len`. If you pass `POS_OFFSET = 0`, the new token gets rotated as if it were the first token. Symptom: the model produces gibberish only at decode, not at prefill. Preview of Chapter 17.
+- **Casting `cos`/`sin` to fp16.** At `S = 8192` and `i = 0`, `theta = 8192 * 1.0 = 8192 rad`. `sin(8192)` is well-defined, but in fp16 the argument loses precision before `sin` ever runs. Always keep the cache fp32.
+
+### Exercises
+
+**Beginner 1.** Implement non-interleaved RoPE forward as a Triton kernel. Use the kernel and launcher in `src/ch16_rope/rope.py` as a starting point. Verify against the PyTorch reference on shape `[1, 4, 128, 64]`.
+
+*Hint:* `D` must be even. Use a `HALF: tl.constexpr = D // 2`. Two separate `tl.load`s for `x[..., :HALF]` and `x[..., HALF:]`.
+
+**Beginner 2.** Implement the interleaved variant. The cache is the same; only the indexing changes — adjacent dims pair up. Verify against `rope_interleaved_reference`.
+
+*Hint:* use `2 * offs_h` and `2 * offs_h + 1` for the even and odd pointers.
+
+**Beginner 3.** Precompute `cos`/`sin` vs compute in-kernel. Write a second kernel variant that computes `theta = pos * base^(-2i/D)` and the trig inside the kernel. Benchmark against the cached version at `S = 1024, 4096`. Which wins?
+
+*Hint:* `tl.cos` and `tl.sin` exist. Computing them on the fly trades arithmetic for a DRAM read. For `D = 64`, the cache is only a few hundred KB.
+
+**Intermediate 1.** Add a `POS_OFFSET` argument so a single token at absolute position `P` during decoding rotates correctly without recomputing the full `Q`. Test that `rope(x[:, :, P:P+1], cos, sin, pos_offset=P)` equals `rope(x[:, :, :P+1], cos, sin, pos_offset=0)[:, :, P:P+1]`.
+
+*Hint:* this is one extra constant added to `offs_s` before indexing `cos`/`sin`. The kernel in `src/ch16_rope/rope.py` already supports this — re-implement it yourself for understanding.
+
+**Intermediate 2.** Support **partial rotary dims**. Some models (e.g. early Phi) rotate only the first `rotary_dim` of each head dim and pass the rest through. Add a `ROTARY_DIM: tl.constexpr` parameter; load and rotate `[..., :ROTARY_DIM]`, copy through `[..., ROTARY_DIM:]`.
+
+*Hint:* the cache becomes `[S, ROTARY_DIM / 2]`. The pass-through region needs no compute, just a copy — or, if `out` is `x` (in-place), no work at all.
+
+**Advanced.** Fuse RoPE into a Q/K projection kernel. Take a small linear-layer kernel (you can borrow from Chapter 10), have it produce a `[B, S, H, D]` tile of `Q`, rotate the tile in-register with RoPE, and store. Compare end-to-end against `linear` then `rope` on shape `[2, 4096, 32, 128]`.
+
+*Hint:* the projection writes its accumulator tile after the K-loop. Insert the rotation just before the store. You will need to load `cos`/`sin` once per program at the start.

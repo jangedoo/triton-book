@@ -1,0 +1,380 @@
+---
+title: "Chapter 11: Persistent Matmul and Advanced Matmul Concepts"
+---
+
+This chapter is mostly conceptual. The author's reference hardware is a
+2070 SUPER (sm_75), and the techniques here -- persistent kernels with
+many-tile loops, TMA-driven memory transfers, FP8 dot products with
+per-block scaling -- need Ampere, Hopper, or Blackwell to be worth the
+trouble. You will still get a working persistent skeleton that compiles
+and runs on Turing; it just will not be faster than the grouped matmul
+from Chapter 9.
+
+The goal is to leave you able to read the official Triton tutorials on
+persistent matmul, block-scaled matmul, and FP8 matmul, and recognize
+each component. When you eventually get hands on an H100, you will skip
+the conceptual ramp and go straight to tuning.
+
+::: {.callout-warning}
+## Hardware requirement
+The persistent matmul kernel in this chapter compiles on Turing
+(sm_75) but does not deliver a useful speedup until Ampere (sm_80) or
+newer. TMA primitives require Hopper (sm_90+). FP8 `tl.dot` requires
+Ada (sm_89) or Hopper. The author's reference 2070 SUPER (sm_75)
+cannot validate any of these as performance kernels. Use a
+Colab/cloud A100/H100 instance for these experiments.
+:::
+
+### Persistent matmul: the concept
+
+The matmul kernels from Chapters 9 and 10 launch one program per output
+tile. For a 4096x4096 matmul with 128x128 tiles, that is 1024 programs.
+The GPU has, say, 84 SMs on an A100. The scheduler maps 84 programs to
+SMs initially; as each finishes, it picks up another tile, until all
+1024 are done.
+
+That is fine, but it has overhead:
+
+- **Per-program scheduling.** The scheduler decides which SM gets which
+  program. Each handoff is cheap, but with 1024 programs it adds up,
+  especially on small shapes.
+- **Cold start on each program.** A new program walks into a cold
+  register file. Software pipelining (loading the next K-chunk while
+  computing the current `tl.dot`) starts from zero each time.
+- **No cross-tile reuse.** When a program finishes its tile, the next
+  program on that SM is whatever the scheduler picked. The K-tiles of
+  A that were hot in L2 for the previous tile are often not the same
+  ones the next tile wants.
+
+Persistent matmul flips the structure: launch *one program per SM* (or
+close to it), and have each program loop over many output tiles. The
+outer loop:
+
+```python
+# eval: false
+start_pid = tl.program_id(axis=0)
+num_tiles = num_pid_m * num_pid_n
+for tile_id in range(start_pid, num_tiles, NUM_SMS):
+    # ... compute output tile `tile_id` ...
+```
+
+Each program (one per SM) walks `start_pid, start_pid + NUM_SMS,
+start_pid + 2 * NUM_SMS, ...` through the tile space. The benefits:
+
+1. **One launch, then no more scheduling.** The 84 programs are
+   resident on the 84 SMs for the entire kernel. No tile-to-tile
+   scheduling overhead.
+2. **Warm registers and pipelines.** The software-pipelined K-loop
+   stays primed across tiles -- the prologue and epilogue of the
+   pipeline get amortized across many output tiles instead of one.
+3. **Cross-tile L2 reuse.** When combined with grouped ordering, each
+   SM walks a row-stripe of A that stays hot in L2 across all the
+   tiles it processes.
+4. **Better TMA opportunity on Hopper.** Persistent kernels are the
+   natural pattern for TMA-driven prefetching: kick off the next
+   tile's loads via TMA while the current tile finishes its dot.
+
+### Triton implementation
+
+The skeleton in `src/ch11_persistent_matmul/persistent_matmul_skeleton.py`
+shows the structure. Most of the kernel body is identical to the grouped
+matmul from Chapter 9; the only change is the outer `for tile_id` loop
+and the `grid = (NUM_SMS,)` launch.
+
+```python
+# eval: false
+@triton.jit
+def persistent_matmul_kernel(
+    a_ptr, b_ptr, c_ptr,
+    M, N, K,
+    stride_am, stride_ak,
+    stride_bk, stride_bn,
+    stride_cm, stride_cn,
+    NUM_SMS: tl.constexpr,
+    BLOCK_M: tl.constexpr, BLOCK_N: tl.constexpr, BLOCK_K: tl.constexpr,
+    GROUP_SIZE_M: tl.constexpr,
+):
+    start_pid = tl.program_id(axis=0)
+    num_pid_m = tl.cdiv(M, BLOCK_M)
+    num_pid_n = tl.cdiv(N, BLOCK_N)
+    num_tiles = num_pid_m * num_pid_n
+
+    for tile_id in range(start_pid, num_tiles, NUM_SMS):
+        # grouped-ordering tile mapping (same as Chapter 9 grouped)
+        num_pid_in_group = GROUP_SIZE_M * num_pid_n
+        group_id = tile_id // num_pid_in_group
+        first_pid_m = group_id * GROUP_SIZE_M
+        group_size_m = tl.minimum(num_pid_m - first_pid_m, GROUP_SIZE_M)
+        pid_m = first_pid_m + ((tile_id % num_pid_in_group) % group_size_m)
+        pid_n = (tile_id % num_pid_in_group) // group_size_m
+
+        # ... unchanged K-loop and epilogue ...
+```
+
+Launch:
+
+```python
+# eval: false
+num_sms = torch.cuda.get_device_properties(0).multi_processor_count
+grid = (num_sms,)
+persistent_matmul_kernel[grid](...)
+```
+
+That is the entire structural change. The official tutorial at
+`python/tutorials/09-persistent-matmul.py` adds explicit software
+pipelining, autotuned configs, and on Hopper a TMA-based load path.
+
+### Program scheduling and occupancy
+
+Why does one-program-per-SM help? Because the GPU's hardware scheduler
+is good at hiding latency *within* an SM but pays a small cost *across*
+SMs.
+
+A single SM runs many warps concurrently. Triton picks `num_warps`; the
+hardware multiplexes them. When one warp is waiting on a memory load,
+another runs. That hiding is hardware-fast and free.
+
+Crossing SMs is different. When a program finishes, the SM is briefly
+idle while the scheduler picks up a new program from the launch queue,
+allocates registers and shared memory, and starts it. That handoff is
+sub-microsecond per program but real -- and you do it 1024 times in the
+non-persistent kernel and 84 times in the persistent one.
+
+Occupancy is the other dimension. "Occupancy" measures how many warps
+each SM can keep resident at once, limited by register and shared-memory
+usage. A persistent program does not change per-tile register or shared
+usage, so occupancy is the same. But the *active* warps stay productive
+longer because the launch handoffs disappear.
+
+### Tensor Memory Accelerator (TMA) -- Hopper and Blackwell
+
+TMA is the Hopper-era replacement for per-thread address arithmetic on
+global memory loads. Instead of every thread computing
+`a_ptr + offs_m * stride_am + offs_k * stride_ak` and issuing its own
+`ld.global.b16`, TMA takes a *descriptor* (a small struct describing
+shape, strides, and a base pointer) and a destination shared-memory
+buffer, and copies the entire tile asynchronously. The hardware unit
+walks the tile shape; the threads just wait on a barrier.
+
+What TMA buys you:
+
+- **No per-thread address math.** Saves registers, frees them for the
+  `tl.dot` operands.
+- **Asynchronous and overlap-friendly.** TMA loads run in parallel with
+  `tl.dot` more cleanly than the regular load path.
+- **Built-in swizzling.** TMA understands the swizzle patterns the
+  tensor cores want, so the loaded tile is already in shared memory in
+  the right layout.
+
+In Triton, TMA loads look like `tl.experimental_descriptor_load(desc,
+[offset_m, offset_k])`. The descriptor is built once on the host and
+passed to the kernel. The official persistent matmul tutorial on Hopper
+uses TMA for both the A and B loads inside the per-tile loop.
+
+You cannot run this on Turing or Ampere. The op compiles to a runtime
+error on older hardware. Read the tutorial; do not try to bench it.
+
+### FP8 matmul
+
+Hopper and Ada introduced FP8 tensor cores that run roughly 2x the fp16
+throughput. FP8 has two formats:
+
+- **E4M3:** 4-bit exponent, 3-bit mantissa. Higher precision, less
+  range. Typically used for activations.
+- **E5M2:** 5-bit exponent, 2-bit mantissa. Less precision, more range.
+  Typically used for gradients.
+
+FP8 has so little dynamic range that you cannot use a single
+tensor-wide scale and expect numerical stability. The standard fix is
+**per-block scaling**: divide each operand into blocks (commonly 32 or
+128 elements along the K axis), give each block its own fp16 or fp32
+scale, and apply the scale on the way into the fp32 accumulator.
+
+The kernel signature gains:
+
+- `a_scale_ptr`, `b_scale_ptr` -- per-block scale tensors.
+- Stride args for the scale tensors.
+- A `SCALE_BLOCK` constexpr telling the kernel how many fp8 elements
+  share one scale.
+
+The dot still runs in fp8 (that is where the 2x speed comes from); the
+accumulator is still fp32; the scales multiply the partial product
+*before* it accumulates. Per-block scaling cleanly handles activations
+with outliers -- one extreme value in one column does not force every
+other element to share its dynamic range.
+
+The official block-scaled matmul tutorial is the place to read the
+production version. Blackwell's MX-FP4 / MX-FP8 microscaling takes the
+idea further: 32-element blocks with their own exponents baked into the
+storage format.
+
+### Shape trace
+
+For the persistent skeleton on an A100 (108 SMs) computing a 4096x4096
+matmul with 128x128 tiles:
+
+```
+Constants:                  BLOCK_M=128 BLOCK_N=128 BLOCK_K=32
+                            GROUP_SIZE_M=8  NUM_SMS=108
+
+num_pid_m = 4096/128 = 32
+num_pid_n = 4096/128 = 32
+num_tiles = 1024
+
+Launch:                     grid = (108,)
+Per program (one per SM):
+  start_pid = tl.program_id(0)   # 0..107
+  for tile_id in range(start_pid, 1024, 108):
+       # walks 10 tiles on most SMs, 9 tiles on some
+       # (1024 / 108 = 9.48)
+       ...                       # full grouped-matmul tile body
+```
+
+Each program does ~10 output tiles, ~128 K-iterations per tile,
+~1.3 GFLOPs per tile. The non-persistent kernel launches 1024 programs
+that each do one tile.
+
+### Pointer arithmetic and masks
+
+Identical to Chapter 9's grouped matmul, just wrapped in the outer
+for-loop. The pointer bases are recomputed inside the loop -- the
+compiler is free to hoist what it can but conceptually each tile starts
+fresh with `offs_m`, `offs_n`, `offs_k`. Mask logic is the same:
+`offs_m < M`, `offs_n < N`, `offs_k < k_remaining`.
+
+### Benchmark
+
+```python
+# eval: false
+import torch
+import triton
+from src.ch09_matmul import matmul_grouped
+from src.ch11_persistent_matmul import persistent_matmul_skeleton
+
+if torch.cuda.get_device_capability() < (8, 0):
+    print("persistent matmul does not pay off on this GPU; skipping")
+else:
+    for n in [512, 1024, 2048, 4096, 8192]:
+        a = torch.randn((n, n), device="cuda", dtype=torch.float16)
+        b = torch.randn((n, n), device="cuda", dtype=torch.float16)
+        ms_g = triton.testing.do_bench(lambda: matmul_grouped(a, b))
+        ms_p = triton.testing.do_bench(lambda: persistent_matmul_skeleton(a, b))
+        print(n, ms_g, ms_p, ms_g / ms_p)
+```
+
+::: {.callout-warning appearance="simple"}
+**Placeholder data.** The numbers below are hardcoded illustrative values, not measurements. Replace with output from your own `triton.testing.do_bench` run before drawing conclusions.
+:::
+
+```{ojs}
+//| echo: false
+//| label: fig-persistent-matmul-bench
+//| fig-cap: "Square matmul median latency vs square side length (M=N=K). Lower is better. Compares the Chapter 9 grouped matmul against the persistent-matmul skeleton from this chapter."
+{
+  const data = [
+    {N: 512,  grouped_ms: 0.10, persistent_ms: 0.09},
+    {N: 1024, grouped_ms: 0.55, persistent_ms: 0.50},
+    {N: 2048, grouped_ms: 3.20, persistent_ms: 2.95},
+    {N: 4096, grouped_ms: 21.0, persistent_ms: 19.0},
+    {N: 8192, grouped_ms: 165.0, persistent_ms: 148.0},
+  ];
+  const long = data.flatMap(d => [
+    {N: d.N, impl: "grouped",    ms: d.grouped_ms},
+    {N: d.N, impl: "persistent", ms: d.persistent_ms}
+  ]);
+  return Plot.plot({
+    width: 720,
+    color: {legend: true, domain: ["grouped", "persistent"], range: ["steelblue", "tomato"]},
+    y: {label: "median latency (ms) — lower is better", grid: true},
+    x: {label: "M = N = K (square side)"},
+    marks: [
+      Plot.line(long, {x: "N", y: "ms", stroke: "impl"}),
+      Plot.dot(long,  {x: "N", y: "ms", fill: "impl"})
+    ]
+  });
+}
+```
+
+Expect a 5-15% improvement on Ampere, more on Hopper with TMA. The
+benchmark script in `benchmarks/bench_ch11_persistent_matmul.py` skips
+gracefully on sm < 80.
+
+### Optimization discussion
+
+Knobs that matter for persistent matmul:
+
+- **NUM_SMS.** The default is `multi_processor_count`. Sometimes
+  `2 * num_sms` helps because the second wave of programs hides the
+  tail latency of the first. Benchmark.
+- **GROUP_SIZE_M.** Same as Chapter 9. 8 is the default.
+- **Block sizes and num_stages.** Same trade-offs as Chapter 9. Often
+  bigger blocks help here because the per-program startup cost is
+  amortized over many tiles.
+
+What this is bound by: at H100-class sizes, compute-bound on FP8
+tensor cores when the kernel is FP8, or memory-bound on TMA bandwidth.
+On Ampere, the bound is similar to the non-persistent kernel; you are
+mostly buying back the scheduling overhead.
+
+What you would try next: combine persistent with software-pipelined
+loads (covered in Chapter 27) to overlap the next tile's loads with
+the current tile's compute. Then TMA on Hopper to get the loads off
+the threads entirely.
+
+### Common bugs
+
+1. **Forgetting to set `NUM_SMS` as `constexpr`.** If `NUM_SMS` is a
+   runtime arg, the compiler cannot specialize the outer loop bound
+   and you lose half the benefit of persistent execution. Make it
+   `tl.constexpr` and rebuild when the GPU changes.
+2. **Off-by-one in `for tile_id in range(start_pid, num_tiles, NUM_SMS)`.**
+   Each program is supposed to start at `start_pid` and stride by
+   `NUM_SMS`. Writing `range(0, num_tiles, NUM_SMS)` makes every
+   program do every NUM_SMS-th tile starting from 0, which means each
+   tile gets computed NUM_SMS times into the same memory. Output is
+   either NUM_SMS times too large or non-deterministic depending on
+   race conditions.
+3. **TMA on the wrong hardware.** `tl.experimental_descriptor_load`
+   compiles on older hardware but raises at runtime. Guard the kernel
+   with a hardware check before launching.
+
+### Exercises
+
+#### Beginner
+
+1. **Why persistent + grouped combine.** Write a paragraph in your own
+   words.
+
+2. **Read the official tutorial.** Find
+   `python/tutorials/09-persistent-matmul.py` in the Triton repo.
+   Identify the outer program loop and list two things the official
+   version does that our skeleton does not.
+
+3. **Estimate the savings.** A 4096x4096 matmul with 128x128 tiles has
+   1024 output tiles. On an 84-SM GPU at 50 ns of per-program
+   scheduling, what fraction of a 2 ms total kernel time does the
+   regular launch consume vs the persistent (84-program) launch?
+
+#### Intermediate
+
+4. **Persistent grouped matmul, end-to-end.** Take
+   `src/ch09_matmul/grouped_matmul.py` and convert it into a
+   persistent kernel by adding the outer `for tile_id in
+   range(start_pid, num_tiles, NUM_SMS):` loop. Verify correctness on
+   a small shape; performance will be similar on sm_75 and noticeably
+   better on sm_80+.
+
+5. **FP8 kernel signature.** Sketch what new arguments an FP8 matmul
+   kernel needs that an fp16 one does not. Where do the scales get
+   applied in the K-loop?
+
+#### Advanced
+
+6. **Block-scaled tutorial summary.** Read the official Triton
+   block-scaled matmul tutorial and write 1-2 paragraphs covering:
+   the scaling-tensor layout; how the scale loads interleave with the
+   data loads; and why per-block scaling beats per-tensor scaling for
+   activations with outliers.
+
+Solutions in `solutions/ch11_solutions.py` -- mostly prose, with code
+where it adds value.

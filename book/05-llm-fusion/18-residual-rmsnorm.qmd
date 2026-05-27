@@ -1,0 +1,292 @@
+---
+title: "Chapter 18: Residual Add + RMSNorm Fusion"
+---
+
+Open any modern decoder block — LLaMA, Mistral, Qwen, Gemma — and you find this shape twice per layer:
+
+```
+x = x + attention(rmsnorm(x))
+x = x + mlp(rmsnorm(x))
+```
+
+The pre-norm convention means the residual add and the next RMSNorm always sit back to back. Two ops, no fancy reshape in between. That is a fusion opportunity hiding in plain sight.
+
+In Chapter 7 you wrote RMSNorm as a one-program-per-row kernel. In this chapter you fold the residual add into that kernel. The math is the same, the memory traffic shrinks, and the launcher gets a little smarter so callers that need the post-add residual can grab it without paying for another pass.
+
+## Why fuse
+
+Run the unfused version and count HBM traffic for a row of width `N`:
+
+| Step                | Reads      | Writes     |
+|---------------------|------------|------------|
+| `t = x + residual`  | `2N`       | `N`        |
+| `y = rmsnorm(t)`    | `N`        | `N`        |
+| **Total**           | **`3N`**   | **`2N`**   |
+
+The intermediate tensor `t` is written and then immediately re-read. On a memory-bound kernel like this one, that round-trip through HBM is most of the runtime. The fused kernel does the add inside the same program that does the variance reduction. Total traffic drops:
+
+| Step                | Reads      | Writes     |
+|---------------------|------------|------------|
+| Fused               | `2N`       | `N` (or `2N` if you also save `t`) |
+
+You roughly halve the bandwidth bill. The compute is unchanged — these are all elementwise ops plus one reduction.
+
+### PyTorch reference
+
+```{python}
+#| eval: false
+import torch
+
+def residual_rmsnorm_ref(
+    x: torch.Tensor,
+    residual: torch.Tensor,
+    weight: torch.Tensor | None,
+    eps: float = 1e-6,
+):
+    """Reference: rmsnorm(x + residual). Returns (y, x_new).
+
+    x, residual: [..., N], same dtype.
+    weight:      [N] or None.
+    """
+    x_new = x + residual
+    # Variance must be computed in fp32 to avoid catastrophic cancellation.
+    x32 = x_new.to(torch.float32)
+    var = x32.pow(2).mean(dim=-1, keepdim=True)
+    inv_rms = torch.rsqrt(var + eps)
+    y = x32 * inv_rms
+    if weight is not None:
+        y = y * weight.to(torch.float32)
+    return y.to(x.dtype), x_new
+```
+
+Two outputs. The downstream attention or MLP block consumes `y`; the next residual add (a full sub-layer later) consumes `x_new`. Returning both means the caller does not have to recompute `x + residual` or stash it before the norm.
+
+### Triton implementation
+
+One program per row. The row width `N` fits in one tile because hidden sizes (4096, 8192) easily fit in a single block on any modern GPU.
+
+```{python}
+#| eval: false
+import torch
+import triton
+import triton.language as tl
+
+
+@triton.jit
+def _residual_rmsnorm_kernel(
+    x_ptr, residual_ptr, weight_ptr, y_ptr, x_new_ptr,
+    stride_x_row, stride_r_row, stride_y_row, stride_xn_row,
+    N, eps,
+    HAS_WEIGHT: tl.constexpr,
+    STORE_X_NEW: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
+):
+    row = tl.program_id(0)
+    cols = tl.arange(0, BLOCK_SIZE)
+    mask = cols < N
+
+    x = tl.load(x_ptr + row * stride_x_row + cols, mask=mask, other=0.0).to(tl.float32)
+    r = tl.load(residual_ptr + row * stride_r_row + cols, mask=mask, other=0.0).to(tl.float32)
+    t = x + r
+
+    if STORE_X_NEW:
+        tl.store(x_new_ptr + row * stride_xn_row + cols, t, mask=mask)
+
+    var = tl.sum(t * t, axis=0) / N
+    inv_rms = 1.0 / tl.sqrt(var + eps)
+    y = t * inv_rms
+
+    if HAS_WEIGHT:
+        w = tl.load(weight_ptr + cols, mask=mask, other=0.0).to(tl.float32)
+        y = y * w
+
+    tl.store(y_ptr + row * stride_y_row + cols, y, mask=mask)
+
+
+def residual_rmsnorm(
+    x: torch.Tensor,
+    residual: torch.Tensor,
+    weight: torch.Tensor | None = None,
+    eps: float = 1e-6,
+    return_residual: bool = True,
+):
+    assert x.shape == residual.shape
+    assert x.is_cuda and residual.is_cuda
+    *batch, N = x.shape
+    M = 1
+    for d in batch:
+        M *= d
+    x2 = x.reshape(M, N)
+    r2 = residual.reshape(M, N)
+    y = torch.empty_like(x2)
+    x_new = torch.empty_like(x2) if return_residual else None
+    BLOCK_SIZE = triton.next_power_of_2(N)
+    grid = (M,)
+    _residual_rmsnorm_kernel[grid](
+        x2, r2, weight, y, x_new if return_residual else x2,
+        x2.stride(0), r2.stride(0), y.stride(0),
+        x_new.stride(0) if return_residual else 0,
+        N, eps,
+        HAS_WEIGHT=weight is not None,
+        STORE_X_NEW=return_residual,
+        BLOCK_SIZE=BLOCK_SIZE,
+    )
+    y = y.view_as(x)
+    if return_residual:
+        return y, x_new.view_as(x)
+    return y
+```
+
+Note the `STORE_X_NEW` `constexpr`. When the caller does not need the post-add residual, the compiler drops the store entirely. The `HAS_WEIGHT` constexpr does the same trick for the optional gamma.
+
+### Shape trace
+
+```
+Inputs:                    x        : (M, N)     fp16
+                           residual : (M, N)     fp16
+                           weight   : (N,)       fp16    # or None
+Program owns:              one row of x and residual         (axis=0 grid)
+pid = tl.program_id(0)     scalar                int32
+cols = tl.arange(0, BS)    (BS,)                 int32   # BS = next_pow2(N)
+mask = cols < N            (BS,)                 bool
+x_ptrs = x_ptr + pid*stride_x_row + cols        (BS,)  ptr<fp16>
+x  = tl.load(x_ptrs, mask, other=0.0).to(fp32)  (BS,)  fp32
+r  = tl.load(r_ptrs, mask, other=0.0).to(fp32)  (BS,)  fp32
+t  = x + r                                       (BS,)  fp32
+[opt] tl.store(x_new_ptrs, t, mask)              -      stored fp16 via cast
+var     = tl.sum(t*t, axis=0) / N               scalar  fp32
+inv_rms = 1.0 / tl.sqrt(var + eps)              scalar  fp32
+y = t * inv_rms                                  (BS,)  fp32
+[opt] y = y * w   (w cast to fp32)               (BS,)  fp32
+tl.store(y_ptrs, y, mask)                        -      stored fp16 via cast
+```
+
+The dtype column is the load-bearing one. Every value that participates in the variance reduction is fp32. Stores cast back to the input dtype because the surface API matches PyTorch.
+
+### Pointer arithmetic and masks
+
+Strides come from the tensor, not from `N`. That matters once you start feeding the kernel non-contiguous residuals — the most common case is when the residual was sliced out of a larger activation buffer.
+
+The mask `cols < N` covers the last partial tile when `N` is not a power of two. You load with `other=0.0` because:
+
+- A zero added into `x + residual` is benign.
+- A zero squared is zero, which contributes nothing to the variance sum. (Contrast with softmax, where masked-off lanes need `-inf` so they cannot win the max.)
+
+For the optional `x_new` store, you must mask the write or you scribble past column `N`.
+
+### Correctness test
+
+```{python}
+#| eval: false
+import pytest, torch
+from ch18_residual_rmsnorm import residual_rmsnorm
+from ch18_residual_rmsnorm.residual_rmsnorm import residual_rmsnorm_ref
+
+pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda only")
+
+@pytest.mark.parametrize("shape", [(2, 7), (4, 1024), (3, 1025), (1, 128), (5, 129)])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16, torch.bfloat16])
+def test_against_ref(shape, dtype):
+    torch.manual_seed(0)
+    M, N = shape
+    x = torch.randn(M, N, device="cuda", dtype=dtype)
+    r = torch.randn(M, N, device="cuda", dtype=dtype)
+    w = torch.randn(N, device="cuda", dtype=dtype)
+
+    y_ref, t_ref = residual_rmsnorm_ref(x, r, w)
+    y, t = residual_rmsnorm(x, r, w)
+
+    tol = dict(rtol=1e-2, atol=1e-2) if dtype != torch.float32 else dict(rtol=1e-5, atol=1e-5)
+    torch.testing.assert_close(y, y_ref, **tol)
+    torch.testing.assert_close(t, t_ref, **tol)
+```
+
+### Benchmark
+
+```{python}
+#| eval: false
+import torch, triton
+from ch18_residual_rmsnorm import residual_rmsnorm
+
+def torch_two_ops(x, r, w, eps=1e-6):
+    t = x + r
+    var = t.to(torch.float32).pow(2).mean(dim=-1, keepdim=True)
+    y = (t.to(torch.float32) * torch.rsqrt(var + eps)).to(x.dtype)
+    return y * w, t
+
+torch_compiled = torch.compile(torch_two_ops)
+
+for N in [1024, 2048, 4096, 8192]:
+    M = 4096
+    x = torch.randn(M, N, device="cuda", dtype=torch.float16)
+    r = torch.randn(M, N, device="cuda", dtype=torch.float16)
+    w = torch.randn(N, device="cuda", dtype=torch.float16)
+    triton_ms = triton.testing.do_bench(lambda: residual_rmsnorm(x, r, w))
+    torch_ms  = triton.testing.do_bench(lambda: torch_two_ops(x, r, w))
+    compiled_ms = triton.testing.do_bench(lambda: torch_compiled(x, r, w))
+    print(f"N={N}: triton={triton_ms:.3f} torch={torch_ms:.3f} compiled={compiled_ms:.3f}")
+```
+
+::: {.callout-warning appearance="simple"}
+**Placeholder data.** The numbers below are hardcoded illustrative values, not measurements. Replace with output from your own `triton.testing.do_bench` run before drawing conclusions.
+:::
+
+```{ojs}
+//| echo: false
+//| label: fig-residual-rmsnorm-bench
+//| fig-cap: "Fused residual + RMSNorm forward median latency vs hidden size N (M=4096). Lower is better. Triton fused kernel vs eager two-op PyTorch vs torch.compile on the same two ops."
+{
+  const data = [
+    {N: 1024, triton_ms: 0.05, torch_ms: 0.12, compiled_ms: 0.07},
+    {N: 2048, triton_ms: 0.10, torch_ms: 0.24, compiled_ms: 0.13},
+    {N: 4096, triton_ms: 0.20, torch_ms: 0.48, compiled_ms: 0.25},
+    {N: 8192, triton_ms: 0.40, torch_ms: 0.96, compiled_ms: 0.50},
+  ];
+  const long = data.flatMap(d => [
+    {N: d.N, impl: "triton",   ms: d.triton_ms},
+    {N: d.N, impl: "torch",    ms: d.torch_ms},
+    {N: d.N, impl: "compiled", ms: d.compiled_ms}
+  ]);
+  return Plot.plot({
+    color: {legend: true, domain: ["triton", "torch", "compiled"], range: ["steelblue", "orange", "green"]},
+    x: {label: "N (hidden size, elements)"},
+    y: {label: "median latency (ms, M=4096) — lower is better"},
+    marks: [
+      Plot.line(long, {x: "N", y: "ms", stroke: "impl"}),
+      Plot.dot(long,  {x: "N", y: "ms", fill: "impl"})
+    ]
+  });
+}
+```
+
+### Optimization discussion
+
+This kernel is hard memory-bound. Two reads, one or two writes per element, one reduction over `N`. The roofline says you should hit roughly bandwidth-saturated runtime; if you don't, look first at warp count, not at the inner math.
+
+Knobs worth a few minutes of autotuning:
+
+- `num_warps`: try 4, 8, 16. Wider hidden sizes prefer more warps.
+- `BLOCK_SIZE`: pinned to `next_pow2(N)` here for simplicity. For very wide rows (`N >= 16384`) you may need to spill to two passes — see Chapter 7's discussion.
+
+If you find yourself at 80% of peak HBM bandwidth and want more, the next move is upstream: fuse the kernel with the matmul epilogue that produced `x` in the first place. That removes another full pass.
+
+### Common bugs
+
+- **Forgetting to return `x_new`.** The caller's next residual branch needs it. If you return only `y`, the caller silently recomputes `x + residual` outside the kernel and you have undone your own fusion.
+- **Casting to fp16 before the variance.** `t * t` in fp16 overflows for activations with magnitude above ~256. Cast `t` to fp32 before the square, every time. Cast back only at the final store.
+- **Non-contiguous `residual`.** If the caller slices a residual out of a packed buffer, `residual.stride(0)` is not `N`. Pass strides in; never hardcode.
+- **Masking the load but not the store.** Forgetting the mask on `tl.store` scribbles past column `N` and corrupts the next row's data.
+
+### Exercises
+
+**Beginner 1 — vanilla return.** Modify the launcher so it returns only `y` (no `x_new`). Verify with a unit test that the kernel does not store `x_new` (hint: pass an obviously bad pointer and confirm nothing crashes when `STORE_X_NEW=False`).
+
+**Beginner 2 — both outputs.** Use the kernel as-is to return `(y, x_new)`. Assert in a test that `x_new` matches `x + residual` exactly when both are fp32.
+
+**Beginner 3 — no gamma.** Pass `weight=None`. Confirm the `HAS_WEIGHT=False` branch produces the same output as RMSNorm with a vector of ones.
+
+**Intermediate 1 — drop residual path.** Add a `drop_residual: bool` flag. When `True`, the kernel ignores `residual` and behaves like plain RMSNorm (useful for the very first block of the network). Implement with a `constexpr` so the load is dropped at compile time.
+
+**Intermediate 2 — fused dropout.** Add dropout between the add and the norm: `t = dropout(x + residual, p)`. Use Triton's `tl.rand` for the mask. Test that the expected scaling factor `1 / (1 - p)` is applied. Be careful: dropout breaks numerical equality, so use the same RNG seed in the reference.
+
+**Advanced — backward kernel.** Derive the gradients with respect to `x`, `residual`, and `weight`. The gradient flows through both the add and the norm. Write the backward kernel as a single program-per-row. Compare to `torch.autograd` on small fp32 inputs.

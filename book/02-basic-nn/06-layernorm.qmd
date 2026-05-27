@@ -1,0 +1,255 @@
+---
+title: "Chapter 6: LayerNorm"
+---
+
+LayerNorm sits between every block in a pre-norm Transformer. It is the next member of the "one program per row, reduce over hidden" family that softmax inaugurated. The interesting new content here is not the kernel shape — you already know that — but the numerical contract: fp16 input, fp32 accumulation, and where exactly the `eps` lives.
+
+## What LayerNorm computes
+
+Given $x \in \mathbb{R}^H$, scalars $\mu = \tfrac{1}{H}\sum_i x_i$ and $\sigma^2 = \tfrac{1}{H}\sum_i (x_i - \mu)^2$, plus learned per-channel parameters $\gamma, \beta \in \mathbb{R}^H$:
+
+$$
+\text{LN}(x)_i = \frac{x_i - \mu}{\sqrt{\sigma^2 + \epsilon}} \cdot \gamma_i + \beta_i
+$$
+
+PyTorch uses `1 / sqrt(var + eps)`, not `1 / (sqrt(var) + eps)`. These are not the same when `var` is tiny — and the difference is large enough that mismatched implementations break checkpoint reproducibility. Match PyTorch.
+
+### PyTorch reference
+
+```{.python}
+import torch.nn.functional as F
+
+def pytorch_layernorm(x, weight, bias, eps=1e-5):
+    # x: (..., H), weight: (H,), bias: (H,)
+    return F.layer_norm(x, (x.shape[-1],), weight, bias, eps=eps)
+```
+
+Internally PyTorch fuses this (it has a hand-written CUDA kernel), so the eager baseline is competitive. Our Triton kernel needs to match the numerics exactly and the wall-clock approximately.
+
+### Triton implementation
+
+One program per row of `x: (M, H)` where `M = product of all leading dims`. The launcher flattens to 2D. The kernel does mean, variance, normalize, scale, shift.
+
+```{.python}
+import torch
+import triton
+import triton.language as tl
+
+@triton.jit
+def _layernorm_fwd_kernel(
+    x_ptr, y_ptr, w_ptr, b_ptr,
+    mean_ptr, rstd_ptr,         # saved for backward
+    x_row_stride, y_row_stride,
+    H, eps,
+    BLOCK_SIZE: tl.constexpr,
+):
+    row = tl.program_id(0)
+    x_row = x_ptr + row * x_row_stride
+    cols = tl.arange(0, BLOCK_SIZE)
+    mask = cols < H
+
+    # fp32 accumulation regardless of input dtype.
+    x = tl.load(x_row + cols, mask=mask, other=0.0).to(tl.float32)
+
+    mean = tl.sum(x, axis=0) / H
+    xmu = tl.where(mask, x - mean, 0.0)
+    var = tl.sum(xmu * xmu, axis=0) / H
+    rstd = 1.0 / tl.sqrt(var + eps)
+
+    # Save for backward.
+    tl.store(mean_ptr + row, mean)
+    tl.store(rstd_ptr + row, rstd)
+
+    w = tl.load(w_ptr + cols, mask=mask, other=0.0).to(tl.float32)
+    b = tl.load(b_ptr + cols, mask=mask, other=0.0).to(tl.float32)
+    y = xmu * rstd * w + b
+
+    in_dtype = tl.load(x_row + cols, mask=mask, other=0.0).dtype
+    tl.store(y_ptr + row * y_row_stride + cols, y.to(in_dtype), mask=mask)
+```
+
+Two design choices stand out.
+
+First, the `other=0.0` on the load is safe *only because* we re-mask with `tl.where(mask, x - mean, 0.0)` before computing the variance. Out-of-bounds lanes load as zero, contribute zero to the sum (so the mean is correct), and their squared deviation is `(0 - mean)^2 = mean^2` — which is *not* what we want. The `tl.where` zeros them again before the squared sum. Forget this and the variance gets a per-row constant added to it that depends on how much padding the row had. Maddening to debug.
+
+Second, we divide by `H` rather than by the number of unmasked lanes. PyTorch's `layer_norm` always uses the declared dim size; we match that exactly.
+
+#### Affine: gamma broadcast across batch
+
+`gamma` and `beta` are `(H,)`, the same for every row. We load them once per program and the compiler keeps them in registers (or shared, depending on size). For `H <= 1024` this is essentially free; for `H = 4096` you pay 16 kB of register/SMEM per program just for these. That is fine on consumer GPUs but worth measuring on an H100 where SMEM is scarcer.
+
+#### Optional backward
+
+The chapter ships a backward kernel in `src/ch06_layernorm/layernorm.py`. We summarize the math here; the full derivation is exercise 5.
+
+Given `dy`, saved `mean` and `rstd`, and parameters `gamma`:
+
+$$
+\hat{x} = (x - \mu) \cdot r,\quad r = (\sigma^2 + \epsilon)^{-1/2}
+$$
+$$
+c_1 = \tfrac{1}{H}\sum_j \hat{x}_j \cdot (\gamma_j dy_j),\quad c_2 = \tfrac{1}{H}\sum_j (\gamma_j dy_j)
+$$
+$$
+dx_i = (\gamma_i dy_i - \hat{x}_i c_1 - c_2) \cdot r
+$$
+$$
+d\gamma_i = \sum_{\text{batch}} dy_i \cdot \hat{x}_i,\quad d\beta_i = \sum_{\text{batch}} dy_i
+$$
+
+`dx` is one-kernel-per-row, same shape as the forward. `dgamma, dbeta` reduce across the batch axis, which we handle with a separate tile kernel (one program per column tile, looping over rows). Mark the backward as advanced if it does not fit your hour; it is not required to ship a useful forward.
+
+### Shape trace
+
+```
+Input:                       x  : (M, H)         fp16 (or bf16, or fp32)
+Input:                       w  : (H,)           same dtype as x
+Input:                       b  : (H,)           same dtype as x
+Program owns:                one row of x         (axis=0 grid, size M)
+pid = tl.program_id(0)       scalar              int32
+cols = tl.arange(0, BH)      (BH,)               int32  # BH = next_pow2(H), constexpr
+mask = cols < H              (BH,)               bool
+x = tl.load(..., other=0.0)  (BH,)               fp16
+x = x.to(tl.float32)         (BH,)               fp32   # accumulate in fp32
+mean = sum(x)/H              scalar              fp32
+xmu = where(mask, x-mean, 0) (BH,)               fp32
+var = sum(xmu*xmu)/H         scalar              fp32
+rstd = 1/sqrt(var + eps)     scalar              fp32
+store(mean_ptr + pid, mean)
+store(rstd_ptr + pid, rstd)
+w = load(w_ptr + cols).f32   (BH,)               fp32
+b = load(b_ptr + cols).f32   (BH,)               fp32
+y = xmu * rstd * w + b       (BH,)               fp32
+y_fp16 = y.to(fp16)          (BH,)               fp16
+tl.store(y_ptr + ..., y_fp16, mask)
+```
+
+### Pointer arithmetic and masks
+
+Row base: `x_ptr + pid * x_row_stride`. We use `x.stride(0)` so a transposed input works; we do not assume `x_row_stride == H`.
+
+`gamma` and `beta` are 1D, indexed by `cols`. They are the same for every program — Triton will hoist these loads into shared memory if the compiler decides it is worth it, but we do not need to do anything special.
+
+Two `other=` choices:
+- Load `x` with `other=0.0`. The mean would be skewed if we used `-inf` (we are not doing a max).
+- The mean was computed correctly because zero contributes nothing to a sum, but we *must* re-mask before the variance, because `(0 - mean)^2 = mean^2` is non-zero.
+
+The store mask is `cols < H`. The mean/rstd stores use no mask because we always write exactly one scalar at offset `row`.
+
+### Correctness test
+
+```{.python}
+import pytest, torch
+import torch.nn.functional as F
+from src.ch06_layernorm import layernorm
+
+pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda only")
+
+@pytest.mark.parametrize("shape", [(3, 8), (1, 1024), (128, 4096), (32, 31)])
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16])
+def test_layernorm_forward(shape, dtype):
+    torch.manual_seed(0)
+    M, H = shape
+    x = torch.randn(M, H, device="cuda", dtype=dtype)
+    w = torch.randn(H, device="cuda", dtype=dtype) * 0.1 + 1.0
+    b = torch.randn(H, device="cuda", dtype=dtype) * 0.01
+    out = layernorm(x, w, b, eps=1e-5)
+    ref = F.layer_norm(x, (H,), w, b, eps=1e-5)
+    rtol, atol = (1e-5, 1e-5) if dtype == torch.float32 else (1e-2, 1e-2)
+    torch.testing.assert_close(out, ref, rtol=rtol, atol=atol)
+```
+
+Hidden sizes `8` and `31` exercise the small-row mask paths; `(32, 31)` is the non-power-of-two trap.
+
+### Benchmark
+
+```{.python}
+import torch, triton, torch.nn.functional as F
+from src.ch06_layernorm import layernorm
+
+M, H = 4096, 4096
+x = torch.randn(M, H, device="cuda", dtype=torch.float16)
+w = torch.randn(H, device="cuda", dtype=torch.float16) * 0.1 + 1.0
+b = torch.randn(H, device="cuda", dtype=torch.float16) * 0.01
+
+ms_torch  = triton.testing.do_bench(lambda: F.layer_norm(x, (H,), w, b))
+ms_triton = triton.testing.do_bench(lambda: layernorm(x, w, b))
+compiled = torch.compile(lambda t: F.layer_norm(t, (H,), w, b)); compiled(x); torch.cuda.synchronize()
+ms_compiled = triton.testing.do_bench(lambda: compiled(x))
+
+bytes_moved = 2 * M * H * x.element_size()
+gbps = lambda ms: bytes_moved / (ms*1e-3) / 1e9
+print(f"triton {ms_triton:.3f}ms ({gbps(ms_triton):.0f} GB/s)")
+print(f"torch  {ms_torch:.3f}ms ({gbps(ms_torch):.0f} GB/s)")
+print(f"compile{ms_compiled:.3f}ms ({gbps(ms_compiled):.0f} GB/s)")
+```
+
+::: {.callout-warning appearance="simple"}
+**Placeholder data.** The numbers below are hardcoded illustrative values, not measurements. Replace with output from your own `triton.testing.do_bench` run before drawing conclusions.
+:::
+
+```{ojs}
+//| echo: false
+//| label: fig-layernorm-bench
+//| fig-cap: "LayerNorm forward median latency vs hidden size H (log x-axis, M=4096). Lower is better. Triton kernel vs eager F.layer_norm vs torch.compile(F.layer_norm)."
+{
+  const data = [
+    {H: 768,  triton_ms: 0.20, torch_ms: 0.18, compiled_ms: 0.19},
+    {H: 1024, triton_ms: 0.25, torch_ms: 0.22, compiled_ms: 0.23},
+    {H: 2048, triton_ms: 0.42, torch_ms: 0.40, compiled_ms: 0.41},
+    {H: 4096, triton_ms: 0.78, torch_ms: 0.76, compiled_ms: 0.77},
+    {H: 8192, triton_ms: 1.55, torch_ms: 1.52, compiled_ms: 1.53},
+  ];
+  const long = data.flatMap(d => [
+    {H: d.H, impl: "triton",   ms: d.triton_ms},
+    {H: d.H, impl: "torch",    ms: d.torch_ms},
+    {H: d.H, impl: "compiled", ms: d.compiled_ms}
+  ]);
+  return Plot.plot({
+    color: {legend: true, domain: ["triton", "torch", "compiled"], range: ["steelblue", "orange", "seagreen"]},
+    y: {label: "median latency (ms, M=4096) — lower is better"},
+    x: {label: "H (hidden size, elements)", type: "log"},
+    marks: [
+      Plot.line(long, {x: "H", y: "ms", stroke: "impl"}),
+      Plot.dot(long,  {x: "H", y: "ms", fill: "impl"}),
+    ]
+  });
+}
+```
+
+PyTorch's eager LayerNorm calls a hand-tuned cuDNN/ATen kernel and is hard to beat. The realistic outcome on a 2070 SUPER is "tied within 10%". The reason to ship the Triton version anyway is the next chapter (RMSNorm) and Chapter 18 (residual+RMSNorm fused), where you cannot reach in and change ATen's kernel.
+
+### Optimization discussion
+
+LayerNorm is memory-bound: `2*M*H*sizeof(dtype)` bytes moved per call versus a small constant arithmetic cost per element. The lever is the same one softmax used: `num_warps` scaled with `H`. Step up at H >= 2048 and again at H >= 4096.
+
+`BLOCK_SIZE = triton.next_power_of_2(H)` is the right default. We do not need a streaming variant for typical hidden sizes (768 to 8192 all fit in a single tile on a 2070; up to 16384 fits on an H100). Past that you would need to use the online algorithm from Welford to keep a streaming mean+variance; see exercise 4 of Chapter 7.
+
+If you really want to push it, fuse with the residual addition (Chapter 18) or with dropout (exercise 6). Each fusion eats one round trip through HBM, which is the only thing you can still save at this bandwidth utilization.
+
+### Common bugs
+
+1. **`eps` placement.** `1 / (sqrt(var) + eps)` and `1 / sqrt(var + eps)` differ measurably for small `var`. PyTorch uses the latter. Mismatched checkpoints will diverge over thousands of steps even if your first few outputs look identical.
+2. **Not re-masking after the mean subtract.** Out-of-bounds lanes loaded as `0.0` contribute `mean^2` to the squared sum if you forget `tl.where(mask, x - mean, 0.0)`. The variance comes out wrong by a row-dependent constant.
+3. **Accumulating in fp16.** Sum of `H = 4096` fp16 values loses precision aggressively; the mean is off by enough that the normalized output drifts. Always cast to fp32 before reducing.
+4. **`gamma`/`beta` dtype mismatch.** If `x` is bf16 and `weight` is fp32, the kernel as written casts both to fp32 and the answer is correct, but the output store back to the bf16 destination may overflow if `weight` is huge. Be explicit about parameter dtype in your training script.
+5. **Dividing by the unmasked count instead of `H`.** A clever optimization that breaks PyTorch parity. Don't.
+
+### Exercises
+
+#### Beginner
+
+1. **fp32-only first.** Strip the dtype casts; assert `x.dtype == torch.float32`. Get it working, then add fp16 back. The point is to feel which line is doing the protective casting.
+2. **Affine flag.** Add an `AFFINE: tl.constexpr` knob. When `AFFINE=False`, skip the `* gamma + beta` step.
+3. **`elementwise_affine=False`.** Match `nn.LayerNorm(..., elementwise_affine=False)` — no weight or bias tensors at all. Launcher accepts `weight=None`.
+
+#### Intermediate
+
+4. **Arbitrary normalized shape.** Support `normalized_shape = (D1, D2)` by reshaping in the launcher to `(M, D1*D2)`. The kernel does not change.
+5. **Backward kernel.** Re-derive the math, then implement an alternative split where dw and db are accumulated via `tl.atomic_add` from inside the dx kernel. Benchmark vs the two-kernel version that ships in the chapter.
+
+#### Advanced
+
+6. **Fused dropout + LayerNorm.** Apply dropout to `x` then LayerNorm the result in a single kernel. Save the dropout mask for the backward. Compare end-to-end against `F.dropout` then `F.layer_norm`. The dropout changes the input distribution that LayerNorm sees, so this is a real numerical fusion, not just a bandwidth saving.
+
+Worked solutions in `solutions/ch06_solutions.py`.

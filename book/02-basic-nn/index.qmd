@@ -1,0 +1,5 @@
+---
+title: "Part 2: Basic Neural Network Kernels"
+---
+
+The first family of real kernels: fused softmax, LayerNorm, RMSNorm, and the activation functions that show up in modern MLP blocks (SiLU, GELU, SwiGLU). Every chapter follows the same shape — PyTorch reference, Triton kernel, shape trace, tests, benchmark, optimization, exercises.

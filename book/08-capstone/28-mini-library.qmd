@@ -1,0 +1,205 @@
+---
+title: "Chapter 28: Build a Mini Triton LLM Kernel Library"
+---
+
+You have written something like twenty-five kernels. They live in twenty-five chapter directories. If a colleague asks "can I use your softmax?", the answer right now is "let me copy a file out of `src/ch05_fused_softmax/` and rename it." That is not a library. This chapter turns the kernels into one.
+
+The goal is a single importable package, `mini_triton_llm`, that exposes one stable function per kernel. The reader installs it once and writes `from mini_triton_llm import rmsnorm` from any notebook. We will not invent any new kernels here — we will package the ones you already wrote.
+
+### Package layout
+
+```
+src/ch28_mini_lib/
+  mini_triton_llm/
+    __init__.py            # re-exports the public API
+    rmsnorm.py             # Ch 7
+    residual_rmsnorm.py    # Ch 18
+    softmax.py             # Ch 5
+    rope.py                # Ch 16
+    swiglu.py              # Ch 19
+    attention.py           # Ch 14 (FlashAttention fwd)
+    cross_entropy.py       # Ch 20
+    benchmarking.py        # Ch 25
+    testing.py             # helpers used by the test suite
+```
+
+Three rules guide the layout:
+
+1. **One public function per kernel.** No optional kwargs that change the kernel choice. If you need a different kernel, import a different name.
+2. **The package is the source of truth.** Each module contains the kernel and the launcher in full. Do not import the kernel back from `src/chNN_*`; those directories are educational scaffolding, not a package.
+3. **The public API lives in `__init__.py`.** A user should never need to know which submodule a function lives in.
+
+### Public API
+
+`__init__.py` re-exports everything so the caller types one name:
+
+```python
+from mini_triton_llm import (
+    rmsnorm,
+    residual_rmsnorm,
+    softmax,
+    rope,
+    swiglu,
+    flash_attention,
+    cross_entropy,
+    benchmarking,
+    testing,
+)
+```
+
+`benchmarking` and `testing` are exposed as submodules rather than as flat names because they group several helpers together (`bench`, `compare`, `assert_close_fp16`, `random_qkv`).
+
+### Naming consistency
+
+Across all the modules we follow one set of conventions:
+
+- Tensors are PyTorch tensors. No raw `torch.cuda.Tensor` types in the signature, no `.numpy()` round trips.
+- The last dim is the "feature" dim for everything except attention, where the convention is `(B, H, S, D)`.
+- `eps` defaults to `1e-6` everywhere it appears.
+- Kernels validate their inputs and raise `ValueError` with a message that names the offender. `rmsnorm: weight last dim must match x last dim` is a useful error; `assertion failed` is not.
+
+### Dtype policy
+
+This is the policy every module enforces:
+
+- **Input dtype:** fp16, bf16, or fp32, depending on the kernel. Documented in the docstring.
+- **Compute dtype:** fp32 for reductions, divisions, and softmax exponents. This is the only sane choice and we make it everywhere without asking.
+- **Output dtype:** matches the input. The kernel casts on store.
+
+`cross_entropy` is the one exception: its output is always fp32 because the loss value is a small number and we do not want to round it.
+
+### How to use the library
+
+From a notebook:
+
+```python
+from mini_triton_llm import rmsnorm
+
+x = torch.randn(4, 1024, device="cuda", dtype=torch.float16)
+w = torch.randn(1024, device="cuda", dtype=torch.float16)
+y = rmsnorm(x, w)
+```
+
+For attention:
+
+```python
+from mini_triton_llm import flash_attention
+from mini_triton_llm.testing import random_qkv
+
+q, k, v = random_qkv(B=2, H=8, S=1024, D=64, dtype=torch.float16)
+out = flash_attention(q, k, v, causal=True)
+```
+
+For benchmarking against PyTorch:
+
+```python
+from mini_triton_llm import softmax
+from mini_triton_llm.benchmarking import compare, print_table
+
+r = compare(
+    "softmax",
+    lambda: softmax(x),
+    lambda: torch.softmax(x.float(), dim=-1).half(),
+)
+print_table([r])
+```
+
+### How to add a new kernel
+
+The mechanical recipe:
+
+1. Create `src/ch28_mini_lib/mini_triton_llm/<new_kernel>.py` with the kernel, the launcher, and a one-paragraph docstring.
+2. Add an entry to `__init__.py`: import the launcher and append its name to `__all__`.
+3. Add a correctness test to `tests/test_ch28_mini_lib.py` that imports via the public API (not the submodule) and compares against a PyTorch reference.
+4. Add a benchmark row in `benchmarks/bench_ch28_mini_lib.py`.
+
+The first chapter exercise walks through this for a `geglu` kernel.
+
+### Correctness test
+
+The package-level test suite is a smoke test, not an exhaustive sweep. The exhaustive sweeps live in the per-chapter test files. The smoke test exists to catch the boring class of bugs: someone renamed a submodule, someone forgot to add a function to `__all__`, someone changed a kwarg.
+
+```{python}
+#| eval: false
+import os, sys
+import torch, pytest
+
+sys.path.insert(0, "src/ch28_mini_lib")
+
+pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="cuda only")
+
+def test_public_api_imports():
+    import mini_triton_llm as mtl
+    for name in ["rmsnorm", "residual_rmsnorm", "softmax", "rope",
+                 "swiglu", "flash_attention", "cross_entropy",
+                 "benchmarking", "testing"]:
+        assert hasattr(mtl, name)
+    assert mtl.__version__ == "0.1.0"
+```
+
+Each kernel then gets its own short test that re-derives the reference in PyTorch. See `tests/test_ch28_mini_lib.py` for the full set.
+
+### Benchmark
+
+The benchmark file picks one representative shape per kernel and prints a unified table. We do not try to find each kernel's best shape; we want one number per kernel that is comparable in spirit to the PyTorch reference at the same shape.
+
+```{python}
+#| eval: false
+from mini_triton_llm import rmsnorm, softmax, swiglu, flash_attention
+from mini_triton_llm.benchmarking import compare, print_table
+from mini_triton_llm.testing import random_qkv
+
+rows = []
+x = torch.randn(4096, 4096, dtype=torch.float16, device="cuda")
+w = torch.randn(4096, dtype=torch.float16, device="cuda")
+rows.append(compare("rmsnorm",
+                    lambda: rmsnorm(x, w),
+                    lambda: torch.nn.functional.rms_norm(x, (4096,), w)))
+rows.append(compare("softmax",
+                    lambda: softmax(x),
+                    lambda: torch.softmax(x.float(), dim=-1).half()))
+print_table(rows)
+```
+
+::: {.callout-warning appearance="simple"}
+**Placeholder data.** The numbers below are hardcoded illustrative values, not measurements. Replace with output from your own `triton.testing.do_bench` run before drawing conclusions.
+:::
+
+```{ojs}
+//| echo: false
+//| label: fig-mini-library-bench
+//| fig-cap: "Mini-library kernel median latency at one representative shape per kernel. Lower is better. Triton library implementation vs the matching PyTorch reference."
+{
+  const data = [
+    {kernel: "rmsnorm",          triton_ms: 0.18, torch_ms: 0.22},
+    {kernel: "residual_rmsnorm", triton_ms: 0.21, torch_ms: 0.30},
+    {kernel: "softmax",          triton_ms: 0.30, torch_ms: 0.34},
+    {kernel: "rope",             triton_ms: 0.12, torch_ms: 0.18},
+    {kernel: "swiglu",           triton_ms: 0.45, torch_ms: 0.55},
+    {kernel: "flash_attention",  triton_ms: 1.20, torch_ms: 1.05},
+    {kernel: "cross_entropy",    triton_ms: 0.40, torch_ms: 0.60},
+  ];
+  const long = data.flatMap(d => [
+    {kernel: d.kernel, impl: "triton", ms: d.triton_ms},
+    {kernel: d.kernel, impl: "torch",  ms: d.torch_ms}
+  ]);
+  return Plot.plot({
+    marginLeft: 140,
+    color: {legend: true, domain: ["triton", "torch"], range: ["steelblue", "orange"]},
+    x: {label: "median latency (ms) — lower is better"},
+    y: {label: "kernel"},
+    fy: {label: "kernel"},
+    marks: [
+      Plot.barX(long, {fy: "kernel", y: "impl", x: "ms", fill: "impl"})
+    ]
+  });
+}
+```
+
+### A note on `flash_attention` losing
+
+In the placeholder table above, `flash_attention` runs slightly slower than the PyTorch reference. Read that as a feature of the table, not a defect of your library: PyTorch's `F.scaled_dot_product_attention` dispatches to the official `flash_attn` (or to cuDNN), which is years of tuning past anything you will reproduce in a chapter. The educational kernel exists so you understand what is inside; it does not exist to dethrone the production version.
+
+### Exercises
+
+See `exercises/ch28_exercises.md`. The headline tasks: add a GeGLU kernel (Beginner 1), wire a `pyproject.toml` and `__version__` (Intermediate 5), and wrap `rmsnorm` in `torch.autograd.Function` so it supports backward through PyTorch (Advanced 6).
