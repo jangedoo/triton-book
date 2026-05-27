@@ -503,7 +503,7 @@ mlp  = (silu(gate) * up) @ W_down.T + b_down</code></pre>
 <p>This chapter writes that epilogue kernel for both SwiGLU (SiLU gate) and GEGLU (GELU gate).</p>
 <section id="pytorch-reference" class="level3" data-number="21.0.1">
 <h3 data-number="21.0.1" class="anchored" data-anchor-id="pytorch-reference"><span class="header-section-number">21.0.1</span> PyTorch reference</h3>
-<div id="98b9f499" class="cell">
+<div id="a89beae8" class="cell">
 <div class="sourceCode cell-code" id="cb2"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch</span>
 <span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch.nn.functional <span class="im">as</span> F</span>
 <span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a></span>
@@ -523,7 +523,7 @@ mlp  = (silu(gate) * up) @ W_down.T + b_down</code></pre>
 <section id="triton-implementation" class="level3" data-number="21.0.2">
 <h3 data-number="21.0.2" class="anchored" data-anchor-id="triton-implementation"><span class="header-section-number">21.0.2</span> Triton implementation</h3>
 <p>One program per tile of <code>(BLOCK_M, BLOCK_H)</code>. The kernel is pure elementwise plus a row-broadcast of the bias.</p>
-<div id="a072d87b" class="cell">
+<div id="460f41e5" class="cell">
 <div class="sourceCode cell-code" id="cb3"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch</span>
 <span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> triton</span>
 <span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> triton.language <span class="im">as</span> tl</span>
@@ -593,7 +593,7 @@ mlp  = (silu(gate) * up) @ W_down.T + b_down</code></pre>
 <span id="cb3-67"><a href="#cb3-67" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> y</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
 <p>The GEGLU variant replaces <code>silu_g</code> with the tanh GELU approximation:</p>
-<div id="665a3b1a" class="cell">
+<div id="68a24d2d" class="cell">
 <div class="sourceCode cell-code" id="cb4"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.jit</span></span>
 <span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> _gelu_tanh(x):</span>
 <span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>    <span class="co"># 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))</span></span>
@@ -634,7 +634,7 @@ tl.store(y_ptrs, y, mask)   -                  cast back to fp16</code></pre>
 </section>
 <section id="correctness-test" class="level3" data-number="21.0.5">
 <h3 data-number="21.0.5" class="anchored" data-anchor-id="correctness-test"><span class="header-section-number">21.0.5</span> Correctness test</h3>
-<div id="ddfd63af" class="cell">
+<div id="08861497" class="cell">
 <div class="sourceCode cell-code" id="cb6"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pytest, torch</span>
 <span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch.nn.functional <span class="im">as</span> F</span>
 <span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> ch19_fused_swiglu <span class="im">import</span> swiglu_bias, geglu_bias</span>
@@ -659,7 +659,7 @@ tl.store(y_ptrs, y, mask)   -                  cast back to fp16</code></pre>
 </section>
 <section id="benchmark" class="level3" data-number="21.0.6">
 <h3 data-number="21.0.6" class="anchored" data-anchor-id="benchmark"><span class="header-section-number">21.0.6</span> Benchmark</h3>
-<div id="fd5b06f2" class="cell">
+<div id="2c77b3bc" class="cell">
 <div class="sourceCode cell-code" id="cb7"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch, triton</span>
 <span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch.nn.functional <span class="im">as</span> F</span>
 <span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> ch19_fused_swiglu <span class="im">import</span> swiglu_bias</span>

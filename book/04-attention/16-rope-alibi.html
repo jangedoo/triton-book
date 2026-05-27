@@ -517,7 +517,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <p>Add <code>-m_h * |i - j|</code> to each score in the attention matrix, where <code>m_h</code> is a per-head slope (typically a geometric sequence <code>2^(-8/H), 2^(-16/H), ...</code>). No <code>sin</code>/<code>cos</code>, no rotation, no extra storage at inference time beyond the slope vector. Trained-with-ALiBi models like BLOOM use it; you cannot retrofit it onto a RoPE-trained model.</p>
 <section id="pytorch-reference" class="level3" data-number="18.2.1">
 <h3 data-number="18.2.1" class="anchored" data-anchor-id="pytorch-reference"><span class="header-section-number">18.2.1</span> PyTorch reference</h3>
-<div id="2fcdc217" class="cell">
+<div id="dc79603b" class="cell">
 <div class="sourceCode cell-code" id="cb1"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch</span>
 <span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a></span>
@@ -571,7 +571,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <section id="triton-implementation" class="level3" data-number="18.2.2">
 <h3 data-number="18.2.2" class="anchored" data-anchor-id="triton-implementation"><span class="header-section-number">18.2.2</span> Triton implementation</h3>
 <p>One program owns <code>(b, h, m_tile)</code> — a chunk of sequence positions for a single <code>(batch, head)</code>. It loads the corresponding rows of <code>cos</code>/<code>sin</code>, applies the rotation, and writes back. The kernel below is the non-interleaved variant with an optional position offset for decoding.</p>
-<div id="c1418eae" class="cell">
+<div id="2fea1e7f" class="cell">
 <div class="sourceCode cell-code" id="cb2"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> triton</span>
 <span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> triton.language <span class="im">as</span> tl</span>
 <span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a></span>
@@ -660,7 +660,7 @@ tl.store(o2)    (BLOCK_S, HALF)  fp16   # writes x[..., D/2:]</code></pre>
 </section>
 <section id="correctness-test" class="level3" data-number="18.2.5">
 <h3 data-number="18.2.5" class="anchored" data-anchor-id="correctness-test"><span class="header-section-number">18.2.5</span> Correctness test</h3>
-<div id="5d50be27" class="cell">
+<div id="ed44d024" class="cell">
 <div class="sourceCode cell-code" id="cb4"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pytest</span>
 <span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch</span>
 <span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> src.ch16_rope.rope <span class="im">import</span> rope_noninterleaved, build_cos_sin_cache</span>
@@ -685,7 +685,7 @@ tl.store(o2)    (BLOCK_S, HALF)  fp16   # writes x[..., D/2:]</code></pre>
 </section>
 <section id="benchmark" class="level3" data-number="18.2.6">
 <h3 data-number="18.2.6" class="anchored" data-anchor-id="benchmark"><span class="header-section-number">18.2.6</span> Benchmark</h3>
-<div id="4a9f3471" class="cell">
+<div id="02c18ce6" class="cell">
 <div class="sourceCode cell-code" id="cb5"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch, triton</span>
 <span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> src.ch16_rope.rope <span class="im">import</span> rope_noninterleaved, build_cos_sin_cache</span>
 <span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a></span>

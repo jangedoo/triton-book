@@ -691,7 +691,7 @@ x_hat = scale * (q - zero_point)      # dequantize</code></pre>
 <section id="a-tiny-pytorch-demo" class="level2" data-number="24.6">
 <h2 data-number="24.6" class="anchored" data-anchor-id="a-tiny-pytorch-demo"><span class="header-section-number">24.6</span> A tiny PyTorch demo</h2>
 <p>For grounding, here is per-channel symmetric int8 quantize and dequantize in plain PyTorch. The same shape juggling will appear in the next chapter’s Triton kernel.</p>
-<div id="a74685ad" class="cell">
+<div id="f9ae16fc" class="cell">
 <div class="sourceCode cell-code" id="cb3"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch</span>
 <span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>W <span class="op">=</span> torch.randn(<span class="dv">128</span>, <span class="dv">64</span>, dtype<span class="op">=</span>torch.float16)        <span class="co"># (out, in)</span></span>

@@ -541,7 +541,7 @@ Hardware caveat
 <h2 data-number="25.1" class="anchored" data-anchor-id="kernel-1-dequant_int8_per_channel"><span class="header-section-number">25.1</span> Kernel 1: dequant_int8_per_channel</h2>
 <section id="pytorch-reference" class="level3" data-number="25.1.1">
 <h3 data-number="25.1.1" class="anchored" data-anchor-id="pytorch-reference"><span class="header-section-number">25.1.1</span> PyTorch reference</h3>
-<div id="9f2c8ba8" class="cell">
+<div id="624200e3" class="cell">
 <div class="sourceCode cell-code" id="cb1"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch</span>
 <span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> dequant_ref(q: torch.Tensor, scale: torch.Tensor) <span class="op">-&gt;</span> torch.Tensor:</span>
@@ -554,7 +554,7 @@ Hardware caveat
 <section id="triton-implementation" class="level3" data-number="25.1.2">
 <h3 data-number="25.1.2" class="anchored" data-anchor-id="triton-implementation"><span class="header-section-number">25.1.2</span> Triton implementation</h3>
 <p>The kernel tiles the output into <code>(BLOCK_M, BLOCK_N)</code> blocks, one per program. Each program loads a <code>(BLOCK_M, BLOCK_N)</code> int8 tile, the <code>(BLOCK_M,)</code> scale slice for its row range, casts the int8 tile to fp32, broadcasts the scale along the column axis, multiplies, and stores fp16.</p>
-<div id="a72eddf5" class="cell">
+<div id="15f79beb" class="cell">
 <div class="sourceCode cell-code" id="cb2"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch, triton, triton.language <span class="im">as</span> tl</span>
 <span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.jit</span></span>
@@ -607,7 +607,7 @@ tl.store(out_ptrs, out.to(fp16), mask=...)         (BLOCK_M, BLOCK_N)        fp1
 </section>
 <section id="correctness-test" class="level3" data-number="25.1.5">
 <h3 data-number="25.1.5" class="anchored" data-anchor-id="correctness-test"><span class="header-section-number">25.1.5</span> Correctness test</h3>
-<div id="52c7beb5" class="cell">
+<div id="558a4ad7" class="cell">
 <div class="sourceCode cell-code" id="cb4"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pytest, torch</span>
 <span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a><span class="at">@pytest.mark.parametrize</span>(<span class="st">"M,N"</span>, [(<span class="dv">7</span>, <span class="dv">11</span>), (<span class="dv">64</span>, <span class="dv">128</span>), (<span class="dv">130</span>, <span class="dv">257</span>)])</span>
@@ -624,7 +624,7 @@ tl.store(out_ptrs, out.to(fp16), mask=...)         (BLOCK_M, BLOCK_N)        fp1
 </section>
 <section id="benchmark" class="level3" data-number="25.1.6">
 <h3 data-number="25.1.6" class="anchored" data-anchor-id="benchmark"><span class="header-section-number">25.1.6</span> Benchmark</h3>
-<div id="98422832" class="cell">
+<div id="6d65c623" class="cell">
 <div class="sourceCode cell-code" id="cb5"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch, triton</span>
 <span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> src.ch23_quant <span class="im">import</span> dequant_int8_per_channel</span>
 <span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a></span>
@@ -709,7 +709,7 @@ Figure&nbsp;25.1: Per-row int8 dequant median latency vs square side length N (M
 <h2 data-number="25.2" class="anchored" data-anchor-id="kernel-2-dequant_bias_gelu_fused"><span class="header-section-number">25.2</span> Kernel 2: dequant_bias_gelu_fused</h2>
 <section id="pytorch-reference-1" class="level3" data-number="25.2.1">
 <h3 data-number="25.2.1" class="anchored" data-anchor-id="pytorch-reference-1"><span class="header-section-number">25.2.1</span> PyTorch reference</h3>
-<div id="f635b91e" class="cell">
+<div id="54f42bd3" class="cell">
 <div class="sourceCode cell-code" id="cb7"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> fused_ref(q, scale, bias):</span>
 <span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> scale[:, <span class="va">None</span>].to(torch.float32) <span class="op">*</span> q.to(torch.float32) <span class="op">+</span> bias.to(torch.float32)[<span class="va">None</span>, :]</span>
 <span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> torch_gelu(x).to(torch.float16)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
@@ -719,7 +719,7 @@ Figure&nbsp;25.1: Per-row int8 dequant median latency vs square side length N (M
 <section id="triton-implementation-1" class="level3" data-number="25.2.2">
 <h3 data-number="25.2.2" class="anchored" data-anchor-id="triton-implementation-1"><span class="header-section-number">25.2.2</span> Triton implementation</h3>
 <p>The kernel structure is identical to Kernel 1 with three extra lines: load the bias, add it, apply tanh-approx GELU.</p>
-<div id="fa1cb8ba" class="cell">
+<div id="bc1fe5f2" class="cell">
 <div class="sourceCode cell-code" id="cb8"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="co"># ... offs/masks same as before ...</span></span>
 <span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a>q <span class="op">=</span> tl.load(q_ptrs, mask<span class="op">=</span>mask_m[:, <span class="va">None</span>] <span class="op">&amp;</span> mask_n[<span class="va">None</span>, :], other<span class="op">=</span><span class="dv">0</span>)</span>
 <span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a>s <span class="op">=</span> tl.load(scale_ptr <span class="op">+</span> offs_m, mask<span class="op">=</span>mask_m, other<span class="op">=</span><span class="fl">0.0</span>).to(tl.float32)</span>
@@ -755,7 +755,7 @@ store y.to(fp16)</code></pre>
 </section>
 <section id="correctness-test-1" class="level3" data-number="25.2.5">
 <h3 data-number="25.2.5" class="anchored" data-anchor-id="correctness-test-1"><span class="header-section-number">25.2.5</span> Correctness test</h3>
-<div id="6320f668" class="cell">
+<div id="b5d18a30" class="cell">
 <div class="sourceCode cell-code" id="cb10"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> test_dequant_bias_gelu_fused():</span>
 <span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a>    <span class="im">from</span> src.ch23_quant <span class="im">import</span> dequant_bias_gelu_fused</span>
 <span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a>    M, N <span class="op">=</span> <span class="dv">130</span>, <span class="dv">257</span></span>
@@ -840,7 +840,7 @@ Figure&nbsp;25.2: Fused int8-dequant + bias + tanh-approx GELU median latency vs
 <h2 data-number="25.3" class="anchored" data-anchor-id="kernel-3-w8a16_matmul"><span class="header-section-number">25.3</span> Kernel 3: w8a16_matmul</h2>
 <section id="pytorch-reference-2" class="level3" data-number="25.3.1">
 <h3 data-number="25.3.1" class="anchored" data-anchor-id="pytorch-reference-2"><span class="header-section-number">25.3.1</span> PyTorch reference</h3>
-<div id="096b0cc3" class="cell">
+<div id="1cd1c0f3" class="cell">
 <div class="sourceCode cell-code" id="cb12"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> w8a16_ref(x, w_int8, scale):</span>
 <span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a>    <span class="co"># x:      (M, K) fp16</span></span>
 <span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a>    <span class="co"># w_int8: (K, N) int8</span></span>
@@ -853,7 +853,7 @@ Figure&nbsp;25.2: Fused int8-dequant + bias + tanh-approx GELU median latency vs
 <section id="triton-implementation-2" class="level3" data-number="25.3.2">
 <h3 data-number="25.3.2" class="anchored" data-anchor-id="triton-implementation-2"><span class="header-section-number">25.3.2</span> Triton implementation</h3>
 <p>Structure is the standard 2-D tiled matmul from Chapter 9, with two changes. First, the W tile is loaded as int8. Second, after the load, we cast to fp16 and multiply by the per-column scale before calling <code>tl.dot</code>.</p>
-<div id="3080466c" class="cell">
+<div id="c76ca423" class="cell">
 <div class="sourceCode cell-code" id="cb13"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.jit</span></span>
 <span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> _w8a16_matmul_kernel(</span>
 <span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a>    x_ptr, w_ptr, scale_ptr, y_ptr,</span>
@@ -927,7 +927,7 @@ store acc.to(fp16) at y_ptrs                  (BLOCK_M, BLOCK_N)       fp16</cod
 </section>
 <section id="correctness-test-2" class="level3" data-number="25.3.5">
 <h3 data-number="25.3.5" class="anchored" data-anchor-id="correctness-test-2"><span class="header-section-number">25.3.5</span> Correctness test</h3>
-<div id="8e9bf850" class="cell">
+<div id="dd11bf91" class="cell">
 <div class="sourceCode cell-code" id="cb15"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="at">@pytest.mark.parametrize</span>(<span class="st">"M,N,K"</span>, [(<span class="dv">32</span>, <span class="dv">64</span>, <span class="dv">32</span>), (<span class="dv">65</span>, <span class="dv">130</span>, <span class="dv">33</span>), (<span class="dv">128</span>, <span class="dv">256</span>, <span class="dv">128</span>)])</span>
 <span id="cb15-2"><a href="#cb15-2" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> test_w8a16_matmul(M, N, K):</span>
 <span id="cb15-3"><a href="#cb15-3" aria-hidden="true" tabindex="-1"></a>    <span class="im">from</span> src.ch23_quant <span class="im">import</span> w8a16_matmul</span>
@@ -945,7 +945,7 @@ store acc.to(fp16) at y_ptrs                  (BLOCK_M, BLOCK_N)       fp16</cod
 <section id="benchmark-2" class="level3" data-number="25.3.6">
 <h3 data-number="25.3.6" class="anchored" data-anchor-id="benchmark-2"><span class="header-section-number">25.3.6</span> Benchmark</h3>
 <p>W8A16 wins when the matmul is memory-bound on the weight, which is the typical LLM decode case: <code>M=1</code> (one token), <code>K=N=4096+</code>. In that regime, the int8 weight is half the size of fp16 and the kernel runs roughly twice as fast as the fp16 reference. At square shapes like <code>M=N=K=1024</code>, the work is compute-bound and W8A16 has no inherent advantage — <code>tl.dot</code> runs at the same fp16-tensor-core rate as in the reference.</p>
-<div id="75a70e80" class="cell">
+<div id="adbcba8e" class="cell">
 <div class="sourceCode cell-code" id="cb16"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a><span class="cf">for</span> M, N, K <span class="kw">in</span> [(<span class="dv">1</span>, <span class="dv">4096</span>, <span class="dv">4096</span>), (<span class="dv">4</span>, <span class="dv">4096</span>, <span class="dv">4096</span>), (<span class="dv">16</span>, <span class="dv">4096</span>, <span class="dv">4096</span>), (<span class="dv">1024</span>, <span class="dv">1024</span>, <span class="dv">1024</span>)]:</span>
 <span id="cb16-2"><a href="#cb16-2" aria-hidden="true" tabindex="-1"></a>    <span class="co"># build x, w_int8, scale, w_fp16 ...</span></span>
 <span id="cb16-3"><a href="#cb16-3" aria-hidden="true" tabindex="-1"></a>    t_ms <span class="op">=</span> triton.testing.do_bench(<span class="kw">lambda</span>: w8a16_matmul(x, w_int8, scale),</span>

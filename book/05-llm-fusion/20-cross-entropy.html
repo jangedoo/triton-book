@@ -505,7 +505,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </ol>
 <section id="pytorch-reference" class="level3" data-number="22.0.1">
 <h3 data-number="22.0.1" class="anchored" data-anchor-id="pytorch-reference"><span class="header-section-number">22.0.1</span> PyTorch reference</h3>
-<div id="4ed26271" class="cell">
+<div id="31e11286" class="cell">
 <div class="sourceCode cell-code" id="cb2"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch</span>
 <span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch.nn.functional <span class="im">as</span> F</span>
 <span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a></span>
@@ -528,7 +528,7 @@ mean_loss = sum(loss) / num_valid_rows</code></pre>
 <h3 data-number="22.0.2" class="anchored" data-anchor-id="triton-implementation"><span class="header-section-number">22.0.2</span> Triton implementation</h3>
 <p>One program per row. The row’s vocab dimension is tiled by <code>BLOCK_SIZE</code>. For <code>V &lt;= 65536</code> you can fit the whole row in one tile on most GPUs; for larger vocabs see the chunked-vocab discussion.</p>
 <p><strong>logsumexp kernel:</strong></p>
-<div id="9d0e0160" class="cell">
+<div id="e6ce47a6" class="cell">
 <div class="sourceCode cell-code" id="cb4"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch</span>
 <span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> triton</span>
 <span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> triton.language <span class="im">as</span> tl</span>
@@ -561,7 +561,7 @@ mean_loss = sum(loss) / num_valid_rows</code></pre>
 <span id="cb4-30"><a href="#cb4-30" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> out</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
 <p><strong>Cross-entropy forward kernel.</strong> Same row layout, plus a target gather and an ignore-mask:</p>
-<div id="c4412b70" class="cell">
+<div id="fc1d0c2f" class="cell">
 <div class="sourceCode cell-code" id="cb5"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.jit</span></span>
 <span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> _ce_forward_kernel(</span>
 <span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>    logits_ptr, target_ptr, loss_ptr,</span>
@@ -608,7 +608,7 @@ mean_loss = sum(loss) / num_valid_rows</code></pre>
 <span id="cb5-44"><a href="#cb5-44" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> loss.<span class="bu">sum</span>() <span class="op">/</span> num_valid</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
 <p><strong>Cross-entropy backward.</strong> The gradient is <code>softmax(logits) - one_hot(target)</code>, divided by <code>num_valid</code> for mean reduction. Compute softmax on the fly — never materialise the full softmax tensor:</p>
-<div id="38231e53" class="cell">
+<div id="a6634ed9" class="cell">
 <div class="sourceCode cell-code" id="cb6"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.jit</span></span>
 <span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> _ce_backward_kernel(</span>
 <span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a>    dlogits_ptr, logits_ptr, target_ptr, lse_ptr,</span>
@@ -673,7 +673,7 @@ tl.store(loss_ptr + pid, loss_row)              -       fp32</code></pre>
 </section>
 <section id="correctness-test" class="level3" data-number="22.0.5">
 <h3 data-number="22.0.5" class="anchored" data-anchor-id="correctness-test"><span class="header-section-number">22.0.5</span> Correctness test</h3>
-<div id="1b3e6b58" class="cell">
+<div id="5257fa7d" class="cell">
 <div class="sourceCode cell-code" id="cb8"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pytest, torch</span>
 <span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch.nn.functional <span class="im">as</span> F</span>
 <span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> ch20_cross_entropy <span class="im">import</span> cross_entropy_forward, logsumexp</span>
@@ -696,7 +696,7 @@ tl.store(loss_ptr + pid, loss_row)              -       fp32</code></pre>
 </section>
 <section id="benchmark" class="level3" data-number="22.0.6">
 <h3 data-number="22.0.6" class="anchored" data-anchor-id="benchmark"><span class="header-section-number">22.0.6</span> Benchmark</h3>
-<div id="a6da5865" class="cell">
+<div id="7a9f85c2" class="cell">
 <div class="sourceCode cell-code" id="cb9"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch, triton</span>
 <span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch.nn.functional <span class="im">as</span> F</span>
 <span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> ch20_cross_entropy <span class="im">import</span> cross_entropy_forward</span>

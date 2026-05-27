@@ -557,7 +557,7 @@ x = x + mlp(rmsnorm(x))</code></pre>
 <p>You roughly halve the bandwidth bill. The compute is unchanged — these are all elementwise ops plus one reduction.</p>
 <section id="pytorch-reference" class="level3" data-number="20.1.1">
 <h3 data-number="20.1.1" class="anchored" data-anchor-id="pytorch-reference"><span class="header-section-number">20.1.1</span> PyTorch reference</h3>
-<div id="429cd5ac" class="cell">
+<div id="f5a52b6f" class="cell">
 <div class="sourceCode cell-code" id="cb2"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch</span>
 <span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> residual_rmsnorm_ref(</span>
@@ -586,7 +586,7 @@ x = x + mlp(rmsnorm(x))</code></pre>
 <section id="triton-implementation" class="level3" data-number="20.1.2">
 <h3 data-number="20.1.2" class="anchored" data-anchor-id="triton-implementation"><span class="header-section-number">20.1.2</span> Triton implementation</h3>
 <p>One program per row. The row width <code>N</code> fits in one tile because hidden sizes (4096, 8192) easily fit in a single block on any modern GPU.</p>
-<div id="0f786cff" class="cell">
+<div id="69b8d32c" class="cell">
 <div class="sourceCode cell-code" id="cb3"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch</span>
 <span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> triton</span>
 <span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> triton.language <span class="im">as</span> tl</span>
@@ -691,7 +691,7 @@ tl.store(y_ptrs, y, mask)                        -      stored fp16 via cast</co
 </section>
 <section id="correctness-test" class="level3" data-number="20.1.5">
 <h3 data-number="20.1.5" class="anchored" data-anchor-id="correctness-test"><span class="header-section-number">20.1.5</span> Correctness test</h3>
-<div id="a632e58b" class="cell">
+<div id="d6da1989" class="cell">
 <div class="sourceCode cell-code" id="cb5"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pytest, torch</span>
 <span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> ch18_residual_rmsnorm <span class="im">import</span> residual_rmsnorm</span>
 <span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> ch18_residual_rmsnorm.residual_rmsnorm <span class="im">import</span> residual_rmsnorm_ref</span>
@@ -717,7 +717,7 @@ tl.store(y_ptrs, y, mask)                        -      stored fp16 via cast</co
 </section>
 <section id="benchmark" class="level3" data-number="20.1.6">
 <h3 data-number="20.1.6" class="anchored" data-anchor-id="benchmark"><span class="header-section-number">20.1.6</span> Benchmark</h3>
-<div id="c519a15d" class="cell">
+<div id="e9bda4a0" class="cell">
 <div class="sourceCode cell-code" id="cb6"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch, triton</span>
 <span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> ch18_residual_rmsnorm <span class="im">import</span> residual_rmsnorm</span>
 <span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a></span>

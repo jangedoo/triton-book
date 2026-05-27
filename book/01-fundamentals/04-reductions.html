@@ -552,7 +552,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <h2 data-number="6.2" class="anchored" data-anchor-id="accumulate-in-fp32"><span class="header-section-number">6.2</span> Accumulate in fp32</h2>
 <p>If the input is fp16 or bf16, <strong>promote to fp32 before reducing</strong>. A 4096-wide row of N(0, 1) fp16 values has values clustered near ±1; summing them naively in fp16 loses about a bit of precision every doubling, so by the end the running sum has lost roughly <code>log2(4096) = 12</code> bits. There are 11 bits of mantissa in fp16. You have effectively zero precision left.</p>
 <p>The fix is one cast:</p>
-<div id="4151f2c8" class="cell">
+<div id="702b6161" class="cell">
 <div class="sourceCode cell-code" id="cb1"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a>x <span class="op">=</span> tl.load(...).to(tl.float32)</span>
 <span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a>acc <span class="op">+=</span> tl.<span class="bu">sum</span>(x, axis<span class="op">=</span><span class="dv">0</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
@@ -563,14 +563,14 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <p><code>out[i] = sum(x[i, :])</code> for <code>x : (M, N)</code>. The simplest reduction. Identity is <code>0</code>; combinator is <code>+</code>.</p>
 <section id="pytorch-reference" class="level3" data-number="6.3.1">
 <h3 data-number="6.3.1" class="anchored" data-anchor-id="pytorch-reference"><span class="header-section-number">6.3.1</span> PyTorch reference</h3>
-<div id="fd6cdd9f" class="cell">
+<div id="e1f16b03" class="cell">
 <div class="sourceCode cell-code" id="cb2"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> row_sum_ref(x):</span>
 <span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> x.<span class="bu">sum</span>(dim<span class="op">=</span><span class="dv">1</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
 </section>
 <section id="triton-implementation" class="level3" data-number="6.3.2">
 <h3 data-number="6.3.2" class="anchored" data-anchor-id="triton-implementation"><span class="header-section-number">6.3.2</span> Triton implementation</h3>
-<div id="5a5535d0" class="cell">
+<div id="87177ed3" class="cell">
 <div class="sourceCode cell-code" id="cb3"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.jit</span></span>
 <span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> row_sum_kernel(</span>
 <span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a>    x_ptr, out_ptr,</span>
@@ -614,7 +614,7 @@ tl.store(out_ptr+pid_m, acc) writes one scalar</code></pre>
 </section>
 <section id="correctness-test" class="level3" data-number="6.3.5">
 <h3 data-number="6.3.5" class="anchored" data-anchor-id="correctness-test"><span class="header-section-number">6.3.5</span> Correctness test</h3>
-<div id="6dabc0be" class="cell">
+<div id="28c4519a" class="cell">
 <div class="sourceCode cell-code" id="cb5"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="at">@pytest.mark.parametrize</span>(<span class="st">"shape"</span>, [(<span class="dv">1</span>, <span class="dv">7</span>), (<span class="dv">4</span>, <span class="dv">1024</span>), (<span class="dv">8</span>, <span class="dv">1025</span>), (<span class="dv">32</span>, <span class="dv">1023</span>), (<span class="dv">16</span>, <span class="dv">4097</span>), (<span class="dv">128</span>, <span class="dv">8192</span>)])</span>
 <span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> test_row_sum_fp32(shape):</span>
 <span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> torch.randn(<span class="op">*</span>shape, device<span class="op">=</span><span class="st">"cuda"</span>, dtype<span class="op">=</span>torch.float32)</span>
@@ -624,7 +624,7 @@ tl.store(out_ptr+pid_m, acc) writes one scalar</code></pre>
 </section>
 <section id="benchmark" class="level3" data-number="6.3.6">
 <h3 data-number="6.3.6" class="anchored" data-anchor-id="benchmark"><span class="header-section-number">6.3.6</span> Benchmark</h3>
-<div id="fa02a0b2" class="cell">
+<div id="16be92e4" class="cell">
 <div class="sourceCode cell-code" id="cb6"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a>ms <span class="op">=</span> triton.testing.do_bench(<span class="kw">lambda</span>: row_sum(x))</span>
 <span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a><span class="co"># Memory traffic: 1 load per input element + M tiny scalar stores (negligible).</span></span>
 <span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a>gbps <span class="op">=</span> M <span class="op">*</span> N <span class="op">*</span> x.element_size() <span class="op">/</span> (ms <span class="op">*</span> <span class="fl">1e-3</span>) <span class="op">/</span> <span class="fl">1e9</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
@@ -695,14 +695,14 @@ Figure&nbsp;6.1: Row-wise sum median latency vs row width N. Lower is better. Tr
 <p>Same skeleton, different identity and combinator. Identity is <code>-inf</code>, combinator is <code>max</code>.</p>
 <section id="pytorch-reference-1" class="level3" data-number="6.4.1">
 <h3 data-number="6.4.1" class="anchored" data-anchor-id="pytorch-reference-1"><span class="header-section-number">6.4.1</span> PyTorch reference</h3>
-<div id="105af472" class="cell">
+<div id="fd2145f1" class="cell">
 <div class="sourceCode cell-code" id="cb8"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> row_max_ref(x):</span>
 <span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> x.amax(dim<span class="op">=</span><span class="dv">1</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
 </section>
 <section id="triton-implementation-1" class="level3" data-number="6.4.2">
 <h3 data-number="6.4.2" class="anchored" data-anchor-id="triton-implementation-1"><span class="header-section-number">6.4.2</span> Triton implementation</h3>
-<div id="3586fa7a" class="cell">
+<div id="9bf22f8d" class="cell">
 <div class="sourceCode cell-code" id="cb9"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.jit</span></span>
 <span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> row_max_kernel(</span>
 <span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a>    x_ptr, out_ptr,</span>
@@ -733,7 +733,7 @@ Figure&nbsp;6.1: Row-wise sum median latency vs row width N. Lower is better. Tr
 </section>
 <section id="correctness-test-1" class="level3" data-number="6.4.5">
 <h3 data-number="6.4.5" class="anchored" data-anchor-id="correctness-test-1"><span class="header-section-number">6.4.5</span> Correctness test</h3>
-<div id="f7ae17de" class="cell">
+<div id="481fdd47" class="cell">
 <div class="sourceCode cell-code" id="cb10"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> test_row_max_mask_other_value():</span>
 <span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a>    <span class="co">"""All-negative input + tail tile — catches the wrong-other=0 bug."""</span></span>
 <span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> <span class="op">-</span>torch.rand(<span class="dv">4</span>, <span class="dv">1025</span>, device<span class="op">=</span><span class="st">"cuda"</span>, dtype<span class="op">=</span>torch.float32) <span class="op">-</span> <span class="fl">1.0</span></span>
@@ -743,7 +743,7 @@ Figure&nbsp;6.1: Row-wise sum median latency vs row width N. Lower is better. Tr
 </section>
 <section id="benchmark-1" class="level3" data-number="6.4.6">
 <h3 data-number="6.4.6" class="anchored" data-anchor-id="benchmark-1"><span class="header-section-number">6.4.6</span> Benchmark</h3>
-<div id="f9a7ae2e" class="cell">
+<div id="af84b2a8" class="cell">
 <div class="sourceCode cell-code" id="cb11"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb11-1"><a href="#cb11-1" aria-hidden="true" tabindex="-1"></a>ms <span class="op">=</span> triton.testing.do_bench(<span class="kw">lambda</span>: row_max(x))</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
 <div class="callout callout-style-simple callout-warning">
@@ -810,14 +810,14 @@ Figure&nbsp;6.2: Row-wise max median latency vs row width N. Lower is better. Tr
 <p><code>row_sum</code> divided by <code>N</code>. Trivial.</p>
 <section id="pytorch-reference-2" class="level3" data-number="6.5.1">
 <h3 data-number="6.5.1" class="anchored" data-anchor-id="pytorch-reference-2"><span class="header-section-number">6.5.1</span> PyTorch reference</h3>
-<div id="f89ce2b7" class="cell">
+<div id="5390b1f4" class="cell">
 <div class="sourceCode cell-code" id="cb13"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> row_mean_ref(x):</span>
 <span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> x.mean(dim<span class="op">=</span><span class="dv">1</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
 </section>
 <section id="triton-implementation-2" class="level3" data-number="6.5.2">
 <h3 data-number="6.5.2" class="anchored" data-anchor-id="triton-implementation-2"><span class="header-section-number">6.5.2</span> Triton implementation</h3>
-<div id="72fde16f" class="cell">
+<div id="913e1efa" class="cell">
 <div class="sourceCode cell-code" id="cb14"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.jit</span></span>
 <span id="cb14-2"><a href="#cb14-2" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> row_mean_kernel(</span>
 <span id="cb14-3"><a href="#cb14-3" aria-hidden="true" tabindex="-1"></a>    x_ptr, out_ptr,</span>
@@ -846,7 +846,7 @@ Figure&nbsp;6.2: Row-wise max median latency vs row width N. Lower is better. Tr
 </section>
 <section id="correctness-test-2" class="level3" data-number="6.5.5">
 <h3 data-number="6.5.5" class="anchored" data-anchor-id="correctness-test-2"><span class="header-section-number">6.5.5</span> Correctness test</h3>
-<div id="6ed0a77e" class="cell">
+<div id="7454909e" class="cell">
 <div class="sourceCode cell-code" id="cb15"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb15-1"><a href="#cb15-1" aria-hidden="true" tabindex="-1"></a><span class="at">@pytest.mark.parametrize</span>(<span class="st">"shape"</span>, SHAPES)</span>
 <span id="cb15-2"><a href="#cb15-2" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> test_row_mean_fp32(shape):</span>
 <span id="cb15-3"><a href="#cb15-3" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> torch.randn(<span class="op">*</span>shape, device<span class="op">=</span><span class="st">"cuda"</span>, dtype<span class="op">=</span>torch.float32)</span>
@@ -926,7 +926,7 @@ Figure&nbsp;6.3: Row-wise mean median latency vs row width N. Lower is better. T
 <p>Each pass reads the row from HBM, so the kernel does twice the memory traffic of <code>row_mean</code>. For LayerNorm this is the right trade. In Part 2 we will discuss Welford’s online algorithm as a one-pass alternative; the exercises ask you to implement it.</p>
 <section id="pytorch-reference-3" class="level3" data-number="6.6.1">
 <h3 data-number="6.6.1" class="anchored" data-anchor-id="pytorch-reference-3"><span class="header-section-number">6.6.1</span> PyTorch reference</h3>
-<div id="85d53961" class="cell">
+<div id="7def0ae9" class="cell">
 <div class="sourceCode cell-code" id="cb17"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> row_variance_ref(x):</span>
 <span id="cb17-2"><a href="#cb17-2" aria-hidden="true" tabindex="-1"></a>    <span class="co"># population variance (no Bessel correction), matches the kernel.</span></span>
 <span id="cb17-3"><a href="#cb17-3" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> x.var(dim<span class="op">=</span><span class="dv">1</span>, unbiased<span class="op">=</span><span class="va">False</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
@@ -934,7 +934,7 @@ Figure&nbsp;6.3: Row-wise mean median latency vs row width N. Lower is better. T
 </section>
 <section id="triton-implementation-3" class="level3" data-number="6.6.2">
 <h3 data-number="6.6.2" class="anchored" data-anchor-id="triton-implementation-3"><span class="header-section-number">6.6.2</span> Triton implementation</h3>
-<div id="288d868a" class="cell">
+<div id="11698f77" class="cell">
 <div class="sourceCode cell-code" id="cb18"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb18-1"><a href="#cb18-1" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.jit</span></span>
 <span id="cb18-2"><a href="#cb18-2" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> row_variance_kernel(</span>
 <span id="cb18-3"><a href="#cb18-3" aria-hidden="true" tabindex="-1"></a>    x_ptr, out_ptr,</span>
@@ -991,7 +991,7 @@ Pass 2:
 </section>
 <section id="correctness-test-3" class="level3" data-number="6.6.5">
 <h3 data-number="6.6.5" class="anchored" data-anchor-id="correctness-test-3"><span class="header-section-number">6.6.5</span> Correctness test</h3>
-<div id="758a508a" class="cell">
+<div id="2dbaa445" class="cell">
 <div class="sourceCode cell-code" id="cb20"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb20-1"><a href="#cb20-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> test_row_variance_zero_mean_shift():</span>
 <span id="cb20-2"><a href="#cb20-2" aria-hidden="true" tabindex="-1"></a>    <span class="co">"""Two-pass variance survives a huge mean shift; naive identity would not."""</span></span>
 <span id="cb20-3"><a href="#cb20-3" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> torch.randn(<span class="dv">4</span>, <span class="dv">4096</span>, device<span class="op">=</span><span class="st">"cuda"</span>, dtype<span class="op">=</span>torch.float32) <span class="op">+</span> <span class="fl">1e6</span></span>
@@ -1003,7 +1003,7 @@ Pass 2:
 </section>
 <section id="benchmark-3" class="level3" data-number="6.6.6">
 <h3 data-number="6.6.6" class="anchored" data-anchor-id="benchmark-3"><span class="header-section-number">6.6.6</span> Benchmark</h3>
-<div id="ba40e727" class="cell">
+<div id="ae778cf0" class="cell">
 <div class="sourceCode cell-code" id="cb21"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb21-1"><a href="#cb21-1" aria-hidden="true" tabindex="-1"></a>ms <span class="op">=</span> triton.testing.do_bench(<span class="kw">lambda</span>: row_variance(x))</span>
 <span id="cb21-2"><a href="#cb21-2" aria-hidden="true" tabindex="-1"></a><span class="co"># Two-pass: 2 loads per element.</span></span>
 <span id="cb21-3"><a href="#cb21-3" aria-hidden="true" tabindex="-1"></a>gbps <span class="op">=</span> <span class="dv">2</span> <span class="op">*</span> M <span class="op">*</span> N <span class="op">*</span> x.element_size() <span class="op">/</span> (ms <span class="op">*</span> <span class="fl">1e-3</span>) <span class="op">/</span> <span class="fl">1e9</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>

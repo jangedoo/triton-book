@@ -679,7 +679,7 @@ Figure&nbsp;28.1: Autotuned softmax kernel median latency vs row width N. Lower 
 </section>
 <section id="correctness-test" class="level2" data-number="28.7">
 <h2 data-number="28.7" class="anchored" data-anchor-id="correctness-test"><span class="header-section-number">28.7</span> Correctness test</h2>
-<div id="db6b4149" class="cell">
+<div id="bd077ff7" class="cell">
 <div class="sourceCode cell-code" id="cb8"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> test_autotuned_softmax():</span>
 <span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a>    <span class="im">from</span> src.ch26_autotune <span class="im">import</span> autotuned_softmax</span>
 <span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> torch.randn(<span class="dv">1024</span>, <span class="dv">4096</span>, device<span class="op">=</span><span class="st">"cuda"</span>)</span>

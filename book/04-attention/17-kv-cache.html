@@ -521,7 +521,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </section>
 <section id="append-writing-one-token" class="level2" data-number="19.2">
 <h2 data-number="19.2" class="anchored" data-anchor-id="append-writing-one-token"><span class="header-section-number">19.2</span> Append: writing one token</h2>
-<div id="42937877" class="cell">
+<div id="24550bb4" class="cell">
 <div class="sourceCode cell-code" id="cb1"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch</span>
 <span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a></span>
@@ -537,7 +537,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <p>PyTorch handles this with a copy. A Triton kernel reduces launch overhead when you also want to fuse the position write with something else (e.g.&nbsp;RoPE on the cached K, which some inference paths do).</p>
 <section id="pytorch-reference" class="level3" data-number="19.2.1">
 <h3 data-number="19.2.1" class="anchored" data-anchor-id="pytorch-reference"><span class="header-section-number">19.2.1</span> PyTorch reference</h3>
-<div id="902fbb1e" class="cell">
+<div id="61190f7c" class="cell">
 <div class="sourceCode cell-code" id="cb2"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch</span>
 <span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch.nn.functional <span class="im">as</span> F</span>
 <span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a></span>
@@ -562,7 +562,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <section id="triton-implementation" class="level3" data-number="19.2.2">
 <h3 data-number="19.2.2" class="anchored" data-anchor-id="triton-implementation"><span class="header-section-number">19.2.2</span> Triton implementation</h3>
 <p><strong>Append kernel.</strong> Elementwise, but with stride arithmetic — the K and V cache strides may not equal the strides of the new K and V tensors.</p>
-<div id="dce3905d" class="cell">
+<div id="f4c26008" class="cell">
 <div class="sourceCode cell-code" id="cb3"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> triton</span>
 <span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> triton.language <span class="im">as</span> tl</span>
 <span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a></span>
@@ -605,7 +605,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <span id="cb3-40"><a href="#cb3-40" aria-hidden="true" tabindex="-1"></a>    tl.store(v_cache_ptrs, v, mask<span class="op">=</span>d_mask)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
 <p><strong>Decode attention kernel.</strong> Single-query online softmax across K/V tiles.</p>
-<div id="62a0ddfe" class="cell">
+<div id="77a31a45" class="cell">
 <div class="sourceCode cell-code" id="cb4"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.jit</span></span>
 <span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> _decode_attn_kernel(</span>
 <span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>    q_ptr, k_cache_ptr, v_cache_ptr, out_ptr,</span>
@@ -708,7 +708,7 @@ out = acc / l_i  (BLOCK_D,)         fp32 -&gt; fp16 store</code></pre>
 </section>
 <section id="correctness-test" class="level3" data-number="19.2.5">
 <h3 data-number="19.2.5" class="anchored" data-anchor-id="correctness-test"><span class="header-section-number">19.2.5</span> Correctness test</h3>
-<div id="1f31c041" class="cell">
+<div id="80634545" class="cell">
 <div class="sourceCode cell-code" id="cb6"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pytest</span>
 <span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch</span>
 <span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch.nn.functional <span class="im">as</span> F</span>
@@ -743,7 +743,7 @@ out = acc / l_i  (BLOCK_D,)         fp32 -&gt; fp16 store</code></pre>
 </section>
 <section id="benchmark" class="level3" data-number="19.2.6">
 <h3 data-number="19.2.6" class="anchored" data-anchor-id="benchmark"><span class="header-section-number">19.2.6</span> Benchmark</h3>
-<div id="832b20f4" class="cell">
+<div id="5bb7e8b2" class="cell">
 <div class="sourceCode cell-code" id="cb7"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch, triton</span>
 <span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> src.ch17_kv_cache.append_kv_cache <span class="im">import</span> append_kv_cache</span>
 <span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> src.ch17_kv_cache.decode_attention <span class="im">import</span> decode_attention</span>

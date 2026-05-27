@@ -508,11 +508,11 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <section id="programs-grids-and-launches" class="level2" data-number="4.1">
 <h2 data-number="4.1" class="anchored" data-anchor-id="programs-grids-and-launches"><span class="header-section-number">4.1</span> Programs, grids, and launches</h2>
 <p>A Triton kernel is a Python function decorated with <code>@triton.jit</code>. You launch it from regular PyTorch code by indexing the kernel object with a <strong>grid</strong> and calling it:</p>
-<div id="c1e95c27" class="cell">
+<div id="dc09332a" class="cell">
 <div class="sourceCode cell-code" id="cb1"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a>vector_add_kernel[(num_programs,)](x, y, out, n_elements, BLOCK_SIZE<span class="op">=</span><span class="dv">1024</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
 <p>The grid is a tuple. <code>(N,)</code> is a 1-D grid of <code>N</code> programs. <code>(M, N)</code> is a 2-D grid of <code>M * N</code> programs. Each program is one <em>instance</em> of your kernel and is uniquely identified by a <code>pid</code> (program id) on each axis:</p>
-<div id="263c63bd" class="cell">
+<div id="7678bdff" class="cell">
 <div class="sourceCode cell-code" id="cb2"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a>pid   <span class="op">=</span> tl.program_id(axis<span class="op">=</span><span class="dv">0</span>)  <span class="co"># 1-D grid</span></span>
 <span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a>pid_m <span class="op">=</span> tl.program_id(axis<span class="op">=</span><span class="dv">0</span>)  <span class="co"># 2-D grid, first axis</span></span>
 <span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>pid_n <span class="op">=</span> tl.program_id(axis<span class="op">=</span><span class="dv">1</span>)  <span class="co"># 2-D grid, second axis</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
@@ -529,7 +529,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <p>The “hello world” of Triton.</p>
 <section id="pytorch-reference" class="level3" data-number="4.3.1">
 <h3 data-number="4.3.1" class="anchored" data-anchor-id="pytorch-reference"><span class="header-section-number">4.3.1</span> PyTorch reference</h3>
-<div id="11238522" class="cell">
+<div id="40a1d999" class="cell">
 <div class="sourceCode cell-code" id="cb3"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> vector_add_ref(x: torch.Tensor, y: torch.Tensor) <span class="op">-&gt;</span> torch.Tensor:</span>
 <span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> x <span class="op">+</span> y</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
@@ -537,7 +537,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </section>
 <section id="triton-implementation" class="level3" data-number="4.3.2">
 <h3 data-number="4.3.2" class="anchored" data-anchor-id="triton-implementation"><span class="header-section-number">4.3.2</span> Triton implementation</h3>
-<div id="1548e925" class="cell">
+<div id="49e3fb4c" class="cell">
 <div class="sourceCode cell-code" id="cb4"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch</span>
 <span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> triton</span>
 <span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> triton.language <span class="im">as</span> tl</span>
@@ -747,7 +747,7 @@ Figure&nbsp;4.1: Per-program tile coverage of a length-N 1D tensor by BLOCK_SIZE
 <section id="correctness-test" class="level3" data-number="4.4.2">
 <h3 data-number="4.4.2" class="anchored" data-anchor-id="correctness-test"><span class="header-section-number">4.4.2</span> Correctness test</h3>
 <p>The full test module is in <code>tests/test_ch02_vector_add.py</code>. The core of it:</p>
-<div id="d9943f5b" class="cell">
+<div id="752b2a82" class="cell">
 <div class="sourceCode cell-code" id="cb8"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="at">@pytest.mark.parametrize</span>(<span class="st">"n"</span>, [<span class="dv">7</span>, <span class="dv">1024</span>, <span class="dv">1023</span>, <span class="dv">1025</span>, <span class="dv">1_048_576</span>])</span>
 <span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> test_vector_add_fp32(n):</span>
 <span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> torch.randn(n, device<span class="op">=</span><span class="st">"cuda"</span>, dtype<span class="op">=</span>torch.float32)</span>
@@ -760,7 +760,7 @@ Figure&nbsp;4.1: Per-program tile coverage of a length-N 1D tensor by BLOCK_SIZE
 <section id="benchmark" class="level3" data-number="4.4.3">
 <h3 data-number="4.4.3" class="anchored" data-anchor-id="benchmark"><span class="header-section-number">4.4.3</span> Benchmark</h3>
 <p><code>triton.testing.do_bench</code> runs the callable, warms up, syncs, and returns the median elapsed time in milliseconds. Use it.</p>
-<div id="24f9103a" class="cell">
+<div id="ea6a27f0" class="cell">
 <div class="sourceCode cell-code" id="cb9"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> triton</span>
 <span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> bench(x, y):</span>

@@ -577,14 +577,14 @@ ptrs = x_ptr + rows[:, None] * stride_m + cols[None, :] * stride_n
 <p>The structural template for everything in the chapter. One program, one tile, load, store.</p>
 <section id="pytorch-reference" class="level3" data-number="5.5.1">
 <h3 data-number="5.5.1" class="anchored" data-anchor-id="pytorch-reference"><span class="header-section-number">5.5.1</span> PyTorch reference</h3>
-<div id="7d7bdb38" class="cell">
+<div id="ce56e678" class="cell">
 <div class="sourceCode cell-code" id="cb3"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> copy_ref(x):</span>
 <span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> x.clone()</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
 </section>
 <section id="triton-implementation" class="level3" data-number="5.5.2">
 <h3 data-number="5.5.2" class="anchored" data-anchor-id="triton-implementation"><span class="header-section-number">5.5.2</span> Triton implementation</h3>
-<div id="9d531ced" class="cell">
+<div id="8f314308" class="cell">
 <div class="sourceCode cell-code" id="cb4"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.jit</span></span>
 <span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> copy_kernel(x_ptr, out_ptr, n_elements, BLOCK_SIZE: tl.constexpr):</span>
 <span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>    pid <span class="op">=</span> tl.program_id(axis<span class="op">=</span><span class="dv">0</span>)</span>
@@ -611,7 +611,7 @@ tl.store(out_ptr+offsets, tile, mask)</code></pre>
 </section>
 <section id="correctness-test" class="level3" data-number="5.5.5">
 <h3 data-number="5.5.5" class="anchored" data-anchor-id="correctness-test"><span class="header-section-number">5.5.5</span> Correctness test</h3>
-<div id="2efb936d" class="cell">
+<div id="4425c259" class="cell">
 <div class="sourceCode cell-code" id="cb6"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="at">@pytest.mark.parametrize</span>(<span class="st">"n"</span>, [<span class="dv">7</span>, <span class="dv">1024</span>, <span class="dv">1023</span>, <span class="dv">1025</span>, <span class="dv">1_048_576</span>])</span>
 <span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a><span class="at">@pytest.mark.parametrize</span>(<span class="st">"dtype"</span>, [torch.float32, torch.float16, torch.bfloat16])</span>
 <span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> test_copy_exact(n, dtype):</span>
@@ -623,7 +623,7 @@ tl.store(out_ptr+offsets, tile, mask)</code></pre>
 </section>
 <section id="benchmark" class="level3" data-number="5.5.6">
 <h3 data-number="5.5.6" class="anchored" data-anchor-id="benchmark"><span class="header-section-number">5.5.6</span> Benchmark</h3>
-<div id="49ee9677" class="cell">
+<div id="7c7b8a56" class="cell">
 <div class="sourceCode cell-code" id="cb7"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a>ms <span class="op">=</span> triton.testing.do_bench(<span class="kw">lambda</span>: copy(x))</span>
 <span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>gbps <span class="op">=</span> <span class="dv">2</span> <span class="op">*</span> x.numel() <span class="op">*</span> x.element_size() <span class="op">/</span> (ms <span class="op">*</span> <span class="fl">1e-3</span>) <span class="op">/</span> <span class="fl">1e9</span>  <span class="co"># 1 load + 1 store</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
@@ -696,14 +696,14 @@ Figure&nbsp;5.1: 1-D copy median latency vs tensor length N (log x-axis). Lower 
 <p><strong>Where this shows up.</strong> This is the <code>+ b</code> half of every <code>nn.Linear(in, out)</code> layer: after the matmul <code>x @ W.T</code> produces an <code>(M, N)</code> activation, you broadcast a length-<code>N</code> bias vector across all <code>M</code> rows. The same pattern appears in attention QKV projections, the two MLP projections in each transformer block, and the final LM-head projection that turns hidden states into vocab logits. It also shows up outside <code>nn.Linear</code> — for example adding a positional-bias vector to attention scores, or adding a per-channel offset before an activation. The kernel matters as a teaching example because it forces you to load a 1-D tensor (<code>bias</code>) and a 2-D tensor (<code>x</code>) with <em>different</em> stride patterns in the same program: <code>bias</code> strides only along <code>N</code>, while <code>x</code> strides along both <code>M</code> (between rows, big jump) and <code>N</code> (within a row, contiguous). Understanding how those two pointer expressions coexist is the warm-up for every fused-bias kernel later in the book — Chapter 10 fuses exactly this op into matmul so the bias add costs zero extra memory traffic.</p>
 <section id="pytorch-reference-1" class="level3" data-number="5.6.1">
 <h3 data-number="5.6.1" class="anchored" data-anchor-id="pytorch-reference-1"><span class="header-section-number">5.6.1</span> PyTorch reference</h3>
-<div id="0d1dcd77" class="cell">
+<div id="f3992fc8" class="cell">
 <div class="sourceCode cell-code" id="cb9"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> row_add_ref(x, bias):</span>
 <span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> x <span class="op">+</span> bias  <span class="co"># broadcast over rows</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
 </section>
 <section id="triton-implementation-1" class="level3" data-number="5.6.2">
 <h3 data-number="5.6.2" class="anchored" data-anchor-id="triton-implementation-1"><span class="header-section-number">5.6.2</span> Triton implementation</h3>
-<div id="e35abbb9" class="cell">
+<div id="4585f1a0" class="cell">
 <div class="sourceCode cell-code" id="cb10"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.jit</span></span>
 <span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> row_add_kernel(</span>
 <span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a>    x_ptr, bias_ptr, out_ptr,</span>
@@ -1072,7 +1072,7 @@ Figure&nbsp;5.2: Row-wise bias-add: which elements of x, bias, and out a single 
 </section>
 <section id="correctness-test-1" class="level3" data-number="5.6.6">
 <h3 data-number="5.6.6" class="anchored" data-anchor-id="correctness-test-1"><span class="header-section-number">5.6.6</span> Correctness test</h3>
-<div id="02b5b788" class="cell">
+<div id="22a47581" class="cell">
 <div class="sourceCode cell-code" id="cb13"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb13-1"><a href="#cb13-1" aria-hidden="true" tabindex="-1"></a><span class="at">@pytest.mark.parametrize</span>(<span class="st">"shape"</span>, [(<span class="dv">1</span>, <span class="dv">7</span>), (<span class="dv">4</span>, <span class="dv">1024</span>), (<span class="dv">8</span>, <span class="dv">1025</span>), (<span class="dv">32</span>, <span class="dv">1023</span>), (<span class="dv">512</span>, <span class="dv">4096</span>)])</span>
 <span id="cb13-2"><a href="#cb13-2" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> test_row_add_fp32(shape):</span>
 <span id="cb13-3"><a href="#cb13-3" aria-hidden="true" tabindex="-1"></a>    M, N <span class="op">=</span> shape</span>
@@ -1085,7 +1085,7 @@ Figure&nbsp;5.2: Row-wise bias-add: which elements of x, bias, and out a single 
 </section>
 <section id="benchmark-1" class="level3" data-number="5.6.7">
 <h3 data-number="5.6.7" class="anchored" data-anchor-id="benchmark-1"><span class="header-section-number">5.6.7</span> Benchmark</h3>
-<div id="91ef0397" class="cell">
+<div id="ae286531" class="cell">
 <div class="sourceCode cell-code" id="cb14"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a>ms <span class="op">=</span> triton.testing.do_bench(<span class="kw">lambda</span>: row_add(x, bias))</span>
 <span id="cb14-2"><a href="#cb14-2" aria-hidden="true" tabindex="-1"></a><span class="co"># 2 loads + 1 store per element, modulo bias re-reads which the cache absorbs.</span></span>
 <span id="cb14-3"><a href="#cb14-3" aria-hidden="true" tabindex="-1"></a>gbps <span class="op">=</span> <span class="dv">3</span> <span class="op">*</span> M <span class="op">*</span> N <span class="op">*</span> <span class="dv">4</span> <span class="op">/</span> (ms <span class="op">*</span> <span class="fl">1e-3</span>) <span class="op">/</span> <span class="fl">1e9</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
@@ -1154,14 +1154,14 @@ Figure&nbsp;5.3: Row-wise bias-add median latency vs row width N (M held fixed).
 <p>Read a <code>(BM, BN)</code> tile from <code>x</code>, write it to <code>out</code> at the swapped location. The interesting bit is that the write addresses are strided even when the input is contiguous, because writing the transpose to a contiguous output means consecutive lanes in the tile go to widely separated rows of <code>out</code>.</p>
 <section id="pytorch-reference-2" class="level3" data-number="5.7.1">
 <h3 data-number="5.7.1" class="anchored" data-anchor-id="pytorch-reference-2"><span class="header-section-number">5.7.1</span> PyTorch reference</h3>
-<div id="65943049" class="cell">
+<div id="8780fe13" class="cell">
 <div class="sourceCode cell-code" id="cb16"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb16-1"><a href="#cb16-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> transpose_ref(x):</span>
 <span id="cb16-2"><a href="#cb16-2" aria-hidden="true" tabindex="-1"></a>    <span class="cf">return</span> x.t().contiguous()</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>
 </section>
 <section id="triton-implementation-2" class="level3" data-number="5.7.2">
 <h3 data-number="5.7.2" class="anchored" data-anchor-id="triton-implementation-2"><span class="header-section-number">5.7.2</span> Triton implementation</h3>
-<div id="06595c73" class="cell">
+<div id="2f45ad55" class="cell">
 <div class="sourceCode cell-code" id="cb17"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb17-1"><a href="#cb17-1" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.jit</span></span>
 <span id="cb17-2"><a href="#cb17-2" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> transpose_kernel(</span>
 <span id="cb17-3"><a href="#cb17-3" aria-hidden="true" tabindex="-1"></a>    x_ptr, out_ptr,</span>
@@ -1505,7 +1505,7 @@ Figure&nbsp;5.4: 2-D transpose: a single program reads a (BLOCK_M, BLOCK_N) tile
 </section>
 <section id="correctness-test-2" class="level3" data-number="5.7.6">
 <h3 data-number="5.7.6" class="anchored" data-anchor-id="correctness-test-2"><span class="header-section-number">5.7.6</span> Correctness test</h3>
-<div id="4fc2b04c" class="cell">
+<div id="b400c73f" class="cell">
 <div class="sourceCode cell-code" id="cb20"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb20-1"><a href="#cb20-1" aria-hidden="true" tabindex="-1"></a><span class="at">@pytest.mark.parametrize</span>(<span class="st">"shape"</span>, [(<span class="dv">7</span>, <span class="dv">5</span>), (<span class="dv">32</span>, <span class="dv">32</span>), (<span class="dv">33</span>, <span class="dv">31</span>), (<span class="dv">128</span>, <span class="dv">256</span>), (<span class="dv">1024</span>, <span class="dv">1024</span>)])</span>
 <span id="cb20-2"><a href="#cb20-2" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> test_transpose_fp32(shape):</span>
 <span id="cb20-3"><a href="#cb20-3" aria-hidden="true" tabindex="-1"></a>    M, N <span class="op">=</span> shape</span>
@@ -1517,7 +1517,7 @@ Figure&nbsp;5.4: 2-D transpose: a single program reads a (BLOCK_M, BLOCK_N) tile
 </section>
 <section id="benchmark-2" class="level3" data-number="5.7.7">
 <h3 data-number="5.7.7" class="anchored" data-anchor-id="benchmark-2"><span class="header-section-number">5.7.7</span> Benchmark</h3>
-<div id="1b17d80c" class="cell">
+<div id="cd30c97d" class="cell">
 <div class="sourceCode cell-code" id="cb21"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb21-1"><a href="#cb21-1" aria-hidden="true" tabindex="-1"></a>ms <span class="op">=</span> triton.testing.do_bench(<span class="kw">lambda</span>: transpose(x))</span>
 <span id="cb21-2"><a href="#cb21-2" aria-hidden="true" tabindex="-1"></a>gbps <span class="op">=</span> <span class="dv">2</span> <span class="op">*</span> M <span class="op">*</span> N <span class="op">*</span> <span class="dv">4</span> <span class="op">/</span> (ms <span class="op">*</span> <span class="fl">1e-3</span>) <span class="op">/</span> <span class="fl">1e9</span>  <span class="co"># 1 load + 1 store per element</span></span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </div>

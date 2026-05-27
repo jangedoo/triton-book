@@ -497,7 +497,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <h4 data-number="32.0.1.1" class="anchored" data-anchor-id="write-the-pytorch-reference"><span class="header-section-number">32.0.1.1</span> 1. Write the PyTorch reference</h4>
 <p><strong>What to do.</strong> Write the layer in plain PyTorch. The clearest version you can. No premature optimization. This is your oracle: every test compares against it.</p>
 <p><strong>Worked example.</strong></p>
-<div id="c6d1230b" class="cell">
+<div id="6ad611d3" class="cell">
 <div class="sourceCode cell-code" id="cb1"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="kw">def</span> fused_residual_ln_dropout_ref(x, residual, weight, bias, p, eps):</span>
 <span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a>    h <span class="op">=</span> x <span class="op">+</span> residual                                     <span class="co"># residual stream</span></span>
 <span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>    n <span class="op">=</span> F.layer_norm(h, (h.shape[<span class="op">-</span><span class="dv">1</span>],), weight, bias, eps<span class="op">=</span>eps)</span>
@@ -663,7 +663,7 @@ tl.store(y_ptr + row * stride_ym + offs, n, mask)</code></pre>
 <h4 data-number="32.0.1.14" class="anchored" data-anchor-id="autotune"><span class="header-section-number">32.0.1.14</span> 14. Autotune</h4>
 <p><strong>What to do.</strong> Wrap the kernel with <code>triton.autotune</code> over a handful of configs that span the realistic shape space. Three to six configs is usually enough. <code>key=</code> should list the shape dims the optimal config depends on.</p>
 <p><strong>Worked example.</strong> For our kernel:</p>
-<div id="5152cb42" class="cell">
+<div id="f6bcf89d" class="cell">
 <div class="sourceCode cell-code" id="cb4"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="at">@triton.autotune</span>(</span>
 <span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>    configs<span class="op">=</span>[</span>
 <span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>        triton.Config({}, num_warps<span class="op">=</span><span class="dv">2</span>),</span>

@@ -594,7 +594,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <section id="correctness-test" class="level3" data-number="30.0.7">
 <h3 data-number="30.0.7" class="anchored" data-anchor-id="correctness-test"><span class="header-section-number">30.0.7</span> Correctness test</h3>
 <p>The package-level test suite is a smoke test, not an exhaustive sweep. The exhaustive sweeps live in the per-chapter test files. The smoke test exists to catch the boring class of bugs: someone renamed a submodule, someone forgot to add a function to <code>__all__</code>, someone changed a kwarg.</p>
-<div id="62b186d4" class="cell">
+<div id="3a0060fa" class="cell">
 <div class="sourceCode cell-code" id="cb6"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> os, sys</span>
 <span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch, pytest</span>
 <span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a></span>
@@ -615,7 +615,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <section id="benchmark" class="level3" data-number="30.0.8">
 <h3 data-number="30.0.8" class="anchored" data-anchor-id="benchmark"><span class="header-section-number">30.0.8</span> Benchmark</h3>
 <p>The benchmark file picks one representative shape per kernel and prints a unified table. We do not try to find each kernel’s best shape; we want one number per kernel that is comparable in spirit to the PyTorch reference at the same shape.</p>
-<div id="d710d990" class="cell">
+<div id="91edbf3f" class="cell">
 <div class="sourceCode cell-code" id="cb7"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> mini_triton_llm <span class="im">import</span> rmsnorm, softmax, swiglu, flash_attention</span>
 <span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> mini_triton_llm.benchmarking <span class="im">import</span> compare, print_table</span>
 <span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> mini_triton_llm.testing <span class="im">import</span> random_qkv</span>

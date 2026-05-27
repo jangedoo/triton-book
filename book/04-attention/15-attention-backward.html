@@ -547,7 +547,7 @@ dK = dS^T @ Q * scale                               # [N, D]</code></pre>
 <p>Our educational kernel collapses everything into one straightforward function. Use it to internalize the math, then read the tutorial.</p>
 <section id="pytorch-reference" class="level3" data-number="17.4.1">
 <h3 data-number="17.4.1" class="anchored" data-anchor-id="pytorch-reference"><span class="header-section-number">17.4.1</span> PyTorch reference</h3>
-<div id="1aa68ff7" class="cell">
+<div id="aa580317" class="cell">
 <div class="sourceCode cell-code" id="cb3"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch</span>
 <span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch.nn.functional <span class="im">as</span> F</span>
 <span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a></span>
@@ -570,7 +570,7 @@ dK = dS^T @ Q * scale                               # [N, D]</code></pre>
 <section id="triton-implementation" class="level3" data-number="17.4.2">
 <h3 data-number="17.4.2" class="anchored" data-anchor-id="triton-implementation"><span class="header-section-number">17.4.2</span> Triton implementation</h3>
 <p>The educational backward stores <code>P</code> as a <code>[B, H, S, S]</code> tensor in fp32 and runs three small kernels: one for <code>dV</code>, one for <code>dQ</code>, one for <code>dK</code>. Each is essentially a matmul. The point is that you can see, line by line, where the math comes from.</p>
-<div id="78a31c75" class="cell">
+<div id="462dd744" class="cell">
 <div class="sourceCode cell-code" id="cb4"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="co">"""</span></span>
 <span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a><span class="co">Educational implementation. Not production.</span></span>
 <span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a><span class="co">For S &gt; 256 use F.scaled_dot_product_attention, which dispatches to a</span></span>
@@ -660,7 +660,7 @@ tl.store(dv)    (BLOCK_N, BLOCK_D)  fp32   # masked on offs_n &lt; S</code></pre
 </section>
 <section id="correctness-test" class="level3" data-number="17.4.5">
 <h3 data-number="17.4.5" class="anchored" data-anchor-id="correctness-test"><span class="header-section-number">17.4.5</span> Correctness test</h3>
-<div id="f285e8df" class="cell">
+<div id="302655c3" class="cell">
 <div class="sourceCode cell-code" id="cb6"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> pytest</span>
 <span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch</span>
 <span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch.nn.functional <span class="im">as</span> F</span>
@@ -691,7 +691,7 @@ tl.store(dv)    (BLOCK_N, BLOCK_D)  fp32   # masked on offs_n &lt; S</code></pre
 <section id="benchmark" class="level3" data-number="17.4.6">
 <h3 data-number="17.4.6" class="anchored" data-anchor-id="benchmark"><span class="header-section-number">17.4.6</span> Benchmark</h3>
 <p>A single timing point is enough for this chapter. The educational backward is much slower than the real Flash backward (which is itself ~3x slower than the forward). Do not chase performance here.</p>
-<div id="1a962d9f" class="cell">
+<div id="d128b9e0" class="cell">
 <div class="sourceCode cell-code" id="cb7"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch</span>
 <span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> triton</span>
 <span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a><span class="im">import</span> torch.nn.functional <span class="im">as</span> F</span>

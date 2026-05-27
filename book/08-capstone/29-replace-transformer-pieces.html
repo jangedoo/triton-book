@@ -560,7 +560,7 @@ y          (B, S, hidden)</code></pre>
 <section id="correctness" class="level3" data-number="31.0.3">
 <h3 data-number="31.0.3" class="anchored" data-anchor-id="correctness"><span class="header-section-number">31.0.3</span> Correctness</h3>
 <p>Identical weights, identical inputs, outputs close to fp16 tolerances:</p>
-<div id="6cb94ad7" class="cell">
+<div id="1892228e" class="cell">
 <div class="sourceCode cell-code" id="cb2"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> ch29_transformer_swap <span class="im">import</span> BlockConfig, PyTorchBlock, TritonBlock</span>
 <span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a>cfg <span class="op">=</span> BlockConfig(hidden_dim<span class="op">=</span><span class="dv">256</span>, num_heads<span class="op">=</span><span class="dv">4</span>, head_dim<span class="op">=</span><span class="dv">64</span>, intermediate_dim<span class="op">=</span><span class="dv">1024</span>)</span>
@@ -581,7 +581,7 @@ y          (B, S, hidden)</code></pre>
 <section id="latency" class="level3" data-number="31.0.4">
 <h3 data-number="31.0.4" class="anchored" data-anchor-id="latency"><span class="header-section-number">31.0.4</span> Latency</h3>
 <p>Forward time at <code>B=4</code> and <code>S in {512, 1024, 2048}</code>:</p>
-<div id="c4cefc83" class="cell">
+<div id="618c9b3e" class="cell">
 <div class="sourceCode cell-code" id="cb3"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="im">from</span> mini_triton_llm.benchmarking <span class="im">import</span> bench</span>
 <span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a><span class="cf">for</span> S <span class="kw">in</span> [<span class="dv">512</span>, <span class="dv">1024</span>, <span class="dv">2048</span>]:</span>
@@ -602,7 +602,7 @@ y          (B, S, hidden)</code></pre>
 <section id="memory" class="level3" data-number="31.0.5">
 <h3 data-number="31.0.5" class="anchored" data-anchor-id="memory"><span class="header-section-number">31.0.5</span> Memory</h3>
 <p>This is where the Triton path has a real, structural win:</p>
-<div id="eda1f1d7" class="cell">
+<div id="439ff774" class="cell">
 <div class="sourceCode cell-code" id="cb4"><pre class="sourceCode python code-with-copy"><code class="sourceCode python"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="cf">for</span> S <span class="kw">in</span> [<span class="dv">512</span>, <span class="dv">1024</span>, <span class="dv">2048</span>]:</span>
 <span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>    x <span class="op">=</span> torch.randn(<span class="dv">4</span>, S, <span class="dv">256</span>, dtype<span class="op">=</span>torch.float16, device<span class="op">=</span><span class="st">"cuda"</span>) <span class="op">*</span> <span class="fl">0.1</span></span>
 <span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>    torch.cuda.reset_peak_memory_stats()</span>
